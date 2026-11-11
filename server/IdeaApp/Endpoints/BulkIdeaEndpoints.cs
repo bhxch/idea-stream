@@ -35,13 +35,13 @@ public static class BulkIdeaEndpoints
                     request.Replace ?? false).ToList(),
                 IdeaJsonContext.Default.ListIdeaDto)));
 
-        // 批量删除：软删（进回收站），没有响应体。
+        // 批量删除：软删（进回收站），返回被删掉的那些想法。
+        // spec §13.5 的「删除返回 204」只适用于 HTTP 方法 DELETE（DELETE /api/ideas/{id}），
+        // 不适用于 POST 的批量删除 —— 批量与合并一样是「动作」，返回 200 + 数组。
         app.MapPost("/api/ideas/bulk/delete", (BulkDeleteRequest request, IdeaService service) =>
-            ApiResults.Run(() =>
-            {
-                service.BulkDelete(request.Ids ?? Array.Empty<string>());
-                return Results.NoContent();
-            }));
+            ApiResults.Run(() => Results.Json(
+                service.BulkDelete(request.Ids ?? Array.Empty<string>()).ToList(),
+                IdeaJsonContext.Default.ListIdeaDto)));
 
         // 合并：多条想法 → 一条全新的想法，返回合并结果。
         app.MapPost("/api/ideas/merge", (MergeIdeasRequest request, IdeaService service) =>

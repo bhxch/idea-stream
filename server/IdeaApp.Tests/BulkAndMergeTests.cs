@@ -79,7 +79,12 @@ public sealed class BulkAndMergeTests
         var response = await client.PostAsJsonAsync("/api/ideas/bulk/delete",
             new { ids = new[] { first, second } });
 
-        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        // 批量删除是 POST（动作），不是 DELETE：spec §13.5 里「删除返回 204」
+        // 只适用于 HTTP 方法 DELETE，批量与合并一样返回 200 + 受影响实体的数组。
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var deleted = await ReadIdeasAsync(response);
+        Assert.Equal(new[] { first, second }, deleted.Select(idea => idea.Id).ToArray());
 
         // 列表里没有了。
         Assert.Empty(await ReadIdeasAsync(await client.GetAsync("/api/ideas")));
@@ -154,7 +159,11 @@ public sealed class BulkAndMergeTests
         var response = await client.PostAsJsonAsync("/api/ideas/bulk/delete",
             new { ids = new[] { first, MissingId, second } });
 
-        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // 返回体是**实际被处理到的**那些想法（跳过的不在里面）。
+        var deleted = await ReadIdeasAsync(response);
+        Assert.Equal(new[] { first, second }, deleted.Select(idea => idea.Id).ToArray());
 
         // 两条有效的都进回收站了。
         Assert.Empty(await ReadIdeasAsync(await client.GetAsync("/api/ideas")));
@@ -164,6 +173,89 @@ public sealed class BulkAndMergeTests
             Assert.NotNull(QuerySingleString(factory.DatabasePath,
                 "SELECT deleted_at FROM idea WHERE id = $id0;", id));
         }
+    }
+
+    /// <summary>
+    /// 换标签也是写操作 → 必须刷新 <c>updated_at</c>（挪到列表最下面）。
+    /// </summary>
+    [Fact]
+    public async Task Bulk_tags_bumps_updated_at()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        // 写库时指定旧时间戳：批量换标签后 updated_at 必须被刷新。
+        InsertIdea(factory.DatabasePath, "0198f0a1b2c3d4e5f60718293a4b5c01", "第一条");
+        InsertIdea(factory.DatabasePath, "0198f0a1b2c3d4e5f60718293a4b5c02", "第二条");
+
+        var response = await client.PostAsJsonAsync("/api/ideas/bulk/tags",
+            new { ids = new[] { "0198f0a1b2c3d4e5f60718293a4b5c01", "0198f0a1b2c3d4e5f60718293a4b5c02" },
+                tags = new[] { "x" } });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var ideas = await ReadIdeasAsync(response);
+        Assert.Equal(2, ideas.Count);
+
+        // created_at 还是写库时那个旧时间戳 → updated_at 必须更大。
+        Assert.All(ideas, idea => Assert.True(idea.UpdatedAt > idea.CreatedAt));
+    }
+
+    /// <summary>
+    /// 删除也是写操作 → 必须刷新 <c>updated_at</c>。
+    /// </summary>
+    [Fact]
+    public async Task Bulk_delete_bumps_updated_at()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        InsertIdea(factory.DatabasePath, "0198f0a1b2c3d4e5f60718293a4b5c01", "第一条");
+        InsertIdea(factory.DatabasePath, "0198f0a1b2c3d4e5f60718293a4b5c02", "第二条");
+
+        var response = await client.PostAsJsonAsync("/api/ideas/bulk/delete",
+            new { ids = new[] { "0198f0a1b2c3d4e5f60718293a4b5c01", "0198f0a1b2c3d4e5f60718293a4b5c02" } });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var deleted = await ReadIdeasAsync(response);
+        Assert.Equal(2, deleted.Count);
+
+        // created_at 还是写库时那个旧时间戳 → updated_at 必须更大。
+        Assert.All(deleted, idea => Assert.True(idea.UpdatedAt > idea.CreatedAt));
+    }
+
+    /// <summary>
+    /// 空 ids 列表是空操作（不是「全选错」）：200 + 空数组，什么都不改。
+    /// </summary>
+    [Fact]
+    public async Task Bulk_with_empty_ids_is_a_no_op()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var existing = await CreateIdeaAsync(client, "不该被动的一条");
+
+        var complete = await client.PostAsJsonAsync("/api/ideas/bulk/complete",
+            new { ids = Array.Empty<string>(), done = true });
+        Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
+        Assert.Empty(await ReadIdeasAsync(complete));
+
+        var tags = await client.PostAsJsonAsync("/api/ideas/bulk/tags",
+            new { ids = Array.Empty<string>(), tags = new[] { "x" } });
+        Assert.Equal(HttpStatusCode.OK, tags.StatusCode);
+        Assert.Empty(await ReadIdeasAsync(tags));
+
+        var delete = await client.PostAsJsonAsync("/api/ideas/bulk/delete",
+            new { ids = Array.Empty<string>() });
+        Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
+        Assert.Empty(await ReadIdeasAsync(delete));
+
+        // 那条想法一点没被动过：没被标记完成、没加标签、没进回收站。
+        var idea = Assert.Single(await ReadIdeasAsync(await client.GetAsync("/api/ideas")));
+        Assert.Equal(existing, idea.Id);
+        Assert.False(idea.Done);
+        Assert.Empty(idea.Tags);
     }
 
     /// <summary>

@@ -96,30 +96,6 @@ CS
     fi
 }
 
-# check_status <路径> <期望状态码> [HTTP 方法，默认 GET] [请求体 JSON]
-#
-# 只断言状态码：204 这类没有响应体的端点用不了 check_endpoint（它要解析响应体）。
-check_status() {
-    local path="$1"
-    local expected="$2"
-    local method="${3:-GET}"
-    local body="${4:-}"
-
-    local code
-    if [[ -n "$body" ]]; then
-        code="$(curl -sS -X "$method" -H 'Content-Type: application/json' -d "$body" \
-            -o /dev/null -w '%{http_code}' "$BASE_URL$path")"
-    else
-        code="$(curl -sS -X "$method" -o /dev/null -w '%{http_code}' "$BASE_URL$path")"
-    fi
-
-    if [[ "$code" != "$expected" ]]; then
-        echo "--- 应用日志 ---" >&2
-        cat "$WORK_DIR/app.log" >&2
-        fail "$path 期望 HTTP $expected，实际 $code"
-    fi
-}
-
 echo "==> 发布 Native AOT 产物（-r linux-x64 -c Release）"
 # PublishAot=true 显式写在这里：只依赖 csproj 的话，那一行被删掉时脚本会静默
 # 退化成非 AOT 发布，从此再也测不出退化，而且脚本仍然 PASS。
@@ -205,8 +181,12 @@ check_endpoint "/api/ideas/bulk/tags" "200" \
     '{"ids":[],"tags":["a"]}'
 
 echo "==> POST /api/ideas/bulk/delete"
-# 204 没有响应体，只断言状态码：请求体照样要能反序列化（没登记元数据时这里是 500）。
-check_status "/api/ideas/bulk/delete" "204" POST '{"ids":[]}'
+# 批量删除也是 POST（动作），返回 200 + 静态类型 List<IdeaDto>（裸数组）。
+# spec §13.5 的「删除返回 204」只适用于 HTTP 方法 DELETE，不适用于批量删除。
+check_endpoint "/api/ideas/bulk/delete" "200" \
+    'root.ValueKind == JsonValueKind.Array' \
+    POST \
+    '{"ids":[]}'
 
 echo "==> POST /api/ideas/bulk/complete （id 全都不存在）"
 # 批量对「陈旧 id」宽容：一个都不存在时报 404 + code=idea_not_found。

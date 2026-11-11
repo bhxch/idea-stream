@@ -240,27 +240,37 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
     }
 
     /// <summary>
-    /// 批量删除想法（软删，移进回收站）。不存在的 id 跳过，一个都不存在时报 404。
+    /// 批量删除想法（软删，移进回收站）。返回被软删的想法（按请求里 id 的顺序）。
     /// </summary>
     /// <remarks>
     /// 与合并不同：批量删除是**软删**，源想法还在库里（在回收站里）。
     /// 只有合并的源想法才硬删。
+    /// <para>
+    /// 返回完整表示而不是空响应：前端能立刻把这些条目从本地列表里移除，
+    /// 也能显示「已删除 N 条」，不必等重新拉列表。
+    /// </para>
     /// </remarks>
-    public void BulkDelete(IReadOnlyList<string> ids)
+    public IReadOnlyList<IdeaDto> BulkDelete(IReadOnlyList<string> ids)
     {
         var targets = NormalizeIds(ids);
 
-        repo.InTransaction(r =>
+        return repo.InTransaction(r =>
         {
             var existing = ResolveExisting(r, targets);
             EnsureSomethingProcessed(targets, existing.Count);
 
             // 同一批用同一时刻进回收站。
             var now = DateTimeOffset.UtcNow;
+            var results = new List<IdeaDto>(existing.Count);
             foreach (var idea in existing)
             {
                 r.SoftDelete(idea.Id, now);
+
+                // 回读一次：updated_at 被刷新过了，返回的是删除之后的样子。
+                results.Add(ToDto(r.Get(idea.Id)!));
             }
+
+            return (IReadOnlyList<IdeaDto>)results;
         });
     }
 
