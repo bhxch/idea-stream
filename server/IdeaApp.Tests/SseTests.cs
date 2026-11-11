@@ -81,6 +81,7 @@ public sealed class SseTests
         using var client = factory.CreateClient();
 
         string firstEventId;
+        string secondIdeaId;
 
         using (var connection = await ConnectAsync(client))
         {
@@ -90,7 +91,7 @@ public sealed class SseTests
             // 断线期间写的第二条：先在**旧连接**上读到它，
             // 才能确定服务端已经把它放进了缓冲（事件是异步广播的，
             // 写接口返回不代表广播器已经收到）。
-            var secondIdeaId = await CreateIdeaAsync(client, "断线期间写的想法");
+            secondIdeaId = await CreateIdeaAsync(client, "断线期间写的想法");
             var second = SseFrame.Parse(await ReadFrameAsync(connection));
 
             Assert.Equal("idea.created", second.Event);
@@ -105,6 +106,9 @@ public sealed class SseTests
 
         Assert.Equal("idea.created", replayed.Event);
         Assert.NotEqual(firstEventId, replayed.Id);
+
+        // 补发的正是断线期间漏掉的那条（不是第一条重发）。
+        Assert.Contains(secondIdeaId, replayed.Data!);
     }
 
     /// <summary>
