@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using IdeaApp.Domain;
 using Microsoft.Data.Sqlite;
 
 namespace IdeaApp.Tests;
@@ -185,6 +186,53 @@ public sealed class IdeaApiTests
             "SELECT COUNT(*) FROM idea WHERE id = $id;", id));
         Assert.NotNull(QuerySingleString(factory.DatabasePath,
             "SELECT deleted_at FROM idea WHERE id = $id;", id));
+    }
+
+    /// <summary>
+    /// 重复删除已在回收站里的想法是**空操作**：不改状态、不发事件。
+    /// </summary>
+    /// <remarks>
+    /// 与项目删除同一个口径：那条想法**确实存在**，只是进了回收站 ——
+    /// 404 在这里语义不准（跟 <c>not_in_trash</c> 的判断依据是同一个事实）。
+    /// <para>
+    /// 再写一次 <c>deleted_at</c> 会把保留期**重新开始**（用户点两下删除，
+    /// 那条想法就多留一个月）；重复发 <c>idea.deleted</c> 会让其它设备
+    /// 收到一条「它被删了」的假消息。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Delete_idea_twice_is_idempotent()
+    {
+        var publisher = new RecordingEventPublisher();
+        using var factory = new TestAppFactory(publisher: publisher);
+        using var client = factory.CreateClient();
+
+        var id = await CreateIdeaAsync(client, "待删除");
+
+        // 把建想法时那条 idea.created 排除掉。
+        publisher.Clear();
+
+        var first = await client.DeleteAsync($"/api/ideas/{id}");
+        Assert.Equal(HttpStatusCode.NoContent, first.StatusCode);
+
+        var deletedAt = QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM idea WHERE id = $id;", id);
+        Assert.NotNull(deletedAt);
+
+        var again = await client.DeleteAsync($"/api/ideas/{id}");
+        Assert.Equal(HttpStatusCode.NoContent, again.StatusCode);
+
+        // 状态没变：deleted_at 没被推到更晚（保留期没被重新开始）。
+        Assert.Equal(deletedAt, QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM idea WHERE id = $id;", id));
+
+        // 行还在，也还在回收站里。
+        Assert.Equal(1, QuerySingleInt(factory.DatabasePath,
+            "SELECT COUNT(*) FROM idea WHERE id = $id;", id));
+
+        // 事件只发一条：第一次删除发的那条就是全部，第二次一条都不发。
+        var deleted = Assert.Single(publisher.Events);
+        Assert.Equal(EventTypes.IdeaDeleted, deleted.Type);
     }
 
     [Fact]

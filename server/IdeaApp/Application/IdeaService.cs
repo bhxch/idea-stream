@@ -194,23 +194,57 @@ public sealed class IdeaService(
         return dto;
     }
 
-    /// <summary>把想法移进回收站（软删）。</summary>
+    /// <summary>
+    /// 把想法移进回收站（软删）。
+    /// </summary>
+    /// <remarks>
+    /// 重复删除是**空操作**：想法已经在回收站里时再删一次不改任何状态、不发任何事件。
+    /// <para>
+    /// 404 在这里语义不准：那条想法**确实存在**，只是进了回收站 ——
+    /// 跟 <c>not_in_trash</c> 的判断依据是同一个事实（存在但不在回收站），
+    /// 错误码不该一个说「不存在」一个说「不在回收站」。
+    /// </para>
+    /// <para>
+    /// 再写一次 <c>deleted_at</c> 会把保留期**重新开始**（用户点两下删除，
+    /// 那条想法就多留一个月）；重复发 <c>idea.deleted</c> 会让其它设备
+    /// 收到一条「它被删了」的假消息。两条都是幂等性该挡掉的。
+    /// </para>
+    /// <para>
+    /// 但**根本不存在**的 id 仍然报 404（<c>idea_not_found</c>）——
+    /// 「压根没有这条」与「它在回收站里」是两回事。
+    /// </para>
+    /// </remarks>
     public void Delete(string id)
     {
-        var dto = repo.InTransaction(r =>
+        var (idea, changed) = repo.InTransaction(r =>
         {
-            RequireExisting(r, id);
+            // 仓储的 Get 含回收站里的：null = 压根没有这条。
+            var existing = r.Get(id)
+                            ?? throw new ApiException(404, "idea_not_found", $"想法不存在：{id}");
+
+            // 已经在回收站里：空操作。
+            if (existing.DeletedAt is not null)
+            {
+                return (existing, false);
+            }
 
             r.SoftDelete(id, DateTimeOffset.UtcNow);
 
             // 回读一次：updated_at 被刷新过了，载荷是删除之后的样子。
-            return ToDto(r.Get(id)!);
+            return (r.Get(id)!, true);
         });
+
+        if (!changed)
+        {
+            // 已经在回收站里的想法：不发事件 —— 它早就被删了，
+            // 再发一次「想法被删了」会误导客户端。
+            return;
+        }
 
         publisher.Publish(EventFactory.Create(
             EventTypes.IdeaDeleted,
             project: null,
-            idea: ToSnapshot(dto)));
+            idea: ToSnapshot(ToDto(idea))));
     }
 
     /// <summary>
