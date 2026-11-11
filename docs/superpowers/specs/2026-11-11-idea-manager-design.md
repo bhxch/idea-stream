@@ -29,6 +29,7 @@
 6. 事件总线：写操作产生事件 → 广播给浏览器（SSE，实现多端同步）+ 投递给可配置的处理���（当前只有 webhook）。
 7. Webhook 在页面上可配置，按全局 / 项目两级作用域；提供 Telegram 模板。
 8. REST API 完整覆盖上述能力，并生成 OpenAPI 文档文件提交进仓库。
+9. 附带一个可直接使用的 agent skill：把 REST API 包成命令行工具 + 说明书，让 agent 不必手写 HTTP 请求就能管理想法。
 
 ## 3. 非目标
 
@@ -55,6 +56,7 @@
 | 想法是纯文本 | 决定：单一 content 字段，无富文本 |
 | 回收站保留期只从配置读，页面不提供设置入口 | 决定：`Trash.RetentionDays` 只在配置文件/环境变量 |
 | Telegram 通知参考既有脚本的用法（Bot API `sendMessage`，纯文本，不带 `parse_mode`） | 决定：模板用 JSON body，含 `chat_id` 与可选 `message_thread_id` |
+| 访问控制放在 nginx 层；应用层不做鉴权，也不做 Origin/CSRF 校验 | 决定：见 §16.3 的 nginx 配置 |
 
 ## 6. 核心概念
 
@@ -564,6 +566,10 @@ server {
     ssl_certificate     /etc/letsencrypt/live/ideas.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/ideas.example.com/privkey.pem;
 
+    # 访问控制放在 nginx 层，应用本身不做鉴权
+    auth_basic           "Idea";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
     client_max_body_size 4m;
 
     location / {
@@ -590,12 +596,70 @@ server {
 
 要点：
 
+- **访问控制在 nginx 层**：应用不做鉴权、也不做 Origin/CSRF 校验。默认用 basic auth 保护整站：
+  ```bash
+  htpasswd -c /etc/nginx/.htpasswd ideauser
+  ```
+  agent 走同一套凭证（见 §17 skill 的 `IDEA_USER` / `IDEA_PASS`）。若更希望「UI 要登录、API 对 agent 开放」，可以只给 `location /` 加 `auth_basic`，`location /api/` 另配 IP 白名单或 `map $http_x_api_key` 校验 —— 但那样 API 等于无保护，公网暴露时慎重。
 - Kestrel 只绑 `127.0.0.1`，直接对外暴露会绕过 nginx 的 TLS。
 - 应用侧启用 `UseForwardedHeaders()`。Kestrel 默认信任回环代理；nginx 在别的机器时必须在代码里显式配 `KnownProxies` / `KnownNetworks`，否则 `X-Forwarded-Proto` 不生效，HTTPS 重定向会循环。
 - 全局开了 gzip 时，对 `text/event-stream` 排除，否则事件会被压缩缓冲、推送延迟。
 - SSE 响应加 `X-Accel-Buffering: no`（应用侧设置，双保险）。
 
-## 17. 测试策略
+## 17. Agent Skill 交付物
+
+随项目一起交付一个可直接使用的 agent skill，放在仓库的 `skills/idea-manager/`：
+
+```
+skills/idea-manager/
+  SKILL.md                  # 说明书：能力清单 + 典型用法 + 错误码对照
+  scripts/idea.py           # 命令行封装，纯标准库（urllib），无第三方依赖
+  references/openapi.json   # openapi/idea-v1.json 的副本
+```
+
+**调用形态**：`scripts/idea.py` 用 argparse 做子命令，覆盖 §13 的全部能力：
+
+```
+idea.py projects                              # 项目列表
+idea.py project add "项目名"
+idea.py project rename <id> "新名字"
+idea.py project delete <id>
+idea.py project restore <id>
+idea.py list [--project <id>] [--status all|open|done] [--tags a,b] [--tag-mode or|and]
+idea.py add "正文" [--project <id>] [--title "标题"] [--tags a,b]
+idea.py update <id> [--content "新正文"] [--title "新标题"]
+idea.py tags <id> "标签1,标签2"               # 覆盖式
+idea.py done <id> [--undo]
+idea.py delete <id>
+idea.py restore <id>
+idea.py merge <id1> <id2> [...] [--content "合并后的正文"]
+idea.py bulk done <id...> [--undo]
+idea.py bulk tags <id...> "a,b"
+idea.py bulk delete <id...>
+idea.py trash
+idea.py taglist
+idea.py webhook list|add|update|delete
+idea.py telegram-template                     # 打印 Telegram webhook 模板
+```
+
+**连接配置**（环境变量，不进仓库）：
+
+| 变量 | 说明 |
+|---|---|
+| `IDEA_BASE_URL` | 如 `https://ideas.example.com` |
+| `IDEA_USER` | nginx basic auth 用户名 |
+| `IDEA_PASS` | nginx basic auth 密码 |
+| `IDEA_TOKEN` | 可选。若 nginx 侧另外校验 `X-Api-Key` 头则填 |
+
+**输出**：默认输出 JSON，便于 agent 直接解析；`--format text` 给人类看。出错时把 ProblemDetails 的 `code` 与 `detail` 原样打到 stderr，并以非 0 退出。
+
+**自检**：skill 附带一条自检命令（`idea.py list`），验证目标实例可达且凭证正确。
+
+**安装位置**：skill 目录可直接软链到 `~/.claude/skills/idea-manager` 或 `~/.zcode/skills/idea-manager`，两者格式一致。
+
+---
+
+## 18. 测试策略
 
 | 层级 | 内容 |
 |---|---|
@@ -605,8 +669,9 @@ server {
 | webhook 集成测试 | 起一个本地假 HTTP 端点，断言收到的 body 是渲染后的模板、Header 正确、失败重试与死信落库、`attempts` 口径正确、手动重投重发原 payload |
 | 并发/顺序测试 | 断言「提交后才投递事件」，事务回滚不产生幽灵事件；断言同一事件被 SSE 与 webhook 两个 handler 各收到一次（扇出而非竞争消费） |
 | 前端 | 用 Vitest 测纯逻辑（过滤器、排序、SSE 事件与本地列表的合并）；UI 手测 |
+| skill | 对 `scripts/idea.py` 做端到端测试：起一个真实实例，跑完 §17 列出的每个子命令，断言输出 JSON 与接口返回一致、错误码正确透传 |
 
-## 18. 留给实现者的空白
+## 19. 留给实现者的空白
 
 实现者可以自行决定、不会改变本设计的东西：
 
@@ -617,7 +682,7 @@ server {
 - 用什么 UUIDv7 → 字符串的编码形式（建议 32 位无连字符小写 hex）。
 - 想法条目的 `title` 是否在列表里单独占一行（空标题时回落到正文首行）。
 
-## 19. 已定的关键决定一览（含决策来源）
+## 20. 已定的关键决定一览（含决策来源）
 
 | 决定 | 来源 |
 |---|---|
@@ -638,8 +703,11 @@ server {
 | 主界面两版布局都要，按宽度自适应，断点 1024px | 对话 |
 | 项目排序两种模式可切，默认「最近活动」 | 对话 |
 | 多端实时同步：SSE 广播，事件带完整实体 | 对话 |
+| 访问控制放 nginx 层（basic auth），应用不做鉴权也不做 CSRF 校验 | 评审后确认 |
+| 本次交付包含 agent skill（SKILL.md + 命令行封装 + 说明书） | 评审后确认 |
+| 恢复项目**不**复活「先于删项目被单独删除」的想法 | 评审后确认 |
 
-### 19.1 评审后由设计者自行敲定的补充决定
+### 20.1 评审后由设计者自行敲定的补充决定
 
 | 决定 | 理由 |
 |---|---|
