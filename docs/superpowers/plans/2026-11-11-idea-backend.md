@@ -795,22 +795,28 @@ bash server/scripts/aot-smoke.sh
 
 ---
 
-### Task 8: 事件模型与事件总线（扇出）
+### Task 8: 事件模型、事件总线（扇出）与服务侧发布接线
 
 **Files:**
 - Create: `server/IdeaApp/Domain/IdeaEvent.cs`
 - Create: `server/IdeaApp/Infrastructure/EventBus.cs`
+- Modify: `server/IdeaApp/Application/IdeaService.cs`（写操作后发布事件）
+- Modify: `server/IdeaApp/Application/ProjectService.cs`（写操作后发布事件）
+- Modify: `server/IdeaApp/Contracts/JsonContext.cs`（登记 `IdeaEvent` / `IdeaSnapshot` / `ProjectSnapshot` —— SSE 的 data 帧与 webhook 的 body 都要序列化它）
 - Create: `server/IdeaApp.Tests/EventBusTests.cs`
+- Create: `server/IdeaApp.Tests/EventPublishingTests.cs`
 
 **Interfaces:**
-- Consumes: 无（纯基础设施）
+- Consumes: Task 4/5/7 的 `ProjectService`、`IdeaService`、`Idea`、`Project`。
 - Produces:
+  - `public interface IEventPublisher { void Publish(IdeaEvent evt); }` —— 放在 `Domain/IdeaEvent.cs`。**服务层依赖这个接口，不依赖 `EventBus` 具体类**（这样测试能换成记录型的 fake）。
+  - `public sealed class EventBus : IEventPublisher, IAsyncDisposable`
   - `public sealed record ProjectSnapshot(string Id, string Name);`
   - `public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, string Content, string[] Tags, bool Done, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);`
   - `public sealed record IdeaEvent(string Id, string Type, DateTimeOffset Timestamp, ProjectSnapshot? Project, IdeaSnapshot? Idea, string[]? Changed, string[]? MergedFrom);`
   - `public static class EventTypes { public const string IdeaCreated = "idea.created"; IdeaUpdated = "idea.updated"; IdeaDeleted = "idea.deleted"; IdeaRestored = "idea.restored"; IdeaMerged = "idea.merged"; ProjectCreated = "project.created"; ProjectUpdated = "project.updated"; ProjectDeleted = "project.deleted"; public static readonly string[] All; }`
   - `public interface IEventHandler { ValueTask HandleAsync(IdeaEvent evt, CancellationToken ct); }`
-  - `public sealed class EventBus : IAsyncDisposable`，构造 `EventBus(IEnumerable<IEventHandler> handlers, ILogger<EventBus> logger)`，方法 `void Publish(IdeaEvent evt)`、`ValueTask DisposeAsync()`
+  - `EventBus` 构造 `EventBus(IEnumerable<IEventHandler> handlers, ILogger<EventBus> logger)`，方法 `void Publish(IdeaEvent evt)`（实现 `IEventPublisher`）、`ValueTask DisposeAsync()`
   - `public static class EventFactory`，方法 `IdeaEvent Create(string type, ProjectSnapshot? project, IdeaSnapshot? idea, string[]? changed = null, string[]? mergedFrom = null)` —— id 用 `MonotonicGuid.NewUuid7().ToString("N")`（**不是** `Guid.CreateVersion7()`，见 Global Constraints），timestamp 为当前 UTC。
 
 - [ ] **Step 1: 写失败测试**
@@ -832,10 +838,63 @@ bash server/scripts/aot-smoke.sh
 ```
 
 - [ ] **Step 2: 运行测试确认失败** → Expected: FAIL
-- [ ] **Step 3: 实现**
+- [ ] **Step 3: 实现（事件总线部分）**
   - `EventBus` 为每个 `IEventHandler` 建一条 `Channel<IdeaEvent>`，容量 1000，`BoundedChannelFullMode.Wait`；`Publish` 用 `TryWrite`，返回 false 时记 `LogWarning` 并丢弃该 handler 的这条事件。
   - 每个通道一个后台消费循环，`await handler.HandleAsync(evt, ct)` 包 try/catch，异常记日志。
   - `EventBus` 实现 `IAsyncDisposable`，释放时完成所有通道。
+
+- [ ] **Step 3b: 实现（服务侧发布接线 —— 这是本 task 不可省略的一半）**
+
+  **spec 的核心要求是「新增、修改、删除、合并都发事件广播」。事件总线本身没人 publish 就是死的**，所以本 task 必须把服务接上。
+
+  `IdeaService` 与 `ProjectService` 各注入一个 `IEventPublisher`（**不要**依赖 `EventBus` 具体类）。
+
+  **发布时机：事务提交之后。** 现有服务的方法体是 `repo.InTransaction(() => { ...; return x; })` —— 事件必须在 `InTransaction` **返回之后**才 publish，绝不能在事务回调里 publish（回滚会造成幽灵事件）。
+
+  **事件映射表**：
+
+  | 服务方法 | 事件类型 | `changed` | 备注 |
+  |---|---|---|---|
+  | `IdeaService.Create` | `idea.created` | — | 载荷带新想法 |
+  | `IdeaService.Update` | `idea.updated` | `["title"]` / `["content"]` / 两者 | 只列真正改了的字段 |
+  | `IdeaService.SetTags` | `idea.updated` | `["tags"]` | |
+  | `IdeaService.SetDone` | `idea.updated` | `["done"]` | |
+  | `IdeaService.BulkSetDone` | `idea.updated` × N | `["done"]` | 每条一条事件 |
+  | `IdeaService.BulkSetTags` | `idea.updated` × N | `["tags"]` | 每条一条事件 |
+  | `IdeaService.Delete` | `idea.deleted` | — | |
+  | `IdeaService.BulkDelete` | `idea.deleted` × N | — | 每条一条事件 |
+  | `IdeaService.Restore` | `idea.restored` | — | |
+  | `IdeaService.Merge` | `idea.merged` | — | 载荷的 `mergedFrom` 带被硬删的源 id 列表 |
+  | `ProjectService.Create` | `project.created` | — | |
+  | `ProjectService.Rename` | `project.updated` | `["name"]` | |
+  | `ProjectService.Reorder` | `project.updated` × N | `["sortOrder"]` | 每条一条事件 |
+  | `ProjectService.Delete` | `project.deleted` | — | |
+
+  > `ProjectService.Restore` 属于 Task 10（回收站），它的事件也在 Task 10 接。
+
+  **事件载荷**：`IdeaEvent.Idea` 是 `IdeaSnapshot`（`Idea` 去掉 `DeletedAt`、标签转 `string[]`），`Project` 是 `ProjectSnapshot`（只有 Id 与 Name）。
+
+  **DI**：组合根加 `builder.Services.AddSingleton<IEventPublisher>(sp => new EventBus(sp.GetServices<IEventHandler>(), sp.GetRequiredService<ILogger<EventBus>>()));`（`IEventHandler` 的实现 Task 9/14 才注册，此时通道数为 0，publish 是空操作 —— 这是对的）。
+
+- [ ] **Step 3c: 写发布接线的测试（`EventPublishingTests.cs`）**
+
+  集成测试里把 `IEventPublisher` 换成**记录型的 fake**（在 `TestAppFactory` 里覆盖注册），然后：
+
+  ```csharp
+  [Fact] public async Task Create_idea_publishes_idea_created_after_commit
+  [Fact] public async Task Update_idea_publishes_idea_updated_with_changed_fields
+  [Fact] public async Task Set_tags_publishes_idea_updated_with_tags
+  [Fact] public async Task Set_done_publishes_idea_updated_with_done
+  [Fact] public async Task Delete_idea_publishes_idea_deleted
+  [Fact] public async Task Restore_idea_publishes_idea_restored
+  [Fact] public async Task Merge_publishes_idea_merged_with_merged_from
+  [Fact] public async Task Create_project_publishes_project_created
+  [Fact] public async Task Rename_project_publishes_project_updated_with_name
+  [Fact] public async Task Events_are_published_only_after_the_transaction_commits
+  // 制造一个事务中途失败（如触发唯一约束冲突），断言失败后**没有任何事件被发布**
+  ```
+
+  最后一条是防止幽灵事件的关键测试 —— **必须有**。
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS
 - [ ] **Step 5: 提交** → `git commit -m "feat(server): 实现事件模型与扇出式事件总线"`
 
