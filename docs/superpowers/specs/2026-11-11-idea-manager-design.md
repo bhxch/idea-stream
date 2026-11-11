@@ -79,21 +79,25 @@
 │  ASP.NET Core (Native AOT)                              │
 │    端点层 → 领域服务 → 仓储(Microsoft.Data.Sqlite)        │
 │                    │                                     │
-│                    ├──▶ 事件总线 Channel<IdeaEvent>      │
-│                            ├──▶ SseBroadcastHandler      │
-│                            └──▶ WebhookDeliveryHandler   │
-│                                       │                  │
-│                                       ▼                  │
-│                              投递队列 + 重试 + 死信表      │
+│                    ├──▶ 事件总线                          │
+│                    │      ├──▶ SseBroadcastHandler 通道   │
+│                    │      └──▶ WebhookDeliveryHandler 通道 │
+│                    │             │                       │
+│                    │             ▼                       │
+│                    │        投递队列 + 重试 + 死信表       │
 └─────────────────────────────────────────────────────────┘
                        │
                        ▼
                  SQLite (WAL 模式)
 ```
 
-**写路径**：端点 → 领域服务 →（同一事务内）写库 + 写入事件总线 → 立即返回。事件处理是异步的，不在请求链路上。
+**写路径**：端点 → 领域服务 → 在一个 SQLite 事务里完成全部数据库改动并提交 → **提交成功后**把事件写入事件总线 → 立即返回。事件处理完全异步，不在请求链路上。
+
+> 事件不参与 SQLite 事务：`Channel` 无法回滚，若在事务内投递而事务随后回滚，会产生指向不存在数据的幽灵事件。因此投递点固定在提交之后。
 
 **处理器模型**：事件总线下游是 `IEventHandler` 集合，通过 DI 注册。新增一种广播目标 = 实现一个 `IEventHandler` 并注册，不改核心代码。当前两个实现：`SseBroadcastHandler`（推给浏览器）、`WebhookDeliveryHandler`（推给外部 HTTP 端点）。
+
+**扇出而非竞争消费**：每个 handler 有**自己独立的通道**，事件总线把同一条事件写进所有通道。`System.Threading.Channels` 是竞争消费模型，若多个 handler 共读一条通道会各拿一半事件。
 
 ## 8. 技术选型
 
@@ -160,7 +164,7 @@ CREATE TABLE webhook (
     body_template TEXT NOT NULL,                -- JSON 模板，含 {{...}} 占位符
     events_json   TEXT NOT NULL DEFAULT '[]',   -- 订阅的事件类型数组；[] = 不订阅任何
     scope         TEXT NOT NULL,                -- 'global' | 'project'
-    project_id    TEXT NULL REFERENCES project(id),
+    project_id    TEXT NULL REFERENCES project(id) ON DELETE CASCADE,
     secret        TEXT NULL,                    -- 非空则带 HMAC 签名头
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT NOT NULL,
@@ -187,6 +191,8 @@ CREATE TABLE setting (
 );
 ```
 
+> **`webhook` 表没有 `deleted_at`**：项目级 webhook 不作为回收站条目单独存在，而是**随项目隐式失效** —— 所属项目在回收站期间不投递，项目恢复后自动恢复投递，项目到期清理时随项目一并删除（FK 上是 `ON DELETE CASCADE`）。因此回收站页面只有两类条目：已删项目（容器）与顶层想法。
+
 ### 9.1 内置收件箱
 
 首次启动时若 `project` 表为空，插入 `id='inbox', name='收件箱'`。收件箱**不可删除**（可以改名）。收件箱参与手动排序。
@@ -204,7 +210,7 @@ CREATE TABLE setting (
 
 ### 10.1 排序与置底
 
-- 列表排序恒为 `updated_at ASC, id DESC`（`id` 为 UUIDv7，字典序与时间同向，`DESC` 让同刻插入的靠后）。
+- 列表排序恒为 `updated_at ASC, id ASC`。`id` 是 UUIDv7，字典序与插入顺序同向，因此**同刻写入的条目按插入先后排列，后插入的靠下**。
 - **任何写操作都会刷新 `updated_at`**，并因此把条目移到列表最下面。写操作包括：改正文/标题、设置标签、标记完成/取消完成、合并。
 - 「就地下方改写 + 移到最底部」是同一次操作的两个副作用，不保留任何历史版本。
 
@@ -215,7 +221,8 @@ CREATE TABLE setting (
   - `or`：想法的标签集合与选中集合有交集即命中。
   - `and`：选中集合是想法标签集合的子集才命中。
 - **项目过滤**：选中项目 = 该项目；「全部项目」= 跨项目聚合视图。
-- 三者取交集。过滤条件对 SSE 推送同样生效：不符合当前过滤条件的事件不进入消息流。
+- 三者取交集。
+- **过滤在客户端做**。SSE 端点恒定全量推送所有事件，客户端按当前的项目/状态/标签条件自行判定是否展示。理由：AND/OR 偏好存在每台设备各自的 `localStorage` 里，服务端无从得知每条连接当前用哪种模式，也不该替客户端猜。
 
 ### 10.3 标签
 
@@ -228,7 +235,7 @@ CREATE TABLE setting (
 
 对 N ≥ 2 条想法执行：
 
-1. 校验：全部存在、未删除、属于同一项目。跨项目合并**不允许**。
+1. 校验：全部存在、未删除、属于同一项目。跨项目合并**不允许**（返回 `merge_cross_project`）。
 2. 生成一条**新想法**：id 新建，`project_id` 取源项目，`title` 取第一条源想法的 title（都为空则为空），`content` = 各源 content 按 `updated_at ASC` 顺序以 `\n\n` 拼接，`done` = false，标签 = 所有源标签的**并集**。
 3. 源想法**硬删除**（不进回收站），连同 `idea_tag` 级联清理。
 4. 产生事件 `idea.merged`，载荷含新想法与被删源 id 列表。
@@ -236,18 +243,21 @@ CREATE TABLE setting (
 ### 10.5 删除与回收站
 
 - **删除想法**：`deleted_at` 置为当前时间 → 顶层回收站条目。
-- **删除项目**：`project.deleted_at` 置为当前时间，其下**所有未删除想法**的 `deleted_at` 一并置为同一时间 → 回收站里的一个容器条目，展开可见其下想法。
+- **删除项目**：`project.deleted_at` 置为当前时间，其下**所有未删除想法**的 `deleted_at` **一并置为同一时刻** → 回收站里的一个容器条目，展开可见其下想法。
 - **回收站视图**列出两类条目：容器（已删项目）优先，其次顶层想法。
+  - 顶层想法 = `idea.deleted_at IS NOT NULL` 且（所属项目未删除，或 `idea.deleted_at != project.deleted_at`）。
+  - 已删项目作为容器条目，其下挂该项目**全部**想法（无论何时删除）。
+  - 同一个想法不会在两处同时出现。
 - **恢复想法**：`deleted_at` 置空，`updated_at` 刷新（因此它会出现在列表最下面）。若其所属项目已被删除，则恢复到该项目的想法列表中，项目仍留在回收站 —— 直到项目被恢复或到期清理。
-- **恢复项目**：项目及其下所有想法一并恢复。
+- **恢复项目**：项目及其下**因删除项目而进回收站**的想法一并恢复 —— 判定依据是 `idea.deleted_at == project.deleted_at`（两者在删除项目时被写成同一时刻）。在项目被删**之前**就已被单独删除的想法**不复活**，它们仍以顶层条目的形式留在回收站里。
 - **不允许手动彻底删除**。到期自动清理是唯一出口（见 10.6）。
 
 ### 10.6 回收站自动清理
 
-- 保留期来自配置 `Trash:RetentionDays`，默认 **30**。**页面不提供设置入口**。
+- 保留期来自配置 `Trash:RetentionDays`，默认 **30**。**页面不提供设置入口，API 也不提供**。
 - 一个后台定时任务（`BackgroundService` + `PeriodicTimer`，每小时跑一次）删除 `deleted_at` 早于「当前时间 − 保留期」的条目：
   - 顶层想法：删除 idea 行（`idea_tag` 级联）。
-  - 容器项目：删除项目行及其全部想法（级联）。
+  - 容器项目：删除项目行及其全部想法（级联），该项目下的 webhook 也随 FK 的 `ON DELETE CASCADE` 一并删除。
 - 清理是不可逆的，**不产生事件**（对象已不存在，通知无意义）。
 
 ## 11. 事件模型与广播
@@ -287,7 +297,7 @@ CREATE TABLE setting (
 
 ### 11.3 广播机制
 
-- **SSE 端点** `GET /api/events`，`Content-Type: text/event-stream`。每个事件一帧：
+- **SSE 端点** `GET /api/events`，`Content-Type: text/event-stream`。**恒定全量推送，不接受任何过滤参数**（见 §10.2）。每个事件一帧：
   ```
   id: 0199a7f2-3c4d-7abc-8def-0123456789ab
   event: idea.updated
@@ -295,19 +305,24 @@ CREATE TABLE setting (
   ```
   `id` 即事件 id，浏览器重连时带 `Last-Event-ID`，服务端据此补发。
 - **心跳**：每 25 秒发一行 `: ping` 注释，防止中间代理掐断空闲连接。
-- **服务端事件缓冲**：保留最近 500 条事件用于 `Last-Event-ID` 补发；超出范围则让客户端重新拉取完整列表（客户端收到一个 `resync` 事件即触发全量刷新）。
-- **幂等**：客户端按事件 id 去重；自己发起��操作已乐观更新，收到自己的广播时不再插入第二次。
+- **服务端事件缓冲**：保留最近 500 条事件用于 `Last-Event-ID` 补发。缓冲**只在内存**，进程重启后必然补发不到 —— 此时服务端发一帧 `event: resync`（无 data），客户端收到后重新拉取当前列表。
+- **`resync` 是控制帧**，不是业务事件，不出现在 §11.1 的事件类型表里，也不可被 webhook 订阅。
+- **扇出而非竞争消费**：每个 `IEventHandler` 有自己独立的通道，事件总线把同一条事件写进所有通道。
+- **幂等**：客户端按事件 id 去重；自己发起的操作已乐观更新，收到自己的广播时不再插入第二次。
 
 ### 11.4 客户端行为
 
+所有过滤判定都在客户端完成，服务端推送的事件与当前筛选无关。
+
 | 场景 | 行为 |
 |---|---|
-| 事件属于当前项目且符合当前过滤 | 插入或就地改写，按 `updated_at ASC` 重排 |
+| 事件属于当前项目且符合当前过滤 | 插入或就地改写，按 `updated_at ASC, id ASC` 重排 |
 | 事件属于当前项目但不符合过滤 | 不显示 |
 | 事件属于其它项目 | 只更新项目列表（计数、最近活动时间、排序） |
 | 用户贴着底部 | 新内容到达后自动跟随滚动 |
 | 用户向上翻看 | **不抢滚动**，底部显示「↓ 有 N 条新内容」按钮 |
 | 打开页面 | 加载完成后自动滚到底部 |
+| 收到 `resync` | 重新拉取当前列表，保留滚动位置 |
 
 ## 12. Webhook 处理器
 
@@ -326,10 +341,11 @@ CREATE TABLE setting (
 | Secret | 填写则附加 `X-Idea-Signature: sha256=<hex(HMAC-SHA256(secret, body))>` |
 
 **默认行为**：
-- 作用域为 `global` 的 webhook **默认禁用**，需手动开启。
-- 作用域为 `project` 的 webhook **默认启用**。
+
+- 作用域为 `global` 的 webhook **默认禁用**，需手动开启。作用域为 `project` 的 webhook **默认启用**。
+  （`webhook.enabled` 的数据库列默认值为 1；创建 global webhook 时由应用显式写入 0，两者不冲突。）
 - 一个事件命中所有「全局且已启用」的 webhook，以及「绑定到该事件所属项目且已启用」的 webhook。各 webhook 独立投递，互不影响。
-- 项目被删除时，其下的 webhook 一并进回收站（随项目到期清理）；全局 webhook 不受影响。
+- 项目被删除时，其下的 webhook **隐式失效**（所属项目在回收站期间不投递），项目恢复后自动恢复投递，项目到期清理时随项目一并删除。webhook 本身不作为回收站条目出现。全局 webhook 不受项目删除影响。
 
 ### 12.2 占位符
 
@@ -341,7 +357,7 @@ CREATE TABLE setting (
 | `{{project.id}}` | 项目 id |
 | `{{idea.id}}` `{{idea.title}}` `{{idea.content}}` `{{idea.tags}}` `{{idea.done}}` | 想法各字段；`{{idea.tags}}` 为逗号分隔 |
 | `{{changed}}` | 变更字段名，逗号分隔 |
-| `{{idea.url}}` | 该想法在应用里的绝对链接（由配置的 `PublicBaseUrl` 拼出） |
+| `{{idea.url}}` | 该想法的深链绝对链接：`{PublicBaseUrl}/?idea={idea.id}`。打开后前端滚动定位到该条并高亮 |
 
 未识别的占位符原样保留。占位符值按 JSON 字符串转义后注入（正文含引号/换行不会破坏 JSON）。
 
@@ -366,11 +382,13 @@ CREATE TABLE setting (
 
 ### 12.4 投递与重试
 
-- 投递是**异步**的：事件 → 投递队列（`Channel`）→ `BackgroundService` 消费 → HTTP POST。
+- 投递是**异步**的：事件 → 投递队列（`Channel`，容量 1000）→ `BackgroundService` 消费 → HTTP POST。webhook 队列与 SSE 通道**彼此独立**，webhook 卡住不影响浏览器推送。
+- 队列满时**丢弃新事件并记日志**，绝不阻塞写路径（写路径不等投递）。
 - 超时默认 10 秒。
-- 失败重试 **3 次**，退避 1s / 5s / 30s。仍失败则写入 `webhook_delivery` 表，`status='failed'`，`last_error` 记录原因。
-- 管理界面可查看投递记录，并对失败记录**手动重投**。手动重投也是重试，不改写原记录语义（重试 attempts+1）。
-- 成功则写一条 `status='delivered'` 记录（只保留最近 500 条，`setting` 里的保留策略是实现细节）。
+- 失败重试 **3 次**（`Webhook:MaxAttempts`，**含首次尝试**），退避 1s / 5s / 30s。
+- **投递记录生命周期**：每次尝试都更新同一行，`attempts` 累加（口径 = 总尝试次数，含首次），`last_error` 记录最近一次错误；终态写 `status='delivered'` 或 `status='failed'`。一条记录对应**一次事件投递**，不是每次尝试一行。
+- **手动重投**：重发表里**已渲染的 `payload`**，不按当前模板重新渲染（表里没存事件全量数据，重渲染的输入并不存在）。重投后 `attempts` 继续累加。
+- 每个 webhook 只保留最近 `Webhook:MaxDeliveryRecords`（默认 500）条投递记录，超出的删除最旧的。
 
 ### 12.5 处理器接口
 
@@ -402,7 +420,7 @@ public interface IEventHandler
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/ideas` | 查询。`projectId`（可空 = 全部）、`status`（`all`/`open`/`done`）、`tags`（逗号分隔）、`tagMode`（`or`/`and`）、`page`、`pageSize`（默认 50，最大 200） |
+| GET | `/api/ideas` | 查询，**不分页**，返回全部命中项的裸数组。参数：`projectId`（可空 = 全部）、`status`（`all`/`open`/`done`）、`tags`（逗号分隔）、`tagMode`（`or`/`and`）。命中数超过 `Api:MaxIdeasPerResponse`（默认 2000）时返回 400，提示收窄条件 |
 | POST | `/api/ideas` | 创建 `{ projectId, content, title?, tags? }` |
 | PATCH | `/api/ideas/{id}` | 改 `{ title?, content? }` |
 | PUT | `/api/ideas/{id}/tags` | **覆盖式**设置标签，body `{ tags: [...] }` |
@@ -411,12 +429,14 @@ public interface IEventHandler
 | POST | `/api/ideas/{id}/restore` | 从回收站恢复 |
 | GET | `/api/ideas/trash` | 回收站条目列表（容器 + 顶层） |
 
+> **不分页的理由**：排序恒为 `updated_at ASC`（新的在下），翻页方向天然别扭；而这是个个人工具，命中数通常在几百条量级，一次全量返回既简单又让 agent 解析省事。超过硬上限时要求收窄条件，而不是静默截断。
+
 ### 13.3 批量
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/ideas/bulk/complete` | `{ ids: [], done: bool }` |
-| POST | `/api/ideas/bulk/tags` | `{ ids: [], tags: [] }`（并集式追加；传 `replace: true` 则覆盖） |
+| POST | `/api/ideas/bulk/tags` | `{ ids: [], tags: [], replace? }`（默认并集式追加，`replace: true` 则覆盖） |
 | POST | `/api/ideas/bulk/delete` | `{ ids: [] }` |
 | POST | `/api/ideas/merge` | `{ ids: [], content?, title? }`；`content` 省略则用自动拼接结果 |
 
@@ -424,17 +444,27 @@ public interface IEventHandler
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/events` | SSE 事件流 |
+| GET | `/api/events` | SSE 事件流（无过滤参数） |
 | GET | `/api/tags` | 标签字典（含使用计数） |
-| GET | `/api/settings` | 全部设置 |
-| PUT | `/api/settings/{key}` | 改单个设置，如 `project.sort_mode` |
+| GET | `/api/settings` | `setting` 表里的应用偏好（如 `project.sort_mode`）。**不含配置文件里的任何项** |
+| PUT | `/api/settings/{key}` | 改 `setting` 表里的单个键。**只接受 `setting` 表已定义的键**，其它一律 400 |
 | GET/POST | `/api/webhooks` | 全局 webhook 列表 / 创建 |
 | PATCH/DELETE | `/api/webhooks/{id}` | 改 / 删 |
 | GET | `/api/projects/{id}/webhooks` | 该项目下的 webhook |
 | GET | `/api/webhooks/{id}/deliveries` | 投递记录 |
 | POST | `/api/webhooks/{id}/deliveries/{deliveryId}/retry` | 手动重投 |
 
-### 13.5 OpenAPI 文档
+> **配置文件里的项（`Trash.RetentionDays`、`Webhook:*`、`PublicBaseUrl` 等）不通过 API 暴露，也不可经 API 修改。** 回收站保留期是唯一会导致不可逆删除的开关，按需求只从配置文件/环境变量读取；页面和 API 都不提供设置入口 —— 绕开它就等于绕开了这条约束。
+
+### 13.5 响应与错误约定
+
+- **创建**（`POST /api/ideas`、`POST /api/projects` 等）返回 `201 Created`，body 是创建后的完整实体。
+- **更新 / 动作**（`PATCH`、`POST .../complete`、`POST .../restore`、批量与合并）返回 `200`，body 是受影响实体的完整表示（批量返回数组）。
+- **删除**（`DELETE`）返回 `204 No Content`。
+- **列表**端点返回**裸数组**，不套 `{items,total}` 信封。
+- **错误**统一用 RFC 9457 的 ProblemDetails（`application/problem+json`）：`type`、`title`、`status`、`detail`，外加一个扩展字段 `code`（稳定的机器可读错误码，如 `idea_not_found`、`merge_cross_project`、`invalid_tag_mode`、`setting_key_not_writable`）。
+
+### 13.6 OpenAPI 文档
 
 - 用 .NET 10 内置的 `AddOpenApi()` / `MapOpenApi()` 生成。
 - 提交到仓库的文件：**`openapi/idea-v1.json`**。由 `dotnet run --project tools/ExportOpenApi`（一个小工具）导出，或在启动时用环境变量 `IDEA_EXPORT_OPENAPI=<path>` 让应用把生成结果写到磁盘。**导出内容是构建产物快照，提交它是为了让 agent 有一个稳定可读的接口契约。**
@@ -446,11 +476,13 @@ public interface IEventHandler
 
 | 路由 | 内容 |
 |---|---|
-| `/` | 主页面：项目切换 + 消息流 + 输入框 + 过滤栏 + 多选操作条 |
+| `/` | 主页面：项目切换 + 消息流 + 输入框 + 过滤栏 + 多选操作条。带 `?idea={id}` 时加载后滚动定位到该条并高亮（`{{idea.url}}` 深链的落点） |
 | `/projects` | 项目管理：新建、改名、删除、拖拽排序、排序方式切换 |
 | `/trash` | 回收站：容器（已删项目）与顶层想法，恢复 |
 | `/webhooks` | 全局 webhook 配置（含投递记录 / 死信 / 手动重投） |
 | `/projects/:id/webhooks` | 项目级 webhook 配置 |
+
+前端使用 **history 模式**（`/projects`、`/trash`、`/webhooks` 等真实路径）。服务端用 `MapFallbackToFile("index.html")` 兜底未匹配的 GET 请求，因此 **nginx 不需要 `try_files`**，全部转发给应用即可。
 
 ### 14.2 响应式
 
@@ -470,7 +502,7 @@ public interface IEventHandler
 - **标签编辑**：输入框 + 自动补全（下拉），回车确认，支持删除 chip。
 - **完成标记**：条目左侧勾选框，切换即刷新 `updated_at` 并置底。
 - **删除**：二次确认后进回收站。
-- **滚动**：见 11.4。
+- **滚动**：见 §11.4。
 
 ### 14.4 主题
 
@@ -478,19 +510,20 @@ public interface IEventHandler
 
 ## 15. 配置项
 
-`appsettings.json` + 环境变量覆盖（`IDEA_` 前缀）。
+`appsettings.json` + 环境变量覆盖（`IDEA_` 前缀，双下划线表示层级）。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `Urls` | `http://127.0.0.1:5080` | Kestrel 监听地址（只绑回环） |
 | `Database:Path` | `data/idea.db` | SQLite 文件路径，相对路径以应用目录为基准 |
-| `Trash:RetentionDays` | `30` | 回收站保留天数。**页面上不可改** |
+| `Trash:RetentionDays` | `30` | 回收站保留天数。**页面与 API 都不可改** |
 | `PublicBaseUrl` | 空 | 用于生成 `{{idea.url}}`，如 `https://ideas.example.com` |
+| `Api:MaxIdeasPerResponse` | `2000` | 单次列表返回的最大条数，超过则 400 |
 | `Webhook:TimeoutSeconds` | `10` | 单次投递超时 |
-| `Webhook:MaxAttempts` | `3` | 失败重试次数 |
+| `Webhook:MaxAttempts` | `3` | 失败重试次数（**含首次尝试**） |
 | `Webhook:MaxDeliveryRecords` | `500` | 每个 webhook 保留的投递记录条数 |
 | `Sse:BufferSize` | `500` | 服务端事件缓冲条数（供 `Last-Event-ID` 补发） |
-| `Cors:Origins` | 空 | 若前端独立部署时需要；同源部署不需要 |
+| `Cors:Origins` | 空 | 预留：仅当前端独立部署时才需要；同源部署留空 |
 
 ## 16. 部署
 
@@ -534,6 +567,8 @@ server {
     client_max_body_size 4m;
 
     location / {
+        # 前端用 history 模式，深链 /projects、/trash 等由应用侧的
+        # MapFallbackToFile("index.html") 兜底，nginx 不需要 try_files
         proxy_pass http://idea_app;
         proxy_http_version 1.1;
 
@@ -558,17 +593,18 @@ server {
 - Kestrel 只绑 `127.0.0.1`，直接对外暴露会绕过 nginx 的 TLS。
 - 应用侧启用 `UseForwardedHeaders()`。Kestrel 默认信任回环代理；nginx 在别的机器时必须在代码里显式配 `KnownProxies` / `KnownNetworks`，否则 `X-Forwarded-Proto` 不生效，HTTPS 重定向会循环。
 - 全局开了 gzip 时，对 `text/event-stream` 排除，否则事件会被压缩缓冲、推送延迟。
-- SSE 响应建议加 `X-Accel-Buffering: no`（应用侧设置，双保险）。
+- SSE 响应加 `X-Accel-Buffering: no`（应用侧设置，双保险）。
 
 ## 17. 测试策略
 
 | 层级 | 内容 |
 |---|---|
-| 单元测试 | 占位符渲染与转义、标签并集、合并正文拼接、排序规则（含同刻兜底）、AND/OR 过滤判定、回收站到期判定、`changed` 字段推导 |
+| 单元测试 | 占位符渲染与转义、标签并集、合并正文拼接、排序规则（含同刻兜底）、AND/OR 过滤判定、回收站到期判定、`changed` 字段推导、恢复项目时的「只恢复因项目删除而进回收站的想法」判定 |
 | 集成测试 | 用真实 Kestrel 起服务的 `WebApplicationFactory`（测试项目不开 AOT）跑 REST 全流程：建项目 → 建想法 → 编辑置底 → 批量合并 → 删除进回收站 → 恢复 → 过滤 → 回收站清理任务 |
-| SSE 集成测试 | 订阅事件流，触发写操作，断言收到的事件类型与载荷；断言 SSE 帧格式与心跳 |
-| webhook 集成测试 | 起一个本地假 HTTP 端点，断言收到的 body 是渲染后的模板、Header 正确、失败重试与死信落库 |
-| 前端 | 用 Vitest 测纯逻辑（过滤器、排序、与 SSE 事件的合并）；UI 手测 |
+| SSE 集成测试 | 订阅事件流，触发写操作，断言收到的事件类型与载荷；断言 SSE 帧格式与心跳；断言 `Last-Event-ID` 补发与越界时的 `resync` 帧 |
+| webhook 集成测试 | 起一个本地假 HTTP 端点，断言收到的 body 是渲染后的模板、Header 正确、失败重试与死信落库、`attempts` 口径正确、手动重投重发原 payload |
+| 并发/顺序测试 | 断言「提交后才投递事件」，事务回滚不产生幽灵事件；断言同一事件被 SSE 与 webhook 两个 handler 各收到一次（扇出而非竞争消费） |
+| 前端 | 用 Vitest 测纯逻辑（过滤器、排序、SSE 事件与本地列表的合并）；UI 手测 |
 
 ## 18. 留给实现者的空白
 
@@ -579,6 +615,7 @@ server {
 - 前端组件拆分、CSS 组织方式、图标方案。
 - 标签输入框的补全交互细节。
 - 用什么 UUIDv7 → 字符串的编码形式（建议 32 位无连字符小写 hex）。
+- 想法条目的 `title` 是否在列表里单独占一行（空标题时回落到正文首行）。
 
 ## 19. 已定的关键决定一览（含决策来源）
 
@@ -591,7 +628,7 @@ server {
 | 合并生成全新条目，源条目硬删，标签取并集 | 对话 |
 | 项目强制归属 + 内置收件箱；删除项目不删数据 | 对话 |
 | 回收站装「删除的想法」和「删除的项目（含其想法）」；按配置保留期自动彻底删除，不允许手动彻底删除 | 对话 |
-| 回收站保留期只从配置读，页面不提供设置入口 | 对话 |
+| 回收站保留期只从配置读，页面与 API 都不提供设置入口 | 对话 |
 | 标签过滤 AND/OR 可切换，前端记忆偏好 | 对话 |
 | 事件广播 + 可配置处理器，当前只有 webhook | 需求 |
 | 全局 webhook 默认禁用；项目级 webhook 默认启用 | 对话 |
@@ -601,3 +638,21 @@ server {
 | 主界面两版布局都要，按宽度自适应，断点 1024px | 对话 |
 | 项目排序两种模式可切，默认「最近活动」 | 对话 |
 | 多端实时同步：SSE 广播，事件带完整实体 | 对话 |
+
+### 19.1 评审后由设计者自行敲定的补充决定
+
+| 决定 | 理由 |
+|---|---|
+| 列表接口**不分页**，全量返回裸数组，超过 2000 条返回 400 | 排序恒为 `updated_at ASC` 与「页码从哪一端翻」天然矛盾；个人工具量级不需要分页 |
+| SSE **恒定全量推送，过滤在客户端做** | AND/OR 偏好存在各设备 `localStorage`，服务端无从得知 |
+| 事件**不参与** SQLite 事务，提交成功后才投递 | `Channel` 无法随事务回滚，否则产生幽灵事件 |
+| 事件总线**扇出**：每个 handler 一条独立通道 | `Channels` 是竞争消费，共读一条通道会各拿一半事件 |
+| 同刻排序兜底用 `id ASC`（UUIDv7 字典序 = 插入序） | 「同刻插入的靠后」要求后插入者更大更靠下 |
+| 项目级 webhook **不单独进回收站**，随项目隐式失效、随项目删除 | 回收站按需求只装「删除的想法」和「删除的项目」 |
+| 恢复项目**只恢复因删除项目而进回收站的想法**（`idea.deleted_at == project.deleted_at`） | 不复活用户明确单独删掉的东西 |
+| 投递记录**每次尝试更新同一行**，`attempts` = 总尝试次数（含首次） | 记录对应一次事件投递，不是每次尝试一行 |
+| 手动重投**重发已渲染的 payload** | 表里没存事件全量数据，重渲染的输入不存在 |
+| webhook 队列**有界（1000）**，满则丢弃并记日志 | 写路径绝不因投递而阻塞 |
+| 回收站想法的判定用 `deleted_at` 时间戳区分来源 | 一个想法不会在回收站里出现两次 |
+| `{{idea.url}}` 指向 `{PublicBaseUrl}/?idea={id}`，前端 history 模式 + `MapFallbackToFile` | 深链要能定位到具体条目 |
+| 错误统一用 ProblemDetails + `code` 扩展字段 | openapi 文件是给 agent 用的契约，需要稳定的机器可读错误码 |
