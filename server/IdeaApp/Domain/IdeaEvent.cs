@@ -46,12 +46,24 @@ public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, st
 /// <para>
 /// <see cref="Changed"/> 是**三态**，订阅端必须分别处理：
 /// <list type="bullet">
-/// <item><c>null</c>：该事件类型没有「改了什么」这个概念（如 <c>idea.created</c>），
+/// <item><c>null</c>：该事件类型没有「改了什么」的概念（如 <c>idea.created</c>），
 /// 订阅端按「整条对象是新数据」处理；</item>
 /// <item>空数组：写了但值没变（如 <c>Update</c> 传了同样的正文），
 /// 数据本身仍然是最新的，别把这次更新跳过；</item>
-/// <item>非空数组：真正改了的字段名（如 <c>title</c>、<c>done</c>），
-/// 订阅端可以只更新这些字段。</item>
+/// <item>非空数组：<b>这次操作写过的字段名</b>（如 <c>title</c>、<c>done</c>），
+/// 订阅端按这些字段更新本地数据。</item>
+/// </list>
+/// </para>
+/// <para>
+/// 非空数组里的字段名有<b>三种口径</b>，订阅端不要假设「列出来的就一定变了」：
+/// <list type="bullet">
+/// <item><c>Update</c>（改正文/标题）在事务里跟改前的值比对，
+/// <b>只列真正变了</b>的字段（两个都没变 → 空数组）；</item>
+/// <item><c>SetTags</c> / <c>SetDone</c>（含它们的批量版本）<b>一律列该字段</b>
+/// （<c>["tags"]</c> / <c>["done"]</c>）—— 这两个操作本来就要重写数据，
+/// 值是否变化不影响「这个字段被写过」的事实；</item>
+/// <item>项目改名（<c>project.updated</c>）也是<b>一律列 <c>["name"]</c></b>，
+/// 不跟旧名比对。</item>
 /// </list>
 /// </para>
 /// <para>
@@ -62,6 +74,10 @@ public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, st
 /// 不是请求里的 id 数。排序会重写全表的 <c>sort_order</c>（没被列出的接在后面），
 /// 只按请求里的 id 发事件的话，被挤到后面的项目位置变了却没人知道，
 /// 订阅端的列表顺序会错。每条事件的项目快照里带着该项目的**新** <c>sortOrder</c>。
+/// </para>
+/// <para>
+/// 事件只覆盖<b>回收站之外</b>的项目：前后对比只看活跃项目，
+/// 回收站里项目的 <c>sort_order</c> 变了也不会有事件（回收站的视图归 Task 10）。
 /// </para>
 /// </summary>
 public sealed record IdeaEvent(string Id, string Type, DateTimeOffset Timestamp,
