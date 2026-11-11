@@ -902,7 +902,7 @@ bash server/scripts/aot-smoke.sh
 
 **Files:**
 - Create: `server/IdeaApp/Domain/Webhook.cs`
-- Create: `server/IdeaApp/Contracts/Requests.cs`
+- Modify: `server/IdeaApp/Contracts/Requests.cs`（Task 4 已建，本 task 往里加 webhook 的请求体 record）
 - Create: `server/IdeaApp/Infrastructure/WebhookRepository.cs`
 - Create: `server/IdeaApp/Application/WebhookService.cs`
 - Create: `server/IdeaApp/Endpoints/WebhookEndpoints.cs`
@@ -1053,6 +1053,7 @@ bash server/scripts/aot-smoke.sh
   - `public static class ProjectSortMode { public const string Recent = "recent"; public const string Manual = "manual"; }`
   - 端点：`GET /api/settings` → `Dictionary<string,string>`；`PUT /api/settings/{key}` body `{value}` → 200 `Dictionary<string,string>`
   - `ProjectService.List()` 按 `project.sort_mode` 排序：`recent` → 按最近活动时间倒序（活动时间为项目下未删 idea 的最大 `updated_at`，无 idea 时取项目 `updated_at`），同值按 `id ASC`；`manual` → 按 `sort_order ASC, id ASC`。
+  - **活动时间口径只有一份**：`ProjectRepository.LastActivityAt` 必须返回「未删想法的最大 `updated_at`，无未删想法时取项目自身的 `updated_at`」，**不返回 null**。DTO 的 `ProjectDto.LastActivityAt` 与这里的排序用的是同一个值 —— 前端展示与排序口径不能分叉。
 
 - [ ] **Step 1: 写失败测试**
 
