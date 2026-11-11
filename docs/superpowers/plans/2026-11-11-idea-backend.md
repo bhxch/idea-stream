@@ -771,8 +771,8 @@ bash server/scripts/aot-smoke.sh
 [Fact] public async Task Bulk_delete_bumps_updated_at
 // 断言 bulk/delete 后受影响想法的 updated_at 变了
 
-[Fact] public async Task Bulk_with_empty_id_list_is_a_no_op
-// 空 ids → 200/204，不报错（"没选东西"与"选的全没了"是两回事）
+[Fact] public async Task Bulk_with_empty_ids_is_a_no_op
+// 空 ids → 200 + 空数组，不报错（"没选东西"与"选的全没了"是两回事）
 
 [Fact] public async Task Merge_creates_new_idea_with_concatenated_content
 // 三条 content "A"、"B"、"C" → 合并结果 content == "A\n\nB\n\nC"（按 updated_at 升序）
