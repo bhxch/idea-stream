@@ -16,9 +16,11 @@
 - **禁止**反射式序列化：所有 JSON 走 `JsonSerializerContext` 源生成。
 - **AOT 下端点返回 JSON 的硬性要求**（Task 1 实测踩出来的）：`Results.Ok(匿名对象)` 在 Native AOT 产物下返回 **500**（没有 `JsonTypeInfo` 元数据）。因此：
   - 所有端点返回**静态类型**的 DTO，不返回匿名对象；
+  - **每个端点返回的静态类型（含集合包装类型，如 `List<IdeaDto>`、`WebhookDto[]`）必须在 `IdeaJsonContext` 里有对应的 `[JsonSerializable]`** —— 白名单没登记的类型在 AOT 下必然 500；
   - `IdeaJsonContext` 必须在 `JsonOptions.SerializerOptions.TypeInfoResolverChain` 中注册（Task 3 负责），此后 `Results.Ok(dto)` 对已登记的 DTO 可用；
   - 创建类响应（201）用 `Results.Json(dto, IdeaJsonContext.Default.XxxDto, statusCode: 201)` 显式带 `JsonTypeInfo`；
-  - 任何返回 DTO 的端点都要有一个集成测试断言它返回 200/201 而**不是 500**。
+  - `Microsoft.AspNetCore.Mvc.ProblemDetails` 是 .NET 10 里唯一存在的 ProblemDetails 类型（**没有** `Microsoft.AspNetCore.Http.ProblemDetails`），只有它带 `Extensions` 字段，能放 `code`。`HttpValidationProblemDetails`（`Results.ValidationProblem` 的实际类型）也要单独登记 —— 子类元数据不会从基类自动继承。
+  - **AOT 冒烟脚本** `server/scripts/aot-smoke.sh`：`dotnet publish -r linux-x64 -c Release` → 启动产物 → 打 `/api/health` 与至少一个返回 DTO 的端点，断言是 200/201 而**不是 500**。Task 3 建它，Task 15 复用。普通 `dotnet test` 宿主**测不出**「退回匿名对象」这一类退化（非 AOT 下默认反射 resolver 兜底，输出逐字节相同），只有真 AOT 产物能测出来。
 - **禁止** `ActivatorUtilities`、动态代理、运行时表达式编译。
 - SQL 手写，不引入 EF Core 或任何 ORM。
 - 命名空间根：`IdeaApp`（`Domain` / `Application` / `Infrastructure` / `Contracts` / `Endpoints`）。
@@ -346,6 +348,7 @@ VALUES ('inbox', '收件箱', 0, NULL, :now, :now);
 - Create: `server/IdeaApp/Domain/Idea.cs`、`server/IdeaApp/Domain/Project.cs`
 - Create: `server/IdeaApp/Contracts/Dtos.cs`、`server/IdeaApp/Contracts/JsonContext.cs`
 - Create: `server/IdeaApp.Tests/JsonSerializationTests.cs`
+- Create: `server/scripts/aot-smoke.sh`（AOT 产物冒烟脚本，见 Step 3 第 4 条）
 - Modify: `server/IdeaApp/Endpoints/HealthEndpoints.cs`（把 Task 1 的 `HealthJsonContext` 并入 `IdeaJsonContext`）
 - Delete: `server/IdeaApp/Endpoints/HealthJsonContext.cs`（Task 1 建的临时上下文，合并后删掉）
 
@@ -438,6 +441,8 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
          o.SerializerOptions.TypeInfoResolverChain.Insert(0, IdeaJsonContext.Default));
      ```
   3. `IdeaJsonContext` 上加 `[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]`，并把 `HealthResponse` 也登记进去。
+  4. **建 `server/scripts/aot-smoke.sh`**（可执行）：`dotnet publish server/IdeaApp -c Release -r linux-x64` → 用临时库启动产物 → `curl /api/health` 断言 200 且 body 能 `JsonDocument.Parse` 出 `status == "ok"` → 关进程 → 退出码反映结果。**这个脚本是唯一能测出「端点退回匿名对象」这类退化的手段**（非 AOT 测试宿主测不出来：默认反射 resolver 兜底，输出逐字节相同）。
+  5. **把集合包装类型也登记进 `IdeaJsonContext`**：`List<IdeaDto>`、`List<ProjectDto>`、`List<TagDto>`、`List<WebhookDto>`、`List<DeliveryDto>`、`List<TrashEntryDto>`、`WebhookDto[]`、`HttpValidationProblemDetails`。少登记一个，后续用到它的端点在 AOT 下就是 500，而普通 `dotnet test` 照样全绿。
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS
 - [ ] **Step 5: 提交** → `git commit -m "feat(server): 定义领域模型、对外 DTO 与 JSON 源生成上下文"`
 
@@ -1213,7 +1218,9 @@ Run: `dotnet test server/IdeaApp.Tests` → Expected: 全部 PASS
 - [ ] **Step 6: 验证 AOT 发布**
 
 Run: `dotnet publish server/IdeaApp -c Release -r linux-x64 -p:PublishAot=true -p:InvariantGlobalization=true` → Expected: 成功产出可执行文件
-Run: 启动产物，`curl http://127.0.0.1:5080/api/health` → Expected: `{"status":"ok"}`
+Run: `bash server/scripts/aot-smoke.sh` → Expected: 退出码 0（脚本内部会 publish、启动、断言 `/api/health` 返回 200 而不是 500）
+
+> 这一步是整个后端**唯一**能发现「端点 JSON 序列化在 AOT 下失效」的验证。普通 `dotnet test` 全绿但 AOT 产物 500，是这个项目最可能踩的坑。
 
 - [ ] **Step 7: 提交**
 
