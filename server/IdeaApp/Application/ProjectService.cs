@@ -14,13 +14,25 @@ namespace IdeaApp.Application;
 /// </remarks>
 public sealed class ProjectService(
     ProjectRepository repo,
+    SettingRepository settings,
     SqliteDatabase db,
     IEventPublisher publisher)
 {
     /// <summary>内置收件箱的 id。它不能被删除，但可以改名、可以参与排序。</summary>
     public const string InboxId = "inbox";
 
-    /// <summary>列出未删除的项目。</summary>
+    /// <summary>
+    /// 列出未删除的项目。
+    /// </summary>
+    /// <remarks>
+    /// 顺序由设置 <c>project.sort_mode</c> 决定：
+    /// <list type="bullet">
+    /// <item><c>recent</c>（默认）：按最近活动时间倒序，同值按 id 升序兜底；</item>
+    /// <item><c>manual</c>：按 <c>sort_order</c> 升序（同值按 id 升序）。</item>
+    /// </list>
+    /// 活动时间取 DTO 自带的 <see cref="ProjectDto.LastActivityAt"/> ——
+    /// 前端显示的「最近活动」与这里的排序用的是同一个值，两边各算一份会对不上。
+    /// </remarks>
     public IReadOnlyList<ProjectDto> List()
     {
         var projects = repo.ListActive();
@@ -31,7 +43,66 @@ public sealed class ProjectService(
             result.Add(ToDto(project));
         }
 
+        if (CurrentSortMode() == ProjectSortMode.Manual)
+        {
+            // repo.ListActive() 已经按 sort_order ASC, id ASC 排好。
+            return result;
+        }
+
+        // recent：最近活动的在前；活动时间相同时按 id 升序兜底（顺序稳定，不跳）。
+        result.Sort((left, right) =>
+        {
+            var byActivity = CompareByActivityDesc(left, right);
+            return byActivity != 0 ? byActivity : string.CompareOrdinal(left.Id, right.Id);
+        });
+
         return result;
+    }
+
+    /// <summary>
+    /// 切换项目排序方式。
+    /// </summary>
+    /// <remarks>
+    /// 切到 <c>manual</c> 时用**当前显示顺序**初始化 <c>sort_order</c>：
+    /// recent 排出来的顺序与库里原来的 <c>sort_order</c> 没关系，
+    /// 不初始化的话用户切过去会看到顺序乱跳。
+    /// <para>
+    /// 初始化必须落库（不能只在内存里排一次）：下次读设置、换设备、
+    /// 重启进程都还要看到同一个顺序。
+    /// </para>
+    /// </remarks>
+    public void SetSortMode(string mode)
+    {
+        if (mode is not (ProjectSortMode.Recent or ProjectSortMode.Manual))
+        {
+            throw new ApiException(400, "invalid_sort_mode", "排序方式只能是 recent 或 manual");
+        }
+
+        if (mode == ProjectSortMode.Manual)
+        {
+            // 当前显示顺序 = 此刻 List() 给出的顺序（设置还没改，仍是旧模式）。
+            var ids = List().Select(project => project.Id).ToArray();
+            if (ids.Length > 0)
+            {
+                Reorder(ids);
+            }
+        }
+
+        settings.Set(SettingKeys.ProjectSortMode, mode);
+    }
+
+    /// <summary>当前的排序方式（存的值非法或没存时回落 <c>recent</c>）。</summary>
+    private string CurrentSortMode() =>
+        ProjectSortMode.Resolve(settings.Get(SettingKeys.ProjectSortMode));
+
+    /// <summary>按最近活动时间比较（新的在前）。</summary>
+    private static int CompareByActivityDesc(ProjectDto left, ProjectDto right)
+    {
+        var leftActivity = left.LastActivityAt ?? left.UpdatedAt;
+        var rightActivity = right.LastActivityAt ?? right.UpdatedAt;
+
+        // left 更新时返回负数（left 排前面）。
+        return rightActivity.CompareTo(leftActivity);
     }
 
     /// <summary>新建项目，新项目排在最后。</summary>

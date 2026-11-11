@@ -20,6 +20,7 @@ builder.Services.Configure<AppOptions>(builder.Configuration);
 builder.Services.AddSingleton(sp =>
     new SqliteDatabase(sp.GetRequiredService<IOptions<AppOptions>>().Value.Database.Path));
 builder.Services.AddSingleton<ProjectRepository>();
+builder.Services.AddSingleton<SettingRepository>();
 builder.Services.AddSingleton<ProjectService>();
 builder.Services.AddSingleton<IdeaRepository>();
 builder.Services.AddSingleton<IdeaService>();
@@ -70,6 +71,7 @@ app.Services.GetRequiredService<SqliteDatabase>().Initialize();
 
 app.MapHealthEndpoints();
 app.MapProjectEndpoints();
+app.MapSettingsEndpoints();
 app.MapIdeaEndpoints();
 app.MapBulkIdeaEndpoints();
 app.MapTagEndpoints();

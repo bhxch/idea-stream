@@ -66,6 +66,15 @@ public sealed record BulkDeleteRequest(string[]? Ids);
 public sealed record MergeIdeasRequest(string[]? Ids, string? Content, string? Title);
 
 /// <summary>
+/// 修改单个设置项的请求体。
+/// </summary>
+/// <remarks>
+/// <c>Value</c> 可空：JSON 里缺这个字段、或显式给 <c>null</c>，反序列化出来都是 null，
+/// 由服务层收敛成 400（<c>invalid_sort_mode</c>）。
+/// </remarks>
+public sealed record SetSettingRequest(string? Value);
+
+/// <summary>
 /// 创建 webhook 的请求体。
 /// </summary>
 /// <remarks>

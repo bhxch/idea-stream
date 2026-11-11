@@ -309,5 +309,26 @@ if ! grep -q '^event: idea.created' "$SSE_BODY"; then
     fail "/api/events 没有推送到 idea.created 事件帧"
 fi
 
+echo "==> GET /api/settings"
+# 返回静态类型 Dictionary<string,string>：白名单里少登记它，AOT 产物下就是 500。
+# 默认值不播种到库里，读不到就回落 recent —— 响应里一定有这一项。
+check_endpoint "/api/settings" "200" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("project.sort_mode", out var mode) && mode.GetString() == "recent"'
+
+echo "==> PUT /api/settings/project.sort_mode"
+# 写路径：请求体要源生成元数据，返回静态类型 Dictionary<string,string>。
+check_endpoint "/api/settings/project.sort_mode" "200" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("project.sort_mode", out var mode) && mode.GetString() == "manual"' \
+    PUT \
+    '{"value":"manual"}'
+
+echo "==> PUT /api/settings/Trash.RetentionDays"
+# 业务错误路径：未定义的键 → 400 + code=setting_key_not_writable。
+# 配置文件里的项不可经 API 修改，这条守住它。
+check_endpoint "/api/settings/Trash.RetentionDays" "400" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("code", out var code) && code.GetString() == "setting_key_not_writable"' \
+    PUT \
+    '{"value":"30"}'
+
 echo "PASS: AOT 产物下所有被检查的端点都返回预期状态码与响应体"
 exit 0

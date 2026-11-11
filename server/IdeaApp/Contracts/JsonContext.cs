@@ -68,6 +68,9 @@ namespace IdeaApp.Contracts;
 [JsonSerializable(typeof(BulkTagsRequest))]
 [JsonSerializable(typeof(BulkDeleteRequest))]
 [JsonSerializable(typeof(MergeIdeasRequest))]
+// 设置项的请求体：PUT /api/settings/{key} 的请求体同样要源生成元数据，
+// 少登记一个，开发期就抛 NoMetadataForType、AOT 产物下直接失败。
+[JsonSerializable(typeof(SetSettingRequest))]
 // webhook 配置的请求体：请求体的反序列化同样走源生成元数据，
 // 少登记一个，开发期就抛 NoMetadataForType、AOT 产物下直接失败。
 [JsonSerializable(typeof(WebhookCreateRequest))]

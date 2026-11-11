@@ -50,9 +50,10 @@ public sealed class ProjectApiTests
 
         Assert.Equal(3, projects.Count);
 
-        // 内置收件箱排在最前（sort_order 最小）。
-        Assert.Equal("inbox", projects[0].Id);
-        Assert.Equal("收件箱", projects[0].Name);
+        // 默认排序是 recent（最近活动在前）：收件箱没有想法，回落到它自己的 updated_at
+        // （建库时写的，最早），所以排在最后 —— 收件箱不置顶，按同一规则参与排序。
+        Assert.Equal("inbox", projects[^1].Id);
+        Assert.Equal("收件箱", projects[^1].Name);
 
         Assert.Contains(projects, p => p.Id == first && p.Name == "项目A");
         Assert.Contains(projects, p => p.Id == second && p.Name == "项目B");
@@ -148,15 +149,19 @@ public sealed class ProjectApiTests
         var second = await CreateProjectAsync(client, "项目B");
         var third = await CreateProjectAsync(client, "项目C");
 
+        // 手动排序：列表顺序按 sort_order 排，重排的效果才看得见。
+        await SwitchToManualAsync(client);
+
         var response = await client.PostAsJsonAsync("/api/projects/reorder",
             new { ids = new[] { third, first } });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         // 列出来的按给定顺序在前（第三、第一）；没列出来的按原来的相对顺序接在后面
-        // （收件箱原本排在最前，项目B 原本在收件箱之后）。
+        // （切到手动排序时的显示顺序是「最近活动在前」：第三、第二、第一、收件箱，
+        //  所以没列出的第二、收件箱就按这个相对顺序接在后面）。
         var reordered = await ReadProjectsAsync(response);
-        Assert.Equal(new[] { third, first, "inbox", second }, reordered.Select(p => p.Id).ToArray());
+        Assert.Equal(new[] { third, first, second, "inbox" }, reordered.Select(p => p.Id).ToArray());
     }
 
     /// <summary>
@@ -194,6 +199,9 @@ public sealed class ProjectApiTests
         var second = await CreateProjectAsync(client, "项目B");
         const string unknown = "0198f0a1b2c3d4e5f60718293a4b5c6d";
 
+        // 手动排序：列表顺序按 sort_order 排。
+        await SwitchToManualAsync(client);
+
         var response = await client.PostAsJsonAsync("/api/projects/reorder",
             new { ids = new[] { unknown, second } });
 
@@ -208,7 +216,7 @@ public sealed class ProjectApiTests
         Assert.Equal(0, reordered[0].SortOrder);
 
         // 其余项目保持原来的相对顺序接在后面。
-        Assert.Equal(new[] { second, "inbox", first }, reordered.Select(p => p.Id).ToArray());
+        Assert.Equal(new[] { second, first, "inbox" }, reordered.Select(p => p.Id).ToArray());
     }
 
     /// <summary>
@@ -292,6 +300,15 @@ public sealed class ProjectApiTests
     }
 
     private static bool IsLowerHex(char c) => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+
+    /// <summary>切到手动排序（列表顺序按 sort_order 排）。</summary>
+    private static async Task SwitchToManualAsync(HttpClient client)
+    {
+        var response = await client.PutAsJsonAsync("/api/settings/project.sort_mode",
+            new { value = "manual" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
 
     /// <summary>建一个项目并返回它的 id。</summary>
     private static async Task<string> CreateProjectAsync(HttpClient client, string name)
