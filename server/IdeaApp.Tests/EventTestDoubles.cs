@@ -73,6 +73,45 @@ internal sealed class TokenCapturingHandler : IEventHandler
     }
 }
 
+/// <summary>
+/// 记录型的 <see cref="IEventPublisher"/>：把发布出去的事件按顺序记下来。
+/// 用来断言「哪个写方法发了什么事件、载荷长什么样」。
+/// </summary>
+internal sealed class RecordingEventPublisher : IEventPublisher
+{
+    private readonly object _gate = new();
+    private readonly List<IdeaEvent> _events = new();
+
+    /// <summary>已发布的事件（按发布顺序）。</summary>
+    public IReadOnlyList<IdeaEvent> Events
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _events.ToArray();
+            }
+        }
+    }
+
+    public void Publish(IdeaEvent evt)
+    {
+        lock (_gate)
+        {
+            _events.Add(evt);
+        }
+    }
+
+    /// <summary>清空记录（把「准备数据」阶段的事件排除掉）。</summary>
+    public void Clear()
+    {
+        lock (_gate)
+        {
+            _events.Clear();
+        }
+    }
+}
+
 /// <summary>把收到的事件全都记下来的处理器。</summary>
 internal sealed class CollectingHandler : IEventHandler
 {

@@ -560,41 +560,4 @@ public sealed class EventPublishingTests
         }
     }
 
-    /// <summary>
-    /// 记录型的 <see cref="IEventPublisher"/>：把发布出去的事件按顺序记下来。
-    /// </summary>
-    private sealed class RecordingEventPublisher : IEventPublisher
-    {
-        private readonly object _gate = new();
-        private readonly List<IdeaEvent> _events = new();
-
-        /// <summary>已发布的事件（按发布顺序）。</summary>
-        public IReadOnlyList<IdeaEvent> Events
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return _events.ToArray();
-                }
-            }
-        }
-
-        public void Publish(IdeaEvent evt)
-        {
-            lock (_gate)
-            {
-                _events.Add(evt);
-            }
-        }
-
-        /// <summary>清空记录（把「准备数据」阶段的事件排除掉）。</summary>
-        public void Clear()
-        {
-            lock (_gate)
-            {
-                _events.Clear();
-            }
-        }
-    }
 }
