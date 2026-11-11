@@ -71,7 +71,7 @@ server/
       WebhookService.cs            # webhook 配置 CRUD
       DeliveryService.cs           # 投递记录查询与手动重投
       TrashService.cs              # 回收站视图与恢复
-      IdeaQuery.cs                 # 查询条件与过滤判定
+      IdeaQuery.cs                 # 查询条件与过滤判定（Domain 层）
     Infrastructure/
       AppOptions.cs                # 配置绑定
       SqliteDatabase.cs            # 连接工厂 + 初始化
@@ -670,7 +670,7 @@ bash server/scripts/aot-smoke.sh
 **Files:**
 - Create: `server/IdeaApp/Infrastructure/TagRepository.cs`
 - Create: `server/IdeaApp/Application/TagService.cs`
-- Create: `server/IdeaApp/Application/IdeaQuery.cs`
+- Create: `server/IdeaApp/Domain/IdeaQuery.cs`（**放 `Domain` 不放 `Application`** —— 它是查询规格，被 `Infrastructure` 的仓储与 `Application` 的服务同时引用，放 `Application` 会让 Infrastructure 反向依赖 Application）
 - Create: `server/IdeaApp/Endpoints/ApiResults.cs`（**抽取共用的异常包装**，见下）
 - Modify: `server/IdeaApp/Infrastructure/IdeaRepository.cs`（加 `List(IdeaQuery)`；修类注释；补一条置底回归测试）
 - Modify: `server/IdeaApp/Endpoints/IdeaEndpoints.cs`（**改造** Task 5 已有的 `GET /api/ideas`，加上过滤参数 —— **不要新增第二个同路径端点**，否则路由歧义）
@@ -681,8 +681,8 @@ bash server/scripts/aot-smoke.sh
 **Interfaces:**
 - Consumes: Task 5 的 `IdeaRepository`。
 - Produces:
-  - `public sealed record IdeaQuery(string? ProjectId, IdeaStatusFilter Status, IReadOnlyList<string> Tags, TagMatchMode TagMode)`
-  - `public static class IdeaFilter { public static bool Matches(Idea idea, IdeaQuery q); }`
+  - `public sealed record IdeaQuery(string? ProjectId, IdeaStatusFilter Status, IReadOnlyList<string> Tags, TagMatchMode TagMode)` —— 命名空间 `IdeaApp.Domain`（`IdeaStatusFilter` / `TagMatchMode` 也在 `Domain/Idea.cs`）
+  - `public static class IdeaFilter { public static bool Matches(Idea idea, IdeaQuery q); }` —— 也在 `IdeaApp.Domain`
   - `public sealed class TagRepository(SqliteDatabase db)`：`IReadOnlyList<TagDto> ListWithCounts()`、`IReadOnlyList<string> AllNames()`、`IReadOnlyList<string> NamesForProject(string projectId)`
   - `public sealed class TagService(TagRepository repo)`：`IReadOnlyList<TagDto> List()`、`IReadOnlyList<string> Suggest(string? projectId, string prefix)`
   - 端点：`GET /api/ideas?projectId=&status=&tags=&tagMode=`、`GET /api/tags`、`GET /api/tags/suggest?projectId=&prefix=`
