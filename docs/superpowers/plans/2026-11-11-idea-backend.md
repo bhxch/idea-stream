@@ -944,7 +944,7 @@ bash server/scripts/aot-smoke.sh
 **Interfaces:**
 - Consumes: Task 8 的 `EventBus`、`IEventHandler`、`IdeaEvent`。
 - Produces:
-  - `public sealed class SseBroadcaster(int bufferSize, int heartbeatSeconds = 25)`：`int BufferSize`、`int HeartbeatSeconds`、`void Append(IdeaEvent evt)`、`IReadOnlyList<IdeaEvent>? Since(string? lastEventId)` —— **可空**：`null` 表示缓冲里找不到该 id（要发 `resync`），非空表示找到了、返回它之后的全部事件、`SseSubscription Subscribe()`、`bool TryCompleteSubscription(...)`
+  - `public sealed class SseBroadcaster(int bufferSize, int heartbeatSeconds = 25, ILogger<SseBroadcaster>? logger = null)`：`int BufferSize`、`int HeartbeatSeconds`、`void Append(IdeaEvent evt)`、`IReadOnlyList<IdeaEvent>? Since(string? lastEventId)` —— **可空**：`null` 表示缓冲里找不到该 id（要发 `resync`），非空表示找到了、返回它之后的全部事件；`SseSubscription Subscribe()`、`bool TryCompleteSubscription(...)`、`int SubscriptionCount { get; }`（只读，供测试断言「客户端断开 → 摘订阅」这条清理路径）
   - `public sealed record SseSubscription(Guid Id, Channel<SseMessage> Channel);`
   - **通道里跑的是 `SseMessage` 而不是 `IdeaEvent`** —— `resync` 是**控制帧**（没有业务事件、没有 `id:` 行），硬塞进事件通道只能靠「假事件」伪装，订阅端还得反向识别。`SseMessage` 把两种帧统一到一个可写的载体上（**实现即如此，照抄这个形状**）：
     ```csharp
