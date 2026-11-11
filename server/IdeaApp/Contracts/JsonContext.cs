@@ -25,6 +25,7 @@ namespace IdeaApp.Contracts;
 [JsonSerializable(typeof(DeliveryDto))]
 [JsonSerializable(typeof(TrashEntryDto))]
 [JsonSerializable(typeof(HealthResponse))]
+[JsonSerializable(typeof(WebhookTemplateDto))]
 [JsonSerializable(typeof(IdeaDto[]))]
 [JsonSerializable(typeof(ProjectDto[]))]
 [JsonSerializable(typeof(TagDto[]))]
@@ -46,6 +47,9 @@ namespace IdeaApp.Contracts;
 [JsonSerializable(typeof(IReadOnlyList<DeliveryDto>))]
 [JsonSerializable(typeof(IReadOnlyList<TrashEntryDto>))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
+// webhook 的订阅事件数组：存库时序列化成 JSON 字符串、读库时反序列化回来，
+// 少了这一条，AOT 产物下读写 webhook 配置就是 500。
+[JsonSerializable(typeof(string[]))]
 // ProblemDetails 及其子类：子类元数据不会从基类自动继承，必须各自登记。
 [JsonSerializable(typeof(ProblemDetails))]
 [JsonSerializable(typeof(HttpValidationProblemDetails))]
@@ -64,6 +68,10 @@ namespace IdeaApp.Contracts;
 [JsonSerializable(typeof(BulkTagsRequest))]
 [JsonSerializable(typeof(BulkDeleteRequest))]
 [JsonSerializable(typeof(MergeIdeasRequest))]
+// webhook 配置的请求体：请求体的反序列化同样走源生成元数据，
+// 少登记一个，开发期就抛 NoMetadataForType、AOT 产物下直接失败。
+[JsonSerializable(typeof(WebhookCreateRequest))]
+[JsonSerializable(typeof(WebhookUpdateRequest))]
 // 领域事件：SSE 的 data 帧与 webhook 的投递体都要序列化它，
 // 白名单里少登记一个，AOT 产物下这两条链路就是 500。
 [JsonSerializable(typeof(IdeaEvent))]

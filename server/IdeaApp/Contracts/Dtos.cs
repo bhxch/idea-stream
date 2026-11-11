@@ -23,6 +23,11 @@ public sealed record WebhookDto(string Id, string Name, string Url, string Metho
                                 bool Enabled, bool HasSecret,
                                 DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
 
+/// <summary>
+/// 一个 webhook 模板预设（当前只有 Telegram）：页面用它预填表单。
+/// </summary>
+public sealed record WebhookTemplateDto(string Url, string BodyTemplate);
+
 /// <summary>一次 webhook 投递记录。</summary>
 public sealed record DeliveryDto(string Id, string WebhookId, string EventId, string EventType,
                                  string Payload, string Status, int Attempts, string? LastError,

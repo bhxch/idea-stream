@@ -219,6 +219,26 @@ check_endpoint "/api/ideas" "201" \
     POST \
     '{"content":"AOT 冒烟","title":"标题","tags":["冒烟"]}'
 
+echo "==> GET /api/webhooks"
+# 返回静态类型 List<WebhookDto>（裸数组）。白名单里少登记这个集合包装类型时，
+# 这个端点在 AOT 产物下就是 500。
+check_endpoint "/api/webhooks" "200" \
+    'root.ValueKind == JsonValueKind.Array'
+
+echo "==> GET /api/webhooks/templates/telegram"
+# 模板预设：静态类型 WebhookTemplateDto。少登记它，AOT 产物下这里就是 500。
+check_endpoint "/api/webhooks/templates/telegram" "200" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("url", out var url) && url.GetString() == "https://api.telegram.org/bot<BOT_TOKEN>/sendMessage" && root.TryGetProperty("bodyTemplate", out var bodyTemplate) && bodyTemplate.GetString()!.Contains("{{idea.content}}")'
+
+echo "==> POST /api/webhooks"
+# 写路径：请求体要源生成元数据，返回静态类型 WebhookDto。
+# 全局作用域的 webhook 创建时**默认禁用**（enabled == false）——
+# 这一条同时守住「默认启用规则」与「secret 不回传」（hasSecret == false）。
+check_endpoint "/api/webhooks" "201" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("enabled", out var enabled) && !enabled.GetBoolean() && root.TryGetProperty("hasSecret", out var hasSecret) && !hasSecret.GetBoolean()' \
+    POST \
+    '{"name":"AOT 冒烟","url":"https://example.com/hook","method":"POST","headers":{},"bodyTemplate":"{\"text\":\"{{idea.content}}\"}","events":["idea.created"],"scope":"global"}'
+
 echo "==> GET /api/events (SSE)"
 # SSE 是长连接：不能像别的端点那样把响应体读完（读完会一直等到超时）。
 # 这里断言三件事：连得上（200）、头是 text/event-stream、

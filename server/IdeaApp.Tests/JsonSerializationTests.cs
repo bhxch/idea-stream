@@ -136,6 +136,7 @@ public sealed class JsonSerializationTests
             typeof(DeliveryDto),
             typeof(TrashEntryDto),
             typeof(HealthResponse),
+            typeof(WebhookTemplateDto),
             // 数组包装
             typeof(IdeaDto[]),
             typeof(ProjectDto[]),
@@ -160,6 +161,8 @@ public sealed class JsonSerializationTests
             typeof(IReadOnlyList<TrashEntryDto>),
             // 其他
             typeof(Dictionary<string, string>),
+            // webhook 的订阅事件数组：存库时序列化成 JSON 字符串、读库时反序列化
+            typeof(string[]),
             typeof(Microsoft.AspNetCore.Mvc.ProblemDetails),
             typeof(Microsoft.AspNetCore.Http.HttpValidationProblemDetails),
             // 请求体记录（Native AOT 下反序列化同样需要元数据）
@@ -169,7 +172,9 @@ public sealed class JsonSerializationTests
             typeof(CreateIdeaRequest),
             typeof(UpdateIdeaRequest),
             typeof(SetTagsRequest),
-            typeof(SetDoneRequest)
+            typeof(SetDoneRequest),
+            typeof(WebhookCreateRequest),
+            typeof(WebhookUpdateRequest)
         ];
 
         foreach (var type in registered)

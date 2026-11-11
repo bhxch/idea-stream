@@ -64,3 +64,30 @@ public sealed record BulkDeleteRequest(string[]? Ids);
 /// <c>Title</c> 缺省时用第一条源想法的标题。
 /// </remarks>
 public sealed record MergeIdeasRequest(string[]? Ids, string? Content, string? Title);
+
+/// <summary>
+/// 创建 webhook 的请求体。
+/// </summary>
+/// <remarks>
+/// 没有 <c>Enabled</c> 字段：启用与否由作用域决定（全局默认禁用、项目级默认启用），
+/// 创建完再改由 PATCH 负责。
+/// <para>
+/// <c>Secret</c> 给空串或不给都表示「不设密钥」。
+/// </para>
+/// </remarks>
+public sealed record WebhookCreateRequest(string Name, string Url, string Method,
+    Dictionary<string, string>? Headers, string BodyTemplate, string[]? Events,
+    string Scope, string? ProjectId, string? Secret);
+
+/// <summary>
+/// 修改 webhook 的请求体。字段一律是「null = 不改」。
+/// </summary>
+/// <remarks>
+/// <c>Secret</c> 的三态：<c>null</c> = 不改、<c>""</c> = 清空密钥、非空 = 替换成新密钥。
+/// <para>
+/// 作用域与所属项目不能改（改了就等于换了一个 webhook）。
+/// </para>
+/// </remarks>
+public sealed record WebhookUpdateRequest(string? Name, string? Url, string? Method,
+    Dictionary<string, string>? Headers, string? BodyTemplate, string[]? Events,
+    bool? Enabled, string? Secret);

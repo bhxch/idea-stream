@@ -26,6 +26,8 @@ builder.Services.AddSingleton<IdeaService>();
 builder.Services.AddSingleton<TagRepository>();
 builder.Services.AddSingleton<TagService>();
 builder.Services.AddSingleton<TrashService>();
+builder.Services.AddSingleton<WebhookRepository>();
+builder.Services.AddSingleton<WebhookService>();
 
 // 回收站自动清理：到期条目唯一的出口（没有手动彻底删除）。
 // 保留期只从配置读（Trash:RetentionDays），页面与 API 都不提供设置入口。
@@ -73,6 +75,7 @@ app.MapBulkIdeaEndpoints();
 app.MapTagEndpoints();
 app.MapEventEndpoints();
 app.MapTrashEndpoints();
+app.MapWebhookEndpoints();
 
 app.Run();
 
