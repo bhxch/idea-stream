@@ -97,8 +97,14 @@ public sealed class SseBroadcaster
 
                 if (full)
                 {
+                    // 日志要说准「丢的是哪条」：
+                    // DropOldest 下被挤掉的是**通道里最旧的那条**（不是这次推送的 evt ——
+                    // evt 写进去了，被挤掉的是别人）。而最旧那条是哪条，通道不告诉我们，
+                    // 所以只能说明白「挤掉的是最旧的一条」，别把它写成 evt 的 id。
                     _logger?.LogWarning(
-                        "SSE 订阅 {SubscriptionId} 太慢，丢弃事件 {EventId}（类型 {EventType}），已通知它重新拉取列表",
+                        "SSE 订阅 {SubscriptionId} 太慢：通道已满，挤掉了它队列里最旧的一条消息" +
+                        "（被挤掉的那条 id 拿不到）；本次推送的事件是 {EventId}（类型 {EventType}），" +
+                        "已通知该订阅者重新拉取列表",
                         subscription.Id,
                         evt.Id,
                         evt.Type);
