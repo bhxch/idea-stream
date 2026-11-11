@@ -29,6 +29,11 @@ builder.Services.AddSingleton<TagService>();
 builder.Services.AddSingleton<TrashService>();
 builder.Services.AddSingleton<WebhookRepository>();
 builder.Services.AddSingleton<WebhookService>();
+builder.Services.AddSingleton<DeliveryRepository>();
+builder.Services.AddSingleton<DeliveryService>();
+
+// 投递用的 HTTP 客户端工厂：每次投递拿一个客户端，超时按 Webhook:TimeoutSeconds 设。
+builder.Services.AddHttpClient();
 
 // 回收站自动清理：到期条目唯一的出口（没有手动彻底删除）。
 // 保留期只从配置读（Trash:RetentionDays），页面与 API 都不提供设置入口。
@@ -60,6 +65,17 @@ builder.Services.AddSingleton(sp => new SseBroadcaster(
 // 注册成 Scoped 会在开发期（ValidateScopes）抛 InvalidOperationException、
 // 在生产期泄漏作用域。
 builder.Services.AddSingleton<IEventHandler, SseEventHandler>();
+
+// webhook 投递：事件 → 匹配 → 渲染 → 队列 → 后台 worker 发 HTTP。
+//
+// 依赖方向是单向的：EventBus → IEventHandler → WebhookEventHandler → WebhookDeliveryWorker。
+// worker **不注入 EventBus** —— 投递不产生事件（注入它会构成 DI 循环）。
+//
+// worker 既是单例（handler 要往它的队列里投任务）又是 hosted service（后台消费队列），
+// 所以先注册单例、再用工厂把同一个实例交给宿主。
+builder.Services.AddSingleton<WebhookDeliveryWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<WebhookDeliveryWorker>());
+builder.Services.AddSingleton<IEventHandler, WebhookEventHandler>();
 
 var app = builder.Build();
 

@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS webhook_delivery (
     event_id        TEXT NOT NULL,
     event_type      TEXT NOT NULL,
     payload         TEXT NOT NULL,              -- 已渲染的请求体
-    status          TEXT NOT NULL,              -- 'delivered' | 'failed'
+    status          TEXT NOT NULL,              -- 'pending' | 'delivered' | 'failed'
     attempts        INTEGER NOT NULL DEFAULT 0,
     last_error      TEXT NULL,
     created_at      TEXT NOT NULL,

@@ -10,8 +10,8 @@ namespace IdeaApp.Endpoints;
 /// webhook 配置 API。
 ///
 /// <para>
-/// 这一组端点只管**配置面**：增删改查与模板预设。
-/// 投递记录与手动重投是投递那轮加的端点。
+/// 这一组端点管两件事：**配置面**（增删改查与模板预设）与**投递面**
+/// （投递记录列表与手动重投）。
 /// </para>
 ///
 /// <para>
@@ -52,6 +52,17 @@ public static class WebhookEndpoints
                 service.Delete(id);
                 return Results.NoContent();
             }));
+
+        // 投递记录：最近的在前。列表返回裸数组。
+        app.MapGet("/api/webhooks/{id}/deliveries", (string id, DeliveryService service) =>
+            ApiResults.Run(() => Results.Json(service.ListForWebhook(id).ToList(),
+                IdeaJsonContext.Default.ListDeliveryDto)));
+
+        // 手动重投：重发记录里已渲染的 payload（不按当前模板重新渲染）。
+        app.MapPost("/api/webhooks/{id}/deliveries/{deliveryId}/retry",
+            (string id, string deliveryId, DeliveryService service) =>
+                ApiResults.Run(() => Results.Json(service.Retry(id, deliveryId),
+                    IdeaJsonContext.Default.DeliveryDto)));
 
         return app;
     }
