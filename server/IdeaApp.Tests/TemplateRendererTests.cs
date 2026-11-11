@@ -324,6 +324,49 @@ public sealed class TemplateRendererTests
     }
 
     /// <summary>
+    /// 键名**不回显进异常消息**：键名是用户写的模板内容，可能含凭据，
+    /// 而异常消息会经 <c>WebhookService</c> 的
+    /// <c>catch (ArgumentException ex) =&gt; ApiException(400, "invalid_body_template", ex.Message)</c>
+    /// 进 API 响应的 <c>detail</c>。消息里只给「第 N 个键」这种位置信息。
+    /// </summary>
+    /// <remarks>
+    /// 键名同时含占位符（触发这条分支）与看起来像凭据的片段（不能被回显）：
+    /// 只断言「不含占位符」不够 —— 凭据可以藏在键名的任何一段里。
+    /// </remarks>
+    [Fact]
+    public void Validate_rejects_placeholder_in_object_key_without_echoing_key_name()
+    {
+        const string secretKey = "sk-live-SECRET-{{idea.id}}";
+
+        var ex = Assert.Throws<ArgumentException>(
+            () => TemplateRenderer.Validate("""{"sk-live-SECRET-{{idea.id}}":"v"}"""));
+
+        // 键名的内容一个字都不带：整体不带，片段也不带。
+        Assert.DoesNotContain(secretKey, ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("sk-live-SECRET", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("idea.id", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("{{", ex.Message, StringComparison.Ordinal);
+
+        // 定位能力保留：位置信息是「第几个键」，不含键名内容。
+        Assert.Contains("第 1 个键", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 位置信息确实能定位：坏键是第 2 个键时，消息说的是「第 2 个键」，
+    /// 而且这个位置信息同样不夹带键名内容。
+    /// </summary>
+    [Fact]
+    public void Validate_reports_which_key_has_placeholder_without_echoing_key_name()
+    {
+        var ex = Assert.Throws<ArgumentException>(
+            () => TemplateRenderer.Validate("""{"a":1,"sk-live-SECRET-{{idea.id}}":"v"}"""));
+
+        Assert.Contains("第 2 个键", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("sk-live-SECRET", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("idea.id", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Telegram 预设的 Body 模板要能通过收紧后的校验：它是随产品发出去的模板，
     /// 校验一收紧，它要是过不了，页面上的「添加 Telegram webhook」就是坏的。
     /// </summary>

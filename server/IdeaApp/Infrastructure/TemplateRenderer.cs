@@ -142,7 +142,8 @@ public static class TemplateRenderer
             throw new ArgumentException("Body 模板的根节点必须是 JSON 对象");
         }
 
-        EnsureValidShape(obj);
+        var keyIndex = 0;
+        EnsureValidShape(obj, ref keyIndex);
 
         return obj;
     }
@@ -151,19 +152,32 @@ public static class TemplateRenderer
     /// 模板的形状检查：对象的键里不许有占位符（渲染器只处理字符串值节点，
     /// 键里的占位符永远不会被替换），同一个对象里也不许有重复的键。
     /// </summary>
-    private static void EnsureValidShape(JsonNode? node)
+    /// <param name="node">要检查的节点。</param>
+    /// <param name="keyIndex">
+    /// 已检查过的键的计数（引用传递，递归时累加）。
+    /// </param>
+    /// <remarks>
+    /// 键名**不回显进异常消息**：键名是用户写的模板内容，可能含凭据，
+    /// 而异常消息会经 <c>WebhookService</c> 的
+    /// <c>catch (ArgumentException ex) =&gt; ApiException(400, "invalid_body_template", ex.Message)</c>
+    /// 进 API 响应的 <c>detail</c>。消息里只给「第 N 个键」这种位置信息 ——
+    /// 定位能力保留，内容不外泄。
+    /// </remarks>
+    private static void EnsureValidShape(JsonNode? node, ref int keyIndex)
     {
         switch (node)
         {
             case JsonObject obj:
                 foreach (var (key, value) in EnumerateEntries(obj))
                 {
+                    keyIndex++;
+
                     if (PlaceholderPattern.IsMatch(key))
                     {
-                        throw new ArgumentException($"Body 模板的键里不能有占位符：{key}");
+                        throw new ArgumentException($"Body 模板的键里不能有占位符（第 {keyIndex} 个键）");
                     }
 
-                    EnsureValidShape(value);
+                    EnsureValidShape(value, ref keyIndex);
                 }
 
                 break;
@@ -171,7 +185,7 @@ public static class TemplateRenderer
             case JsonArray array:
                 foreach (var item in array)
                 {
-                    EnsureValidShape(item);
+                    EnsureValidShape(item, ref keyIndex);
                 }
 
                 break;

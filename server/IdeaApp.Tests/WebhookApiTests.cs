@@ -397,6 +397,51 @@ public sealed class WebhookApiTests
     }
 
     /// <summary>
+    /// 键名里有占位符时，400 的 <c>detail</c> **不回显键名**：
+    /// 键名是用户写的模板内容，可能含凭据，而 <c>detail</c> 会原样发给调用方
+    /// （含 agent 与 skill 的 stderr）。
+    /// </summary>
+    /// <remarks>
+    /// 消息里保留了「第 N 个键」这种位置信息，定位能力没丢 ——
+    /// 丢的只是键名的内容。
+    /// </remarks>
+    [Fact]
+    public async Task Create_webhook_with_placeholder_in_object_key_returns_400_detail_without_echoing_key_name()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "钩子",
+            url = "https://example.com/hook",
+            method = "POST",
+            headers = new Dictionary<string, string>(),
+            // 键名里既有占位符（触发这条分支），也有看起来像凭据的片段。
+            bodyTemplate = """{"sk-live-SECRET-{{idea.id}}":"v"}""",
+            events = new[] { "idea.created" },
+            scope = "global",
+            projectId = (string?)null
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("invalid_body_template", problem.GetProperty("code").GetString());
+
+        var detail = problem.GetProperty("detail").GetString()!;
+
+        // 键名的内容一个字都不带：整体不带，片段也不带。
+        Assert.DoesNotContain("sk-live-SECRET-{{idea.id}}", detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("sk-live-SECRET", detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("idea.id", detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("{{", detail, StringComparison.Ordinal);
+
+        // 位置信息保留，而且不夹带键名内容。
+        Assert.Contains("个键", detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 作用域与 projectId 必须一致：项目级必须给一个存在的项目，全局级必须不给。
     /// </summary>
     [Fact]
