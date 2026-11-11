@@ -22,12 +22,20 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
     /// 覆盖组合根注册的 <see cref="IEventPublisher"/>（记录型的 fake）；
     /// 不给就用应用默认的事件总线（此时没有订阅者，publish 是空操作）。
     /// </param>
-    public TestAppFactory(int? maxIdeasPerResponse = null, IEventPublisher? publisher = null)
+    /// <param name="sseHeartbeatSeconds">
+    /// 覆盖 SSE 心跳间隔（秒）；不给就是应用默认值（25 秒）。
+    /// 测心跳时用 1 秒 —— 25 秒的等待没法写测试。
+    /// </param>
+    public TestAppFactory(
+        int? maxIdeasPerResponse = null,
+        IEventPublisher? publisher = null,
+        int? sseHeartbeatSeconds = null)
     {
         _tempDirectory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
         DatabasePath = Path.Combine(_tempDirectory, "idea.db");
         MaxIdeasPerResponse = maxIdeasPerResponse;
         Publisher = publisher;
+        SseHeartbeatSeconds = sseHeartbeatSeconds;
     }
 
     /// <summary>本次测试实例使用的 SQLite 文件路径。</summary>
@@ -39,6 +47,9 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
     /// <summary>本次测试实例覆盖的事件发布器（null = 用应用默认的事件总线）。</summary>
     public IEventPublisher? Publisher { get; }
 
+    /// <summary>本次测试实例覆盖的 SSE 心跳间隔（秒，null = 用应用默认值）。</summary>
+    public int? SseHeartbeatSeconds { get; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -46,7 +57,8 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Database:Path"] = DatabasePath,
-                ["Api:MaxIdeasPerResponse"] = MaxIdeasPerResponse?.ToString(CultureInfo.InvariantCulture)
+                ["Api:MaxIdeasPerResponse"] = MaxIdeasPerResponse?.ToString(CultureInfo.InvariantCulture),
+                ["Sse:HeartbeatSeconds"] = SseHeartbeatSeconds?.ToString(CultureInfo.InvariantCulture)
             }));
 
         var publisher = Publisher;
