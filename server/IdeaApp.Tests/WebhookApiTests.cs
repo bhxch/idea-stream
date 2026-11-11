@@ -266,6 +266,68 @@ public sealed class WebhookApiTests
     }
 
     /// <summary>
+    /// Body 模板的根节点必须是 JSON 对象：数组、数字、字符串都要拒掉。
+    /// </summary>
+    /// <remarks>
+    /// 渲染器只在**字符串值节点**里替换占位符，根节点不是对象的话，
+    /// 模板在投递时根本没法按「JSON 模板」处理 —— 这种事要在保存时就说清楚。
+    /// </remarks>
+    [Theory]
+    [InlineData("[1,2]")]
+    [InlineData("123")]
+    [InlineData("\"x\"")]
+    public async Task Create_webhook_with_non_object_body_template_returns_400_code_invalid_body_template(
+        string bodyTemplate)
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "钩子",
+            url = "https://example.com/hook",
+            method = "POST",
+            headers = new Dictionary<string, string>(),
+            bodyTemplate,
+            events = new[] { "idea.created" },
+            scope = "global",
+            projectId = (string?)null
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("invalid_body_template", problem.GetProperty("code").GetString());
+    }
+
+    /// <summary>
+    /// 占位符只允许出现在字符串值节点里：写在对象的键里要拒掉。
+    /// </summary>
+    [Fact]
+    public async Task Create_webhook_with_placeholder_in_object_key_returns_400_code_invalid_body_template()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "钩子",
+            url = "https://example.com/hook",
+            method = "POST",
+            headers = new Dictionary<string, string>(),
+            bodyTemplate = """{"{{idea.id}}":"{{idea.title}}"}""",
+            events = new[] { "idea.created" },
+            scope = "global",
+            projectId = (string?)null
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("invalid_body_template", problem.GetProperty("code").GetString());
+    }
+
+    /// <summary>
     /// 作用域与 projectId 必须一致：项目级必须给一个存在的项目，全局级必须不给。
     /// </summary>
     [Fact]

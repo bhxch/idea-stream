@@ -1,4 +1,3 @@
-using System.Text.Json;
 using IdeaApp.Contracts;
 using IdeaApp.Domain;
 using IdeaApp.Infrastructure;
@@ -282,34 +281,23 @@ public sealed class WebhookService(WebhookRepository repo, ProjectRepository pro
     }
 
     /// <summary>
-    /// Body 模板必须是一个**合法的 JSON 文档**。
+    /// Body 模板必须是一个**合法的 JSON 对象**，且占位符只允许出现在字符串值节点里。
     /// </summary>
     /// <remarks>
-    /// 模板本身就是一个 JSON 文档，占位符（<c>{{idea.content}}</c> 之类）在字符串值里面 ——
-    /// 占位符在字符串值外面的话，它就不是合法的 JSON，渲染器也就没法按「JSON 模板」处理它。
-    /// <para>
-    /// 这轮只存模板、不渲染（渲染器在模板渲染那轮），但存进去之前就得校验：
-    /// 非法模板留到投递时才炸的话，炸的是「投递」而不是「配置」。
-    /// </para>
+    /// 规则只有一份，在 <see cref="TemplateRenderer.Validate"/> 里：渲染器只处理字符串值节点里的
+    /// 占位符，所以根节点不是对象、或者占位符写在对象的键里，模板在投递时就用不了 ——
+    /// 这种事要在保存时说清楚，而不是留到投递时才炸（炸的是「投递」而不是「配置」）。
     /// </remarks>
     private static string ValidateBodyTemplate(string? template)
     {
-        if (string.IsNullOrWhiteSpace(template))
-        {
-            throw new ApiException(400, "invalid_body_template", "Body 模板不能为空");
-        }
-
         try
         {
-            using var document = JsonDocument.Parse(template);
+            return TemplateRenderer.Validate(template);
         }
-        catch (JsonException ex)
+        catch (ArgumentException ex)
         {
-            throw new ApiException(400, "invalid_body_template",
-                $"Body 模板必须是合法的 JSON：{ex.Message}");
+            throw new ApiException(400, "invalid_body_template", ex.Message);
         }
-
-        return template;
     }
 
     /// <summary>密钥去掉首尾空白；空串与 null 都表示「没有密钥」。</summary>
