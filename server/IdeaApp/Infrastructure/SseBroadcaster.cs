@@ -59,8 +59,15 @@ public sealed class SseBroadcaster
     /// 把事件放进缓冲，并推给每个订阅者。
     /// </summary>
     /// <remarks>
-    /// 订阅者的通道满了就丢这一条并记一条警告：宁可丢事件，
+    /// 订阅者的通道满了就挤掉它最旧的一条并记一条警告：宁可丢事件，
     /// 也不能让写接口卡在某个慢客户端上。
+    ///
+    /// <para>
+    /// 丢掉的这条对那个客户端是**静默空洞**：事件 id 是单调 UUIDv7，
+    /// 不是连续序号，客户端没法自己比对出「我少了哪几条」。
+    /// 所以还要给它补一帧 <c>resync</c>，让它重新拉一次完整列表 ——
+    /// 语义与断线补发越界时完全一致。
+    /// </para>
     /// </remarks>
     public void Append(IdeaEvent evt)
     {
@@ -75,13 +82,31 @@ public sealed class SseBroadcaster
 
             foreach (var subscription in _subscriptions)
             {
-                if (!subscription.Channel.Writer.TryWrite(SseMessage.Of(evt)))
+                var channel = subscription.Channel;
+
+                // 通道满了？接下来的写入会挤掉它最旧的一条 —— 那条对
+                // 这个订阅者就是丢掉了。先记下来（下面要补 resync）。
+                //
+                // 这个判断是保守的：检查与写入之间读者可能取走了一条，
+                // 那时其实没挤掉什么，我们却仍然补一帧 resync ——
+                // 多补一帧只是让客户端多拉一次列表，漏补才是静默空洞。
+                var full = channel.Reader.Count >= SubscriberChannelCapacity;
+
+                // 通道是 DropOldest 模式：满了也写得进去（挤掉最旧的一条）。
+                channel.Writer.TryWrite(SseMessage.Of(evt));
+
+                if (full)
                 {
                     _logger?.LogWarning(
-                        "SSE 订阅 {SubscriptionId} 的通道已满，丢弃事件 {EventId}（类型 {EventType}）",
+                        "SSE 订阅 {SubscriptionId} 太慢，丢弃事件 {EventId}（类型 {EventType}），已通知它重新拉取列表",
                         subscription.Id,
                         evt.Id,
                         evt.Type);
+
+                    // 补一帧 resync：客户端自己发现不了这个空洞。
+                    // 它排在被丢掉的那条**后面** —— 客户端在 resync 之后
+                    // 收到的都是比 resync 更新的事件，不会把删掉的东西又显示出来。
+                    channel.Writer.TryWrite(SseMessage.Resync);
                 }
             }
         }
@@ -122,7 +147,10 @@ public sealed class SseBroadcaster
     {
         var channel = Channel.CreateBounded<SseMessage>(new BoundedChannelOptions(SubscriberChannelCapacity)
         {
-            FullMode = BoundedChannelFullMode.Wait,
+            // DropOldest：慢客户端的通道满了就挤掉最旧的一条，
+            // 而不是把新来的丢掉 —— 它至少能跟上最新的状态
+            //（缺的那部分由 resync 兜住）。
+            FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
             SingleWriter = true
         });
