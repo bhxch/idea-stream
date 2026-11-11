@@ -124,7 +124,11 @@ public static class TemplateRenderer
         }
         catch (JsonException ex)
         {
-            throw new ArgumentException($"Body 模板必须是合法的 JSON：{ex.Message}", ex);
+            // JsonException 的消息是 BCL 的英文原文，而且**可能回显模板内容**：
+            // 「'xxx' is an invalid JSON literal」那条会把读到的那个裸串原样带出来
+            // （实测无长度截断）—— 模板里可能有 bot token，不能原样透给 API 用户。
+            // 所以对外的消息只用中文，ex 作为 inner exception 传出去供日志排查。
+            throw new ArgumentException("Body 模板必须是合法的 JSON", ex);
         }
         catch (ArgumentException ex)
         {

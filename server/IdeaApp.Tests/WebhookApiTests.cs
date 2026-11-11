@@ -360,6 +360,43 @@ public sealed class WebhookApiTests
     }
 
     /// <summary>
+    /// 模板不是合法 JSON 时，400 的 <c>detail</c> 是**纯中文**的，而且**不回显模板内容**：
+    /// BCL 的 JsonException 消息是英文的，而且会把读到的那个裸串原样带出来 ——
+    /// 模板里可能有 bot token，不能进 API 响应。
+    /// </summary>
+    [Fact]
+    public async Task Create_webhook_with_invalid_json_body_template_returns_400_with_chinese_detail_and_no_template_echo()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        // 以 n 开头的裸串：BCL 会把它整个回显进异常消息里。
+        const string tokenLike = "not_a_json_BOT_TOKEN_1234567890:AAHfakefakefakefakefake";
+
+        var response = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "钩子",
+            url = "https://example.com/hook",
+            method = "POST",
+            headers = new Dictionary<string, string>(),
+            bodyTemplate = tokenLike,
+            events = new[] { "idea.created" },
+            scope = "global",
+            projectId = (string?)null
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("invalid_body_template", problem.GetProperty("code").GetString());
+
+        var detail = problem.GetProperty("detail").GetString()!;
+        Assert.Equal("Body 模板必须是合法的 JSON", detail);
+        Assert.DoesNotContain(tokenLike, detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("invalid JSON literal", detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// 作用域与 projectId 必须一致：项目级必须给一个存在的项目，全局级必须不给。
     /// </summary>
     [Fact]

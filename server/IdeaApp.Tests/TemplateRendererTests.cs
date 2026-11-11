@@ -349,6 +349,44 @@ public sealed class TemplateRendererTests
     }
 
     /// <summary>
+    /// 模板不是合法 JSON 时，对外的消息是**纯中文**，而且**不回显模板内容**：
+    /// BCL 的 <see cref="JsonException"/> 消息是英文的，而且「'xxx' is an invalid JSON literal」
+    /// 那条会把读到的那个裸串**原样带出来**（实测无长度截断）—— 模板里可能有 bot token，
+    /// 不能进 API 响应。内部细节不能丢，所以 ex 仍作为 inner exception 传出去供日志排查。
+    /// </summary>
+    [Fact]
+    public void Validate_rejects_invalid_json_with_chinese_message_without_echoing_template()
+    {
+        // 以 n 开头的裸串：BCL 会把它整个回显进异常消息里。
+        const string tokenLike = "not_a_json_BOT_TOKEN_1234567890:AAHfakefakefakefakefake";
+
+        var ex = Assert.Throws<ArgumentException>(() => TemplateRenderer.Validate(tokenLike));
+
+        Assert.Equal("Body 模板必须是合法的 JSON", ex.Message);
+        Assert.DoesNotContain(tokenLike, ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("invalid JSON literal", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        // 内部细节没丢：日志里查得到原始的 JsonException。
+        // （BCL 抛的是 JsonException 的内部子类 JsonReaderException，所以这里是 IsAssignableFrom。）
+        Assert.IsAssignableFrom<JsonException>(ex.InnerException);
+    }
+
+    /// <summary>
+    /// 模板的**值里**含 bot token（且模板本身是坏的）时，错误消息同样不能把它带出来。
+    /// </summary>
+    [Fact]
+    public void Validate_rejects_invalid_json_without_echoing_token_in_value()
+    {
+        const string token = "BOT_TOKEN_1234567890:AAHfakefakefakefakefake";
+
+        var ex = Assert.Throws<ArgumentException>(
+            () => TemplateRenderer.Validate($$"""{"text":"{{token}}","x":}"""));
+
+        Assert.Equal("Body 模板必须是合法的 JSON", ex.Message);
+        Assert.DoesNotContain(token, ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 渲染结果与 BCL 自己的序列化（<c>JsonNode.ToJsonString(WriteIndented)</c>）**逐字节相同**：
     /// 输出的格式（缩进、转义、数字字面量、空容器）是 BCL 的口径，不是我们自己拼的。
     /// </summary>
