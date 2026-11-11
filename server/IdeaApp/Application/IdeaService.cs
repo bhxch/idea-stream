@@ -12,6 +12,10 @@ namespace IdeaApp.Application;
 /// <remarks>
 /// 每个写方法在**事务提交之后**发一条事件（SSE 推送、webhook 投递都靠它）。
 /// 绝不能在事务回调里发：事务回滚了却把事件发出去，订阅端就会收到幽灵事件。
+/// <para>
+/// **想法事件也带项目快照**（spec §11.2）：没有它的话，项目级 webhook 匹配不到想法事件，
+/// <c>{{project}}</c> 占位符也是空的。取项目快照的那次查询放在事务之外、发事件之前。
+/// </para>
 /// </remarks>
 public sealed class IdeaService(
     IdeaRepository repo,
@@ -77,7 +81,9 @@ public sealed class IdeaService(
         var targetProjectId = ResolveProjectId(projectId);
         var normalizedTags = NormalizeTags(tags);
 
-        EnsureProjectExists(targetProjectId);
+        // 项目在这一步就查出来：想法事件要带项目快照（spec §11.2），
+        // 顺带把「项目必须存在且不在回收站里」这条校验做掉 —— 不用查第二次。
+        var project = RequireProject(targetProjectId);
 
         var now = DateTimeOffset.UtcNow;
         var idea = new Idea(
@@ -101,7 +107,7 @@ public sealed class IdeaService(
         // 事件在事务提交之后才发。
         publisher.Publish(EventFactory.Create(
             EventTypes.IdeaCreated,
-            project: null,
+            project: ProjectSnapshot.From(project),
             idea: ToSnapshot(dto)));
 
         return dto;
@@ -142,7 +148,7 @@ public sealed class IdeaService(
 
         publisher.Publish(EventFactory.Create(
             EventTypes.IdeaUpdated,
-            project: null,
+            project: ProjectSnapshotOf(dto.ProjectId),
             idea: ToSnapshot(dto),
             changed: changed));
 
@@ -166,7 +172,7 @@ public sealed class IdeaService(
 
         publisher.Publish(EventFactory.Create(
             EventTypes.IdeaUpdated,
-            project: null,
+            project: ProjectSnapshotOf(dto.ProjectId),
             idea: ToSnapshot(dto),
             changed: new[] { "tags" }));
 
@@ -187,7 +193,7 @@ public sealed class IdeaService(
 
         publisher.Publish(EventFactory.Create(
             EventTypes.IdeaUpdated,
-            project: null,
+            project: ProjectSnapshotOf(dto.ProjectId),
             idea: ToSnapshot(dto),
             changed: new[] { "done" }));
 
@@ -243,7 +249,7 @@ public sealed class IdeaService(
 
         publisher.Publish(EventFactory.Create(
             EventTypes.IdeaDeleted,
-            project: null,
+            project: ProjectSnapshotOf(idea.ProjectId),
             idea: ToSnapshot(ToDto(idea))));
     }
 
@@ -277,11 +283,13 @@ public sealed class IdeaService(
         });
 
         // 批量是「每条想法一个事件」：订阅端逐条更新，不用重新拉整个列表。
+        // 项目快照按项目 id 缓存：同一批想法往往在同一个项目里，项目只查一次。
+        var projectCache = new Dictionary<string, ProjectSnapshot?>(StringComparer.Ordinal);
         foreach (var dto in updated)
         {
             publisher.Publish(EventFactory.Create(
                 EventTypes.IdeaUpdated,
-                project: null,
+                project: ProjectSnapshotOf(dto.ProjectId, projectCache),
                 idea: ToSnapshot(dto),
                 changed: new[] { "done" }));
         }
@@ -324,11 +332,12 @@ public sealed class IdeaService(
             return (IReadOnlyList<IdeaDto>)results;
         });
 
+        var projectCache = new Dictionary<string, ProjectSnapshot?>(StringComparer.Ordinal);
         foreach (var dto in updated)
         {
             publisher.Publish(EventFactory.Create(
                 EventTypes.IdeaUpdated,
-                project: null,
+                project: ProjectSnapshotOf(dto.ProjectId, projectCache),
                 idea: ToSnapshot(dto),
                 changed: new[] { "tags" }));
         }
@@ -370,11 +379,12 @@ public sealed class IdeaService(
             return (IReadOnlyList<IdeaDto>)results;
         });
 
+        var projectCache = new Dictionary<string, ProjectSnapshot?>(StringComparer.Ordinal);
         foreach (var dto in deleted)
         {
             publisher.Publish(EventFactory.Create(
                 EventTypes.IdeaDeleted,
-                project: null,
+                project: ProjectSnapshotOf(dto.ProjectId, projectCache),
                 idea: ToSnapshot(dto)));
         }
 
@@ -457,7 +467,7 @@ public sealed class IdeaService(
         // 载荷带上被硬删的源 id：订阅端据此把源条目从本地列表里去掉。
         publisher.Publish(EventFactory.Create(
             EventTypes.IdeaMerged,
-            project: null,
+            project: ProjectSnapshotOf(merged.ProjectId),
             idea: ToSnapshot(merged),
             mergedFrom: mergedFrom));
 
@@ -544,14 +554,50 @@ public sealed class IdeaService(
         return idea;
     }
 
-    /// <summary>项目必须存在且不在回收站里。</summary>
-    private void EnsureProjectExists(string projectId)
+    /// <summary>项目必须存在且不在回收站里，否则 404。返回那条项目（给事件的项目快照用）。</summary>
+    private Project RequireProject(string projectId)
     {
         var project = projects.Get(projectId);
         if (project is null || project.DeletedAt is not null)
         {
             throw new ApiException(404, "project_not_found", $"项目不存在：{projectId}");
         }
+
+        return project;
+    }
+
+    /// <summary>
+    /// 想法所属项目的快照 —— 想法事件要带上它（spec §11.2：想法事件的结构里也有 project）。
+    /// </summary>
+    /// <remarks>
+    /// 查询在**事务之外**、发事件之前：写事务已经提交了，这里只是多读一行项目，
+    /// 不会把事务范围扩大。
+    /// <para>
+    /// 项目行一定还在（想法外键指着它，项目到期清理时想法跟着级联删），
+    /// 万一取不到就返回 null：事件照发，只是载荷里没有项目名。
+    /// </para>
+    /// </remarks>
+    private ProjectSnapshot? ProjectSnapshotOf(string projectId) =>
+        ProjectSnapshotOf(projectId, new Dictionary<string, ProjectSnapshot?>(StringComparer.Ordinal));
+
+    /// <summary>
+    /// 同上，但带一个**按项目 id 的缓存**：一次批量操作可能涉及多个项目，
+    /// 同一个项目只查一次库。
+    /// </summary>
+    private ProjectSnapshot? ProjectSnapshotOf(
+        string projectId,
+        Dictionary<string, ProjectSnapshot?> cache)
+    {
+        if (cache.TryGetValue(projectId, out var cached))
+        {
+            return cached;
+        }
+
+        var project = projects.Get(projectId);
+        var snapshot = project is null ? null : ProjectSnapshot.From(project);
+        cache[projectId] = snapshot;
+
+        return snapshot;
     }
 
     /// <summary>没给项目（或给了空串）时落到内置收件箱。</summary>

@@ -103,7 +103,7 @@ public sealed class TrashService(
 
         publisher.Publish(EventFactory.Create(
             EventTypes.IdeaRestored,
-            project: null,
+            project: ProjectSnapshotOf(restored.ProjectId),
             idea: IdeaSnapshot.From(restored)));
 
         return IdeaService.ToDto(restored);
@@ -160,14 +160,28 @@ public sealed class TrashService(
             changed: new[] { "deletedAt" }));
 
         // 连带恢复的每条想法各发一条 idea.restored。
+        // 想法事件也带项目快照（spec §11.2）：带的是刚恢复回来的那个项目。
         foreach (var idea in restoredIdeas)
         {
             publisher.Publish(EventFactory.Create(
                 EventTypes.IdeaRestored,
-                project: null,
+                project: ProjectSnapshot.From(project),
                 idea: IdeaSnapshot.From(idea)));
         }
 
         return dto;
+    }
+
+    /// <summary>
+    /// 想法所属项目的快照 —— 想法事件要带上它（spec §11.2：想法事件的结构里也有 project）。
+    /// </summary>
+    /// <remarks>
+    /// 查询在**事务之外**、发事件之前：写事务已经提交了，这里只是多读一行项目。
+    /// 项目行一定还在（想法外键指着它），万一取不到就返回 null：事件照发，只是没有项目名。
+    /// </remarks>
+    private ProjectSnapshot? ProjectSnapshotOf(string projectId)
+    {
+        var project = projects.Get(projectId);
+        return project is null ? null : ProjectSnapshot.From(project);
     }
 }

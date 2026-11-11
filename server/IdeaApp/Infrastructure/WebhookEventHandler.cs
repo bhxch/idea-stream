@@ -46,9 +46,9 @@ public sealed class WebhookEventHandler(
             return ValueTask.CompletedTask;
         }
 
-        // 事件所属的项目：项目事件带项目快照；想法事件带想法的 projectId
-        // （想法事件里没有项目快照 —— 事件里只带着想法本身）。
-        var projectId = evt.Project?.Id ?? evt.Idea?.ProjectId;
+        // 事件所属的项目：项目事件与想法事件**都带项目快照**
+        // （spec §11.2：想法事件的结构里也有 project），所以直接读它。
+        var projectId = evt.Project?.Id;
 
         foreach (var webhook in webhooks.ListEnabledFor(projectId))
         {

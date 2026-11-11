@@ -214,11 +214,12 @@ public sealed class ProjectService(
 
         // 项目下面的想法也进了回收站：订阅端（浏览器、SSE）要知道它们也不在了，
         // 否则本地列表里会留着这些条目。
+        // 想法事件也带项目快照（spec §11.2）：带的是**刚被删掉的那个项目**。
         foreach (var idea in deletedIdeas)
         {
             publisher.Publish(EventFactory.Create(
                 EventTypes.IdeaDeleted,
-                project: null,
+                project: ProjectSnapshot.From(project),
                 idea: IdeaSnapshot.From(idea)));
         }
     }

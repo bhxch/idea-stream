@@ -53,7 +53,52 @@ public sealed class EventPublishingTests
         // 新建/删除这类事件没有「改了哪些字段」的概念。
         Assert.Null(evt.Changed);
         Assert.Null(evt.MergedFrom);
-        Assert.Null(evt.Project);
+
+        // 想法事件**也带项目快照**（spec §11.2）：没它的话项目级 webhook
+        // 匹配不到想法事件，{{project}} 占位符也是空的。
+        var project = Assert.IsType<ProjectSnapshot>(evt.Project);
+        Assert.Equal("inbox", project.Id);
+        Assert.Equal("收件箱", project.Name);
+    }
+
+    /// <summary>
+    /// 想法事件**必须带项目快照**：建、改、设标签、标记完成、删 —— 每一条都要带，
+    /// 带的是这条想法**所属**的项目。
+    /// </summary>
+    /// <remarks>
+    /// 没有项目快照的两处后果：项目级 webhook 按项目匹配时收不到想法事件；
+    /// <c>{{project}}</c> 占位符渲染成空串（Telegram 模板首行就没有项目名）。
+    /// </remarks>
+    [Fact]
+    public async Task Idea_events_carry_the_project_snapshot()
+    {
+        var publisher = new RecordingEventPublisher();
+        using var factory = new TestAppFactory(publisher: publisher);
+        using var client = factory.CreateClient();
+
+        var projectId = await ReadIdAsync(
+            await client.PostAsJsonAsync("/api/projects", new { name = "带快照的项目" }));
+
+        // 准备阶段（建项目）的事件不算。
+        publisher.Clear();
+
+        var ideaId = await CreateIdeaAsync(client, "第一条", projectId: projectId);
+
+        await PatchJsonAsync(client, $"/api/ideas/{ideaId}", new { content = "改过的正文" });
+        await client.PutAsJsonAsync($"/api/ideas/{ideaId}/tags", new { tags = new[] { "标签" } });
+        await client.PostAsJsonAsync($"/api/ideas/{ideaId}/complete", new { done = true });
+        await client.DeleteAsync($"/api/ideas/{ideaId}");
+
+        Assert.Equal(5, publisher.Events.Count);
+
+        Assert.All(publisher.Events, evt =>
+        {
+            Assert.StartsWith("idea.", evt.Type, StringComparison.Ordinal);
+
+            var project = Assert.IsType<ProjectSnapshot>(evt.Project);
+            Assert.Equal(projectId, project.Id);
+            Assert.Equal("带快照的项目", project.Name);
+        });
     }
 
     [Fact]
@@ -490,9 +535,13 @@ public sealed class EventPublishingTests
 
     /// <summary>建一条想法并返回它的 id。</summary>
     private static async Task<string> CreateIdeaAsync(
-        HttpClient client, string content, string? title = null, string[]? tags = null)
+        HttpClient client,
+        string content,
+        string? title = null,
+        string[]? tags = null,
+        string? projectId = null)
     {
-        var response = await client.PostAsJsonAsync("/api/ideas", new { content, title, tags });
+        var response = await client.PostAsJsonAsync("/api/ideas", new { content, title, tags, projectId });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         return await ReadIdAsync(response);

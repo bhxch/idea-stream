@@ -25,7 +25,7 @@ namespace IdeaApp.Tests;
 /// </summary>
 public sealed class WebhookDeliveryTests
 {
-    /// <summary>默认的 Body 模板：项目名对想法事件是空的（事件里没带项目快照），不依赖它。</summary>
+    /// <summary>默认的 Body 模板：不依赖项目名，测试只关心事件与正文。</summary>
     private const string DefaultBodyTemplate = """{"text":"{{event}} {{idea.content}}"}""";
 
     /// <summary>投递成功的判定：状态是 delivered。</summary>
@@ -261,6 +261,42 @@ public sealed class WebhookDeliveryTests
         var request = Assert.Single(endpoint.Requests);
         using var payload = JsonDocument.Parse(request.Body);
         Assert.Equal("idea.created A 的想法", payload.RootElement.GetProperty("text").GetString());
+    }
+
+    /// <summary>
+    /// 项目级 webhook 收得到**本项目**的想法事件，载荷里还带得出项目名
+    /// （<c>{{project}}</c> 渲染成项目名，不是空串）。
+    /// </summary>
+    /// <remarks>
+    /// 想法事件带项目快照（spec §11.2）是这条成立的前提：匹配按
+    /// <c>evt.Project?.Id == webhook.ProjectId</c> 判定，占位符也读的是同一个快照。
+    /// </remarks>
+    [Fact]
+    public async Task Project_webhook_receives_its_project_idea_events_with_project_name()
+    {
+        using var endpoint = new FakeEndpoint();
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "项目A");
+
+        var webhookId = await CreateWebhookAsync(
+            client,
+            endpoint.Url,
+            ["idea.created"],
+            scope: "project",
+            projectId: projectId,
+            bodyTemplate: """{"text":"[{{project}}] {{event}}"}""");
+
+        var created = await client.PostAsJsonAsync(
+            "/api/ideas", new { content = "A 的想法", projectId });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        await WaitForDeliveryAsync(client, webhookId, IsDelivered);
+
+        var request = Assert.Single(endpoint.Requests);
+        using var payload = JsonDocument.Parse(request.Body);
+        Assert.Equal("[项目A] idea.created", payload.RootElement.GetProperty("text").GetString());
     }
 
     /// <summary>
