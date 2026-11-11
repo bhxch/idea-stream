@@ -25,7 +25,8 @@
 - SQL 手写，不引入 EF Core 或任何 ORM。
 - 命名空间根：`IdeaApp`（`Domain` / `Application` / `Infrastructure` / `Contracts` / `Endpoints`）。
 - 时间戳一律 `DateTimeOffset`，存库转 UTC ISO-8601 字符串（`yyyy-MM-ddTHH:mm:ss.fffffffZ`）。
-- 所有实体 id 用 `Guid.CreateVersion7()`，转字符串时用 32 位无连字符小写 hex；内置收件箱 id 固定为 `inbox`。
+- 所有实体 id 用**单调 UUIDv7**（自实现的 `MonotonicGuid.NewUuid7()`，字节布局见 Task 5），转字符串时用 32 位无连字符小写 hex；内置收件箱 id 固定为 `inbox`。
+  > **不要用 .NET 的 `Guid.CreateVersion7()`** —— 实测它同一毫秒内完全无序（30 万样本 149,895 次相邻逆序，单毫秒最大桶 2422 个），且 .NET 10 只有 `CreateVersion7()` / `CreateVersion7(DateTimeOffset)` 两个重载，没有单调版本。用它会让「同刻写入的多条想法」顺序随机跳动，直接破坏「最近更新的在最下边」这个核心承诺。
 - API 路径前缀 `/api`；JSON 字段名 camelCase；错误统一 RFC 9457 ProblemDetails + 扩展字段 `code`。
 - 列表排序恒为 `updated_at ASC, id ASC`。
 - 事件不参与 SQLite 事务：领域服务先提交事务，再发布事件。
@@ -37,7 +38,7 @@
 
 以下五类输入/情形最可能咬人，每类都必须在对应 task 的测试里被钉住：
 
-1. **同刻写入的多条想法** —— `updated_at` 完全相同，列表顺序必须稳定（`id ASC`，UUIDv7 字典序 = 插入序），不能随机跳动。
+1. **同刻写入的多条想法** —— `updated_at` 完全相同，列表顺序必须稳定（`id ASC`，而 `id` 必须是**单调** UUIDv7），不能随机跳动。
 2. **正文含引号、换行、反斜杠、`<` `>`** —— 存 SQLite 不出错；渲染进 webhook JSON 不破坏 JSON；Telegram 纯文本模式原样送达。
 3. **跨项目合并** —— 必须拒绝并返回 `merge_cross_project`，绝不能把内容拼到另一个项目下。
 4. **删项目前已被单独删除的想法** —— 恢复项目时**不得**复活它，它仍以顶层条目留在回收站。
@@ -561,6 +562,43 @@ bash server/scripts/aot-smoke.sh
 - Consumes: Task 3 的 `Idea`/`IdeaDto`。
 - Produces:
   - **时间戳必须走 `SqliteDatabase.FormatTimestamp` / `ParseTimestamp`** —— `idea.updated_at` 要能被 SQL 的 `MAX()` 正确比较（定宽 `yyyy-MM-ddTHH:mm:ss.fffffffZ`，字典序 == 时间序）并被 `ParseExact` 正确解析。**不要在 `IdeaRepository` 里自己写时间戳格式**，否则 `ProjectRepository.LastActivityAt` 的 `MAX(idea.updated_at)` 排序会错、`ParseExact` 会抛 `FormatException` 变成 500。
+  - **`public static class MonotonicGuid`（新建 `server/IdeaApp/Domain/MonotonicGuid.cs`）**
+
+    ```csharp
+    public static class MonotonicGuid
+    {
+        public static Guid NewUuid7();                 // 用当前 UTC 毫秒
+        internal static Guid NewUuid7(long unixMs);    // 测试用：注入固定毫秒
+    }
+    ```
+
+    **字节布局（RFC 9562，大端 16 字节）**：
+
+    ```
+    bytes[0..6]   unix_ts_ms（48 位，大端）
+    bytes[6]      0x70 | (rand_a >> 8)        // ver = 7
+    bytes[7]      rand_a & 0xFF
+    bytes[8]      0x80 | (rand_b >> 56)       // var = 0b10
+    bytes[9..16]  rand_b 的低 56 位（大端）
+    ```
+
+    **计数器**：一个 74 位无符号计数器 `C`，`rand_a = (C >> 62) & 0xFFF`（12 位）、`rand_b = C & 0x3FFF_FFFF_FFFF_FFFF`（62 位）。
+
+    ```
+    lock 保护 (lastMs, C)：
+      ms = 当前 UTC 毫秒
+      若 ms != lastMs：lastMs = ms; C = 0        // 毫秒占最高位，ms 变大时 UUID 必然变大
+      否则：C += 1
+    ```
+
+    构造：`new Guid(bytes, bigEndian: true)`（.NET 8+ 的重载），`ToString("N")` 即得 RFC 顺序的 32 位小写 hex。
+
+    **必须钉住的测试**：
+    - 已知答案向量：`NewUuid7(0)` → `00000000-0000-7000-8000-000000000000`；`NewUuid7(0x0123456789AB)` → `01234567-89ab-7000-8000-000000000000`。
+    - 同一毫秒内连调 10000 次，`ToString("N")` 的 `string.CompareOrdinal` **严格递增**。
+    - 毫秒递增时也严格递增。
+    - 线程安全：多线程各生成若干个，全部不重复且整体有序（用并发调用验证不抛异常、id 不重复）。
+  - **所有生成 id 的地方都要改用 `MonotonicGuid.NewUuid7().ToString("N")`** —— 包括 `IdeaRepository.Insert`、Task 4 已有的 `ProjectRepository.Insert`（一行改动）、以及 Task 8 的 `EventFactory`。
   - `public sealed class IdeaRepository(SqliteDatabase db)`
     - `Idea? Get(string id)`
     - `Idea Insert(Idea idea)`
@@ -634,7 +672,7 @@ bash server/scripts/aot-smoke.sh
 - Create: `server/IdeaApp/Application/TagService.cs`
 - Create: `server/IdeaApp/Application/IdeaQuery.cs`
 - Modify: `server/IdeaApp/Infrastructure/IdeaRepository.cs`（加 `List(IdeaQuery)`）
-- Modify: `server/IdeaApp/Endpoints/IdeaEndpoints.cs`（加 `GET /api/ideas`）
+- Modify: `server/IdeaApp/Endpoints/IdeaEndpoints.cs`（**改造** Task 5 已有的 `GET /api/ideas`，加上过滤参数 —— **不要新增第二个同路径端点**，否则路由歧义）
 - Create: `server/IdeaApp/Endpoints/TagEndpoints.cs`
 - Create: `server/IdeaApp.Tests/FilteringTests.cs`
 
@@ -756,7 +794,7 @@ bash server/scripts/aot-smoke.sh
   - `public static class EventTypes { public const string IdeaCreated = "idea.created"; IdeaUpdated = "idea.updated"; IdeaDeleted = "idea.deleted"; IdeaRestored = "idea.restored"; IdeaMerged = "idea.merged"; ProjectCreated = "project.created"; ProjectUpdated = "project.updated"; ProjectDeleted = "project.deleted"; public static readonly string[] All; }`
   - `public interface IEventHandler { ValueTask HandleAsync(IdeaEvent evt, CancellationToken ct); }`
   - `public sealed class EventBus : IAsyncDisposable`，构造 `EventBus(IEnumerable<IEventHandler> handlers, ILogger<EventBus> logger)`，方法 `void Publish(IdeaEvent evt)`、`ValueTask DisposeAsync()`
-  - `public static class EventFactory`，方法 `IdeaEvent Create(string type, ProjectSnapshot? project, IdeaSnapshot? idea, string[]? changed = null, string[]? mergedFrom = null)` —— id 用 `Guid.CreateVersion7().ToString("N")`，timestamp 为当前 UTC。
+  - `public static class EventFactory`，方法 `IdeaEvent Create(string type, ProjectSnapshot? project, IdeaSnapshot? idea, string[]? changed = null, string[]? mergedFrom = null)` —— id 用 `MonotonicGuid.NewUuid7().ToString("N")`（**不是** `Guid.CreateVersion7()`，见 Global Constraints），timestamp 为当前 UTC。
 
 - [ ] **Step 1: 写失败测试**
 

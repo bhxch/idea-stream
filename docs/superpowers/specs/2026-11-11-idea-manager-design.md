@@ -113,7 +113,7 @@
 | SSE（`text/event-stream`） | 单向推送比 WebSocket 简单，浏览器原生 `EventSource` 自带重连；nginx 侧只需关掉 buffer |
 | `System.Threading.Channels` + `BackgroundService` | 进程内异步队列，够用且无额外依赖 |
 | 自写 Mustache 占位符渲染器（约 60 行） | 避免第三方模板引擎的 AOT/依赖风险；语法简单可控 |
-| `Guid.CreateVersion7()` 作主键 | .NET 9+ 内置，字典序即时间序，可直接当 SSE `Last-Event-ID`；无第三方 ULID 依赖 |
+| 自写单调 UUIDv7 生成器（`MonotonicGuid.NewUuid7()`）作主键 | .NET 的 `Guid.CreateVersion7()` **同一毫秒内不单调**（实测 30 万样本出现 149,895 次相邻逆序，单毫秒最大桶 2422 个），字典序 ≠ 插入序。而「同刻按插入序」是本项目的排序承诺（§10.1），必须按 RFC 9562 §6.2 的计数器法自己实现；无第三方 ULID 依赖 |
 
 ## 9. 数据模型
 
@@ -212,7 +212,7 @@ CREATE TABLE setting (
 
 ### 10.1 排序与置底
 
-- 列表排序恒为 `updated_at ASC, id ASC`。`id` 是 UUIDv7，字典序与插入顺序同向，因此**同刻写入的条目按插入先后排列，后插入的靠下**。
+- 列表排序恒为 `updated_at ASC, id ASC`。`id` 必须是**单调 UUIDv7**（自实现的计数器法，见 §8）—— .NET 内置的 `Guid.CreateVersion7()` 在同一毫秒内随机乱序，用它会让「同刻写入的条目」顺序随机跳动，直接破坏「最近更新的在最下边」这个承诺。
 - **任何写操作都会刷新 `updated_at`**，并因此把条目移到列表最下面。写操作包括：改正文/标题、设置标签、标记完成/取消完成、合并。
 - 「就地下方改写 + 移到最底部」是同一次操作的两个副作用，不保留任何历史版本。
 
@@ -679,7 +679,7 @@ idea.py telegram-template                     # 打印 Telegram webhook 模板
 - 手写 SQL 的具体写法、连接工厂与事务封装形式。
 - 前端组件拆分、CSS 组织方式、图标方案。
 - 标签输入框的补全交互细节。
-- 用什么 UUIDv7 → 字符串的编码形式（建议 32 位无连字符小写 hex）。
+- `MonotonicGuid.NewUuid7()` 的具体字节布局（实现者按此写，测试用已知答案向量钉住）。
 - 想法条目的 `title` 是否在列表里单独占一行（空标题时回落到正文首行）。
 
 ## 20. 已定的关键决定一览（含决策来源）
@@ -715,7 +715,7 @@ idea.py telegram-template                     # 打印 Telegram webhook 模板
 | SSE **恒定全量推送，过滤在客户端做** | AND/OR 偏好存在各设备 `localStorage`，服务端无从得知 |
 | 事件**不参与** SQLite 事务，提交成功后才投递 | `Channel` 无法随事务回滚，否则产生幽灵事件 |
 | 事件总线**扇出**：每个 handler 一条独立通道 | `Channels` 是竞争消费，共读一条通道会各拿一半事件 |
-| 同刻排序兜底用 `id ASC`（UUIDv7 字典序 = 插入序） | 「同刻插入的靠后」要求后插入者更大更靠下 |
+| 同刻排序兜底用 `id ASC`（要求 id 是**单调** UUIDv7，自实现计数器法） | 「同刻插入的靠后」要求后插入者更大更靠下；.NET 内置 `Guid.CreateVersion7()` 同毫秒内乱序，不满足 |
 | 项目级 webhook **不单独进回收站**，随项目隐式失效、随项目删除 | 回收站按需求只装「删除的想法」和「删除的项目」 |
 | 恢复项目**只恢复因删除项目而进回收站的想法**（`idea.deleted_at == project.deleted_at`） | 不复活用户明确单独删掉的东西 |
 | 投递记录**每次尝试更新同一行**，`attempts` = 总尝试次数（含首次） | 记录对应一次事件投递，不是每次尝试一行 |
