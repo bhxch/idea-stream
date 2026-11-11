@@ -821,9 +821,10 @@ bash server/scripts/aot-smoke.sh
 - Produces:
   - `public interface IEventPublisher { void Publish(IdeaEvent evt); }` —— 放在 `Domain/IdeaEvent.cs`。**服务层依赖这个接口，不依赖 `EventBus` 具体类**（这样测试能换成记录型的 fake）。
   - `public sealed class EventBus : IEventPublisher, IAsyncDisposable`
-  - `public sealed record ProjectSnapshot(string Id, string Name);`
+  - `public sealed record ProjectSnapshot(string Id, string Name, int SortOrder);` —— **必须带 `SortOrder`**：`project.updated` 的 `changed` 含 `sortOrder` 时，载荷里要能拿到新值，否则订阅端无法应用重排结果（评审 Important 1）
   - `public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, string Content, string[] Tags, bool Done, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);`
   - `public sealed record IdeaEvent(string Id, string Type, DateTimeOffset Timestamp, ProjectSnapshot? Project, IdeaSnapshot? Idea, string[]? Changed, string[]? MergedFrom);`
+    **`Changed` 的三态语义（订阅端必须遵守，写在这里以便 Task 9/14 抄走）**：`null` = 该事件类型没有「改了什么」这个概念（如 `idea.created`）；空数组 = 写了但值没变（如 `Update` 传了同样的正文）；非空数组 = 真正改了的字段名。
   - `public static class EventTypes { public const string IdeaCreated = "idea.created"; IdeaUpdated = "idea.updated"; IdeaDeleted = "idea.deleted"; IdeaRestored = "idea.restored"; IdeaMerged = "idea.merged"; ProjectCreated = "project.created"; ProjectUpdated = "project.updated"; ProjectDeleted = "project.deleted"; public static readonly string[] All; }`
   - `public interface IEventHandler { ValueTask HandleAsync(IdeaEvent evt, CancellationToken ct); }`
   - `EventBus` 构造 `EventBus(IEnumerable<IEventHandler> handlers, ILogger<EventBus> logger)`，方法 `void Publish(IdeaEvent evt)`（实现 `IEventPublisher`）、`ValueTask DisposeAsync()`
@@ -877,7 +878,7 @@ bash server/scripts/aot-smoke.sh
   | `IdeaService.Merge` | `idea.merged` | — | 载荷的 `mergedFrom` 带被硬删的源 id 列表 |
   | `ProjectService.Create` | `project.created` | — | |
   | `ProjectService.Rename` | `project.updated` | `["name"]` | |
-  | `ProjectService.Reorder` | `project.updated` × N | `["sortOrder"]` | 每条一条事件 |
+  | `ProjectService.Reorder` | `project.updated` × N | `["sortOrder"]` | **N = `sort_order` 值真的变了的项目数**，不是请求里的 id 数 —— `repo.Reorder` 会重写全表 `sort_order`，只按请求 id 发会让订阅端漏掉被挤走的项目。这条语义要写进 `IdeaEvent` 的 XML 注释（订阅端要遵守） |
   | `ProjectService.Delete` | `project.deleted` | — | |
 
   > `ProjectService.Restore` 属于 Task 10（回收站），它的事件也在 Task 10 接。
@@ -923,6 +924,8 @@ bash server/scripts/aot-smoke.sh
 ---
 
 ### Task 9: SSE 端点（心跳、Last-Event-ID 补发、resync）
+
+> **注册要求（Task 8 评审带出来的）**：`IEventHandler` 的实现**必须注册为 Singleton**。`EventBus` 在**根** provider 里用 `sp.GetServices<IEventHandler>()` 解析 handler —— 若注册成 Scoped，Development 下 `ValidateScopes` 会让根解析抛 `InvalidOperationException`，Production 下则会泄漏作用域。Task 14 的 webhook handler 同样遵守这一条。
 
 **Files:**
 - Create: `server/IdeaApp/Infrastructure/SseBroadcaster.cs`
