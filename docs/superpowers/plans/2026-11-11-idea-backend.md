@@ -1199,9 +1199,10 @@ bash server/scripts/aot-smoke.sh
 
 - [ ] **Step 2: 运行测试确认失败** → Expected: FAIL
 - [ ] **Step 3: 实现**
-  - `RenderJson` 用 `JsonNode.Parse` 解析模板，递归遍历：`JsonValue` 且底层是 string → 替换占位符（值用 `JsonEncodedText.Encode(value).ToString()` 转义）；对象/数组递归；其余原样。找不到的占位符保留原文本。
+  - `RenderJson` 用 `JsonNode.Parse` 解析模板，递归遍历：`JsonValue` 且底层是 string → 替换占位符；对象/数组递归；其余原样。找不到的占位符保留原文本。**输出走 `Utf8JsonWriter`（见 Interfaces 段），字符串按段 `WriteStringValueSegment` 写。**
   - 占位符语法：`{{name}}`，name 允许含 `.`（如 `idea.title`）。用正则 `\{\{([a-zA-Z0-9_.]+)\}\}` 匹配。
-  - **转义用 `JsonEncodedText.Encode` 的默认编码器**（不换 `UnsafeRelaxedJsonEscaping`）：它会把非 ASCII 与 `<` `>` `&` 转成 `\uXXXX`，原始 body 里中文不可读、体积变大 —— 但**接收方解析后完全等价**（Telegram 显示正常），而默认编码器对「接收方把 body 嵌进 HTML」的场景更安全。这是个不需要的暴露面，不开。
+  - **转义交给 writer 自己做**（`WriteStringValueSegment` 用的就是 `JsonWriterOptions.Encoder`，默认 `JavaScriptEncoder.Default`）—— **⚠️ 不要再预先 `JsonEncodedText.Encode`，那会转义两次**（引号变成 `\\"`）。这条是实测出来的。
+    默认编码器会把非 ASCII 与 `<` `>` `&` 转成 `\uXXXX`：原始 body 里中文不可读、体积变大，但**接收方解析后完全等价**（Telegram 显示正常），而默认编码器对「接收方把 body 嵌进 HTML」的场景更安全。不换 `UnsafeRelaxedJsonEscaping`。
   - `EventPlaceholders.Build` 的 `{{idea.done}}` 输出 `"true"` / `"false"` 字符串。
   - **`Build` 永远给出全部 11 个键**（没有对应数据时给**空串**，不是 null、也不是把占位符原样留下）—— 原样留下会让用户看到一堆没替换的 `{{project}}`，比空串更糟。
   - `{{idea.url}}`：`publicBaseUrl` 为 **null 或空串**（`AppOptions.PublicBaseUrl` 从 appsettings 绑出来默认是空串，不是 null —— 判断要用 `string.IsNullOrEmpty`）时输出**空串**，不要输出 `/?idea=xxx` 这种半截链接。
