@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using IdeaApp.Domain;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
@@ -63,4 +64,9 @@ namespace IdeaApp.Contracts;
 [JsonSerializable(typeof(BulkTagsRequest))]
 [JsonSerializable(typeof(BulkDeleteRequest))]
 [JsonSerializable(typeof(MergeIdeasRequest))]
+// 领域事件：SSE 的 data 帧与 webhook 的投递体都要序列化它，
+// 白名单里少登记一个，AOT 产物下这两条链路就是 500。
+[JsonSerializable(typeof(IdeaEvent))]
+[JsonSerializable(typeof(IdeaSnapshot))]
+[JsonSerializable(typeof(ProjectSnapshot))]
 public sealed partial class IdeaJsonContext : JsonSerializerContext;
