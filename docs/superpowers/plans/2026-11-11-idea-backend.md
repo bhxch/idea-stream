@@ -946,13 +946,16 @@ bash server/scripts/aot-smoke.sh
 - Produces:
   - `public sealed class SseBroadcaster(int bufferSize, int heartbeatSeconds = 25)`：`int BufferSize`、`int HeartbeatSeconds`、`void Append(IdeaEvent evt)`、`IReadOnlyList<IdeaEvent>? Since(string? lastEventId)` —— **可空**：`null` 表示缓冲里找不到该 id（要发 `resync`），非空表示找到了、返回它之后的全部事件、`SseSubscription Subscribe()`、`bool TryCompleteSubscription(...)`
   - `public sealed record SseSubscription(Guid Id, Channel<SseMessage> Channel);`
-  - **通道里跑的是 `SseMessage` 而不是 `IdeaEvent`** —— `resync` 是**控制帧**（没有业务事件、没有 `id:` 行），硬塞进事件通道只能靠「假事件」伪装，订阅端还得反向识别。`SseMessage` 把两种帧统一到一个可写的载体上：
+  - **通道里跑的是 `SseMessage` 而不是 `IdeaEvent`** —— `resync` 是**控制帧**（没有业务事件、没有 `id:` 行），硬塞进事件通道只能靠「假事件」伪装，订阅端还得反向识别。`SseMessage` 把两种帧统一到一个可写的载体上（**实现即如此，照抄这个形状**）：
     ```csharp
-    public abstract record SseMessage;
-    public sealed record SseEventMessage(IdeaEvent Event) : SseMessage;
-    public sealed record SseResyncMessage : SseMessage;
+    public sealed record SseMessage(IdeaEvent? Event)
+    {
+        public static SseMessage Of(IdeaEvent evt) => new(evt);   // 业务事件
+        public static SseMessage Resync { get; } = new((IdeaEvent?)null);  // 控制帧
+        public bool IsResync => Event is null;
+    }
     ```
-    `SseEventMessage` 渲染成 `id:` / `event:` / `data:` 三行；`SseResyncMessage` 渲染成 `event: resync` + `data: {}`（**不带 `id:` 行**，客户端不能拿它当 `Last-Event-ID`）。
+    `Event` 非 null 的帧渲染成 `id:` / `event:` / `data:` 三行；`Event` 为 null 的帧（`IsResync`）渲染成 `event: resync` + `data: {}`（**不带 `id:` 行**，客户端不能拿它当 `Last-Event-ID`）。**控制帧与业务事件必须走同一条通道** —— 顺序不能乱：客户端在 resync 之后收到的事件必须是比 resync 更新的那些，乱序会让它把已经删掉的东西又显示出来。
   - **SSE 订阅通道用 `DropOldest`（挤掉最旧的），与 `EventBus` 的「丢最新」有意不同** —— SSE 场景下订阅者最关心最新事件，挤掉旧的比丢新的合理。
   - `public sealed class SseEventHandler(SseBroadcaster broadcaster) : IEventHandler` —— `HandleAsync` 把事件 `Append` 进 broadcaster。
   - 端点 `GET /api/events` → `text/event-stream`，帧格式：
