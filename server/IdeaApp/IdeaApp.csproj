@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      SDK 10.0.113 内置的 ILCompiler 是 10.0.13，命中 advisory GHSA-p3jp-9v83-76w9（Brotli 解码器越界写，
+      修复版本为 10.0.14）。Directory.Build.props 开启了 TreatWarningsAsErrors，NU1903 会被升级为错误，
+      导致 restore 直接失败。显式把 ILCompiler 提到修复版本 10.0.14。
+      升级 SDK 到内置 10.0.14+ 的版本后可以删掉这一行。
+    -->
+    <KnownILCompilerPack Update="Microsoft.DotNet.ILCompiler" ILCompilerPackVersion="10.0.14" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.15" />
+  </ItemGroup>
+
+</Project>
