@@ -472,7 +472,7 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
     - `void SoftDelete(string id, DateTimeOffset at)`
     - `void Restore(string id)`
     - `void Reorder(IReadOnlyList<string> ids)`
-    - `DateTimeOffset? LastActivityAt(string projectId)`
+    - `DateTimeOffset LastActivityAt(string projectId)` —— **不返回 null**：未删想法的最大 `updated_at`，无未删想法时回落项目自身的 `updated_at`
     - `int CountActiveIdeas(string projectId)`
   - `public sealed class ProjectService(ProjectRepository repo)`：`IReadOnlyList<ProjectDto> List()`、`ProjectDto Create(string name)`、`ProjectDto Rename(string id, string name)`、`void Delete(string id)`、`ProjectDto Restore(string id)`、`IReadOnlyList<ProjectDto> Reorder(IReadOnlyList<string> ids)`
   - `public static class ProjectEndpoints { public static IEndpointRouteBuilder MapProjectEndpoints(this IEndpointRouteBuilder app); }`
