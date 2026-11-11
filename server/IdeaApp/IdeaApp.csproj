@@ -36,4 +36,9 @@
     <EmbeddedResource Include="Infrastructure/schema.sql" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 测试要能调用 internal 的测试缝（见 Domain/MonotonicGuid.cs）。 -->
+    <InternalsVisibleTo Include="IdeaApp.Tests" />
+  </ItemGroup>
+
 </Project>
