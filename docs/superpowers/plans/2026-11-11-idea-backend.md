@@ -742,7 +742,8 @@ bash server/scripts/aot-smoke.sh
 **Interfaces:**
 - Consumes: Task 5 的 `IdeaService`、`IdeaRepository`、Task 6 的 `ApiResults`。
 - Produces:
-  - `IdeaService` 新增：`IReadOnlyList<IdeaDto> BulkSetDone(IReadOnlyList<string> ids, bool done)`、`IReadOnlyList<IdeaDto> BulkSetTags(IReadOnlyList<string> ids, IReadOnlyList<string> tags, bool replace)`、`void BulkDelete(IReadOnlyList<string> ids)`、`IdeaDto Merge(IReadOnlyList<string> ids, string? content, string? title)`
+  - `IdeaService` 新增：`IReadOnlyList<IdeaDto> BulkSetDone(IReadOnlyList<string> ids, bool done)`、`IReadOnlyList<IdeaDto> BulkSetTags(IReadOnlyList<string> ids, IReadOnlyList<string> tags, bool replace)`、`IReadOnlyList<IdeaDto> BulkDelete(IReadOnlyList<string> ids)`、`IdeaDto Merge(IReadOnlyList<string> ids, string? content, string? title)`
+  - **三个批量端点一律返回 `200` + 受影响实体的数组**（含 `bulk/delete`）。spec §13.5 的「删除返回 204」只适用于 HTTP 方法 `DELETE`（`DELETE /api/ideas/{id}`），**不适用于 `POST /api/ideas/bulk/delete`**。`bulk/delete` 返回被软删的想法数组 —— 前端能立刻从本地列表移除它们，也能显示「已删除 N 条」，不必等重新拉列表。
   - 端点：`POST /api/ideas/bulk/complete`（body `{ids[], done}`）、`POST /api/ideas/bulk/tags`（body `{ids[], tags[], replace?}`）、`POST /api/ideas/bulk/delete`（body `{ids[]}`）、`POST /api/ideas/merge`（body `{ids[], content?, title?}`）
 
 **前序 task 留下的、你必须知道的事**
@@ -763,6 +764,15 @@ bash server/scripts/aot-smoke.sh
 [Fact] public async Task Bulk_tags_appends_by_default_and_replaces_when_flagged
 
 [Fact] public async Task Bulk_delete_soft_deletes_all
+
+[Fact] public async Task Bulk_tags_bumps_updated_at
+// 断言 bulk/tags 后受影响想法的 updated_at 变了（核心承诺：任何写操作都刷新）
+
+[Fact] public async Task Bulk_delete_bumps_updated_at
+// 断言 bulk/delete 后受影响想法的 updated_at 变了
+
+[Fact] public async Task Bulk_with_empty_id_list_is_a_no_op
+// 空 ids → 200/204，不报错（"没选东西"与"选的全没了"是两回事）
 
 [Fact] public async Task Merge_creates_new_idea_with_concatenated_content
 // 三条 content "A"、"B"、"C" → 合并结果 content == "A\n\nB\n\nC"（按 updated_at 升序）
