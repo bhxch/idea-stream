@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using IdeaApp.Contracts;
 using IdeaApp.Infrastructure;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -410,6 +411,230 @@ public sealed class WebhookApiTests
 
         var forB = repository.ListEnabledFor(projectB).Select(w => w.Id).ToArray();
         Assert.Equal(new[] { globalId, projectBId }, forB);
+    }
+
+    /// <summary>缺 name / 空 name → 400 invalid_webhook_name。</summary>
+    [Fact]
+    public async Task Create_webhook_with_blank_name_returns_400_code_invalid_webhook_name()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var payloads = new[]
+        {
+            // 缺 name
+            """{"url":"https://example.com/hook","method":"POST","bodyTemplate":"{}","events":[],"scope":"global"}""",
+            """{"name":"","url":"https://example.com/hook","method":"POST","bodyTemplate":"{}","events":[],"scope":"global"}""",
+            """{"name":"   ","url":"https://example.com/hook","method":"POST","bodyTemplate":"{}","events":[],"scope":"global"}"""
+        };
+
+        foreach (var payload in payloads)
+        {
+            var response = await PostJsonAsync(client, "/api/webhooks", payload);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            var problem = await ReadProblemAsync(response);
+            Assert.Equal("invalid_webhook_name", problem.GetProperty("code").GetString());
+        }
+    }
+
+    /// <summary>
+    /// URL 为空或不是 http(s) 绝对地址 → 400 invalid_webhook_url。
+    /// </summary>
+    /// <remarks>
+    /// 错误信息里**不回显 URL**：Telegram 的 bot token 就在 URL 路径里，
+    /// 回显出去等于把 token 写进了日志与 skill 的 stderr。
+    /// </remarks>
+    [Fact]
+    public async Task Create_webhook_with_invalid_url_returns_400_code_invalid_webhook_url()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var payloads = new[]
+        {
+            // 缺 url
+            """{"name":"钩子","method":"POST","bodyTemplate":"{}","events":[],"scope":"global"}""",
+            """{"name":"钩子","url":"","method":"POST","bodyTemplate":"{}","events":[],"scope":"global"}""",
+            """{"name":"钩子","url":"   ","method":"POST","bodyTemplate":"{}","events":[],"scope":"global"}""",
+            // 不是绝对地址
+            """{"name":"钩子","url":"example.com/hook","method":"POST","bodyTemplate":"{}","events":[],"scope":"global"}""",
+            // 不是 http(s)
+            """{"name":"钩子","url":"ftp://example.com/hook","method":"POST","bodyTemplate":"{}","events":[],"scope":"global"}"""
+        };
+
+        foreach (var payload in payloads)
+        {
+            var response = await PostJsonAsync(client, "/api/webhooks", payload);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            var problem = await ReadProblemAsync(response);
+            Assert.Equal("invalid_webhook_url", problem.GetProperty("code").GetString());
+
+            var body = await response.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("example.com", body, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Telegram 预设的 URL 里带 <c>&lt;BOT_TOKEN&gt;</c> 占位符 ——
+    /// 它不是合法的 URI 字符，但整体仍是 http(s) 绝对地址，
+    /// 不能被 URL 校验挡掉（否则页面自己给的预设自己用不了）。
+    /// </summary>
+    [Fact]
+    public async Task Create_webhook_accepts_telegram_preset_url_with_placeholder()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "Telegram",
+            url = "https://api.telegram.org/bot<BOT_TOKEN>/sendMessage",
+            method = "POST",
+            headers = new Dictionary<string, string>(),
+            bodyTemplate = ValidBodyTemplate,
+            events = new[] { "idea.created" },
+            scope = "global",
+            projectId = (string?)null
+        });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
+    /// <summary>scope 不是 global / project → 400 invalid_webhook_scope。</summary>
+    [Fact]
+    public async Task Create_webhook_with_unknown_scope_returns_400_code_invalid_webhook_scope()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var payloads = new[]
+        {
+            // 缺 scope
+            """{"name":"钩子","url":"https://example.com/hook","method":"POST","bodyTemplate":"{}","events":[]}""",
+            """{"name":"钩子","url":"https://example.com/hook","method":"POST","bodyTemplate":"{}","events":[],"scope":""}""",
+            """{"name":"钩子","url":"https://example.com/hook","method":"POST","bodyTemplate":"{}","events":[],"scope":"team"}"""
+        };
+
+        foreach (var payload in payloads)
+        {
+            var response = await PostJsonAsync(client, "/api/webhooks", payload);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            var problem = await ReadProblemAsync(response);
+            Assert.Equal("invalid_webhook_scope", problem.GetProperty("code").GetString());
+        }
+    }
+
+    /// <summary>
+    /// 单查响应体同样不带 secret 明文 —— 这是「secret 不回传」的关键路径之一：
+    /// 单查会把整个配置面（URL、Body 模板、请求头）原样回传。
+    /// </summary>
+    [Fact]
+    public async Task Get_webhook_returns_config_without_secret_plaintext()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var created = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "带密钥的钩子",
+            url = "https://example.com/hook",
+            method = "POST",
+            headers = new Dictionary<string, string> { ["X-Token"] = "value" },
+            bodyTemplate = ValidBodyTemplate,
+            events = new[] { "idea.created" },
+            scope = "global",
+            projectId = (string?)null,
+            secret = "single-secret"
+        });
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        using var document = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        var id = document.RootElement.GetProperty("id").GetString()!;
+
+        var response = await client.GetAsync($"/api/webhooks/{id}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        using var single = JsonDocument.Parse(body);
+        var root = single.RootElement;
+
+        Assert.Equal(id, root.GetProperty("id").GetString());
+        Assert.True(root.GetProperty("hasSecret").GetBoolean());
+
+        // 配置面确实返回了（不然「没返回」也算不上「没泄漏」）。
+        Assert.Equal("https://example.com/hook", root.GetProperty("url").GetString());
+        Assert.Equal(ValidBodyTemplate, root.GetProperty("bodyTemplate").GetString());
+
+        // 但密钥明文一个字都不在里面。
+        Assert.DoesNotContain("single-secret", body, StringComparison.Ordinal);
+        Assert.False(root.TryGetProperty("secret", out _));
+    }
+
+    /// <summary>
+    /// 请求体 record 的字段必须声明为**可空**。
+    /// </summary>
+    /// <remarks>
+    /// 签名是给调用方看的契约：JSON 里缺字段时反序列化出来就是 null，
+    /// 服务层据此返回 400（<c>invalid_webhook_name</c> / <c>invalid_webhook_url</c> 等）。
+    /// 签名写成非空就是在骗调用方 —— 照着它写代码的人（比如 <c>req.Name.Trim()</c>）
+    /// 会在「客户端漏传字段」这一种输入上踩到 NRE。
+    /// <para>
+    /// 这条断言是**编译期**的：把 null 传给非空参数是 CS8625，
+    /// 而测试项目开着 <c>TreatWarningsAsErrors</c> —— 谁把字段改回非空，
+    /// 测试项目直接编译不过，比运行期断言更早、更硬。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Webhook_request_records_accept_missing_fields_as_null()
+    {
+        var create = new WebhookCreateRequest(
+            Name: null,
+            Url: null,
+            Method: null,
+            Headers: null,
+            BodyTemplate: null,
+            Events: null,
+            Scope: null,
+            ProjectId: null,
+            Secret: null);
+
+        var update = new WebhookUpdateRequest(
+            Name: null,
+            Url: null,
+            Method: null,
+            Headers: null,
+            BodyTemplate: null,
+            Events: null,
+            Enabled: null,
+            Secret: null);
+
+        Assert.Null(create.Name);
+        Assert.Null(create.Url);
+        Assert.Null(create.Method);
+        Assert.Null(create.Headers);
+        Assert.Null(create.BodyTemplate);
+        Assert.Null(create.Events);
+        Assert.Null(create.Scope);
+        Assert.Null(create.ProjectId);
+        Assert.Null(create.Secret);
+
+        Assert.Null(update.Name);
+        Assert.Null(update.Url);
+        Assert.Null(update.Method);
+        Assert.Null(update.Headers);
+        Assert.Null(update.BodyTemplate);
+        Assert.Null(update.Events);
+        Assert.Null(update.Enabled);
+        Assert.Null(update.Secret);
     }
 
     /// <summary>建一个项目并返回它的 id。</summary>
