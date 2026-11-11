@@ -281,9 +281,9 @@ CREATE TABLE setting (
 
 ```json
 {
-  "id": "0199a7f2-3c4d-7abc-8def-0123456789ab",
+  "id": "0199a7f23c4d7abc8def0123456789ab",
   "type": "idea.updated",
-  "timestamp": "2026-11-11T09:00:00.0000000Z",
+  "timestamp": "2026-11-11T09:00:00+00:00",
   "project": { "id": "inbox", "name": "收件箱" },
   "idea": {
     "id": "0199a7f1-...", "title": null, "content": "…",
@@ -296,6 +296,11 @@ CREATE TABLE setting (
 ```
 
 `mergedFrom` 只在 `idea.merged` 时出现，其余事件省略。
+
+**两个格式细节**（实现即如此，客户端按此解析）：
+
+- **`id` 是 32 位无连字符的小写 hex**（`Guid.ToString("N")` 格式），**不带连字符**。它是单调 UUIDv7，字典序与生成序同向 —— SSE 的 `Last-Event-ID` 原样回传即靠这个。
+- **`timestamp` 用 `System.Text.Json` 的默认 `DateTimeOffset` 格式**，形如 `2026-11-11T09:00:00+00:00`（**不是** `...Z` 结尾 —— 那是存库用的格式，两者不同）。
 
 ### 11.3 广播机制
 
