@@ -25,6 +25,33 @@
 - 不使用 Pinia；状态用组合式函数 + 模块级单例。
 - 每个 task 结束提交一次，commit message 用 Conventional Commits（中文正文）。
 
+## 后端契约要点（后端 11 个 task 已实现，前端必须按这些写）
+
+**SSE 事件**（`GET /api/events`，`text/event-stream`）：
+
+- 帧格式严格三行 + 空行：`id: <事件id>` / `event: <类型>` / `data: <单行 JSON>`。
+- **事件 id 是 32 位无连字符的小写 hex**（单调 UUIDv7，字典序 = 生成序）。重连时用 `Last-Event-ID` 原样回传。
+- **`timestamp` 是 `+00:00` 结尾**（STJ 默认 `DateTimeOffset` 格式），**不是 `Z`** —— `Z` 是后端存库用的格式，两者不同。
+- **`resync` 是控制帧**：没有 `id:` 行、`data` 是 `{}`。**两种场合服务端会发它**：① 重连时 `Last-Event-ID` 在缓冲里找不到；② 某个订阅者太慢、它的通道被挤掉了一条事件（保持连接的客户端无法自行检出间隙 → 会静默空洞）。**收到 `resync` 就重新拉取当前列表。**
+- **`Changed`（`changed` 字段）的语义**：`null` = 该事件类型没有「改了什么」的概念（如 `idea.created`）；空数组 = 写了但值没变；非空数组 = 该操作写过的字段名。**注意三种口径不同**：`idea.updated`（Update）只列真正变了的字段；`SetTags`/`SetDone`（含批量）**一律**列该字段；项目改名一律列 `name`；**重排的 `["sortOrder"]` 是有条件列的**（只在 `sort_order` 真变时发）。
+  → **不要按「`changed` 里有该字段 = 值真变了」写逻辑**。
+- **重排的事件条数** = `sort_order` 值**真的变了**的项目数，**不是**请求里的 id 数（后端会重写全表 `sort_order`，但只有活跃项目的变化产生事件）。
+- **`project.updated` 的 `changed` 可能有第五种取值 `["deletedAt"]`** —— 项目从回收站恢复时发的，前端要认识它。
+- 客户端断开后重连用 `EventSource` 的自动重连即可，但**要自己带 `Last-Event-ID`**（后端支持 `?lastEventId=` 或请求头）。
+
+**API 契约**：
+
+| 端点 | 返回 | 注意 |
+|---|---|---|
+| `GET /api/ideas` | **裸数组**（不分页） | `projectId`（可空=全部）、`status`（all/open/done）、`tags`（逗号分隔）、`tagMode`（or/and，默认 or）。超过 2000 条返回 400 `too_many_ideas` |
+| `POST /api/ideas/bulk/delete` | **200 + 被软删的想法数组** | **不是 204** —— 前端可以直接把它们从本地列表移除 |
+| `GET /api/trash` | **两类条目**的数组 | `kind` 为 `project`（容器）或 `idea`（顶层）。**容器条目的条数用 `entry.ideas.length`，不要用 `entry.project.ideaCount`**（后者统计的是未删想法，已删项目恒为 0） |
+| `GET /api/webhooks?projectId=` | 裸数组 | **不带 `projectId` 只列全局作用域的**；带了就列该项目的 |
+| `POST /api/ideas/{id}/restore` | 200 + 想法 | 目标不在回收站 → 400 `not_in_trash` |
+| `DELETE /api/ideas/{id}` | 204 | **幂等**：已在回收站的想法再删一次也是 204，不改 `deleted_at`、不发事件 |
+
+**错误码**（ProblemDetails 的 `code` 扩展字段）：`idea_not_found`、`project_not_found`、`inbox_not_deletable`、`invalid_content`、`invalid_project_name`、`invalid_reorder_ids`、`invalid_status`、`invalid_tag_mode`、`invalid_merge_selection`、`merge_cross_project`、`not_in_trash`、`too_many_ideas`，以及 webhook 相关的 `invalid_webhook_name`/`invalid_webhook_url`/`invalid_webhook_scope`/`invalid_webhook_project`/`invalid_body_template`/`webhook_not_found`。**全集见 skill 计划的错误码表。**
+
 ## Review Focus
 
 1. **SSE 事件与本地乐观更新撞车** —— 自己发起的操作已乐观插入，广播回来时不能出现两条（按事件 id / 想法 id 去重）。
