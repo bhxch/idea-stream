@@ -96,16 +96,30 @@ public sealed class ProjectService(
         ProjectSortMode.Resolve(settings.Get(SettingKeys.ProjectSortMode));
 
     /// <summary>按最近活动时间比较（新的在前）。</summary>
+    /// <remarks>
+    /// 活动时间直接取 DTO 自带的 <see cref="ProjectDto.LastActivityAt"/>：
+    /// 它由 <see cref="ProjectRepository.LastActivityAt"/> 给出，契约上**非空**
+    /// （没有未删想法时已在仓储里回落到项目自身的 <c>updated_at</c>）。
+    /// 服务层不再写第二份回落规则 —— 两处各写一遍就会分叉，
+    /// 前端显示的「最近活动」和列表顺序会对不上。
+    /// </remarks>
     private static int CompareByActivityDesc(ProjectDto left, ProjectDto right)
     {
-        var leftActivity = left.LastActivityAt ?? left.UpdatedAt;
-        var rightActivity = right.LastActivityAt ?? right.UpdatedAt;
+        // DTO 上这个字段声明成可空（对外协议如此），但唯一的取值路径是仓储，
+        // 它保证非空；这里用 ! 表明「依赖仓储契约」，不做兜底。
+        var leftActivity = left.LastActivityAt!.Value;
+        var rightActivity = right.LastActivityAt!.Value;
 
         // left 更新时返回负数（left 排前面）。
         return rightActivity.CompareTo(leftActivity);
     }
 
-    /// <summary>新建项目，新项目排在最后。</summary>
+    /// <summary>新建项目。</summary>
+    /// <remarks>
+    /// 新项目的 <c>sort_order</c> 取全表最大值 +1，所以 <c>manual</c>（手动排序）
+    /// 模式下它排在最后；默认的 <c>recent</c> 模式按最近活动时间排，
+    /// 新项目的活动时间最新，它排到最前。
+    /// </remarks>
     public ProjectDto Create(string name)
     {
         var trimmed = NormalizeName(name);

@@ -265,8 +265,10 @@ public sealed class ProjectRepository(SqliteDatabase db)
     /// 没有未删想法时回落到项目自身的 <c>updated_at</c>。
     /// </summary>
     /// <remarks>
-    /// 不返回 null：DTO 展示与 Task 13 的 recent 排序必须用同一个值，
-    /// 两边口径分叉的话，前端显示的「最近活动」和排序会对不上。
+    /// 契约：**返回非空**（项目不存在时抛 <see cref="InvalidOperationException"/>）。
+    /// 调用方可以直接依赖这个值，不要在别处再写一份
+    /// 「没有未删想法就回落项目自身 <c>updated_at</c>」的规则 ——
+    /// 两处口径分叉的话，前端显示的「最近活动」和 recent 排序会对不上。
     /// </remarks>
     public DateTimeOffset LastActivityAt(string projectId)
     {
