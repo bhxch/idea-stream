@@ -16,3 +16,4 @@ web/dist/
 # 临时目录
 .temp/
 .superpowers/
+.worktrees/
