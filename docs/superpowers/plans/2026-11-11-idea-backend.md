@@ -881,7 +881,7 @@ bash server/scripts/aot-smoke.sh
   | `ProjectService.Reorder` | `project.updated` × N | `["sortOrder"]` | **N = `sort_order` 值真的变了的项目数**，不是请求里的 id 数 —— `repo.Reorder` 会重写全表 `sort_order`，只按请求 id 发会让订阅端漏掉被挤走的项目。这条语义要写进 `IdeaEvent` 的 XML 注释（订阅端要遵守） |
   | `ProjectService.Delete` | `project.deleted` | — | |
 
-  > `ProjectService.Restore` 属于 Task 10（回收站），它的事件也在 Task 10 接。
+  > `ProjectService.Restore` 属于 Task 10（回收站），它的事件也在 Task 10 接 —— **恢复项目发 `project.updated`（`changed` 为 `["deletedAt"]`）**，因为 spec 的 8 种事件类型里没有 `project.restored` 这一类；**恢复项目时连带恢复的每条想法，各发一条 `idea.restored`**。
 
   **事件载荷**：`IdeaEvent.Idea` 是 `IdeaSnapshot`（`Idea` 去掉 `DeletedAt`、标签转 `string[]`），`Project` 是 `ProjectSnapshot`（Id、Name 与 `SortOrder` —— 重排后订阅端要靠它更新本地顺序）。
 
