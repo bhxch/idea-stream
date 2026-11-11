@@ -226,6 +226,36 @@ public sealed class EventBusTests
     }
 
     /// <summary>
+    /// 排空超时之后才以异常结束的消费循环，异常也要被观察到：
+    /// 没人 await 的 Task 异常会静默丢失（默认被吞掉）。
+    /// </summary>
+    [Fact]
+    public async Task DisposeAsync_observes_a_consumer_loop_that_faults_after_the_drain_timeout()
+    {
+        var handler = new StuckHandler(throwAfterRelease: true);
+        var logger = new ThrowOnceOnErrorLogger();
+
+        await using var bus = new EventBus(
+            new IEventHandler[] { handler },
+            logger,
+            TimeSpan.FromMilliseconds(100));
+
+        bus.Publish(EventFactory.Create(EventTypes.IdeaCreated, project: null, idea: null));
+        await handler.Started;
+
+        // handler 卡着不放 → 排空超时，释放在上限内返回。
+        await bus.DisposeAsync();
+
+        // 之后 handler 抛异常 → 消费循环以异常结束（连同日志一起炸）。
+        handler.Release();
+
+        // 这个异常必须被记进日志，而不是变成没人观察的未观察异常。
+        await WaitUntilAsync(
+            () => logger.Messages.Any(message => message.Contains("消费循环异常结束")),
+            "消费循环的异常应当被记进日志");
+    }
+
+    /// <summary>
     /// 事件 id 用单调 UUIDv7：字典序与生成顺序同向，
     /// SSE 补发时才能按 id 判断「哪些事件已经发过了」。
     /// </summary>
@@ -388,7 +418,10 @@ public sealed class EventBusTests
     }
 
     /// <summary>卡住不返回的处理器（模拟「怎么喊都不收工」的订阅者）。</summary>
-    private sealed class StuckHandler : IEventHandler
+    /// <param name="throwAfterRelease">
+    /// true 时：放行之后抛异常（用来制造「消费循环以异常结束」）。
+    /// </param>
+    private sealed class StuckHandler(bool throwAfterRelease = false) : IEventHandler
     {
         private readonly TaskCompletionSource _started =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -407,7 +440,76 @@ public sealed class EventBusTests
 
             // 不看 token：模拟不响应收工信号的订阅者。
             await _release.Task;
+
+            if (throwAfterRelease)
+            {
+                throw new InvalidOperationException("这个处理器卡住之后故意失败");
+            }
         }
+    }
+
+    /// <summary>
+    /// 第一次写错误日志时抛异常的日志器：
+    /// 用来制造「消费循环以异常结束」（记日志这一步自己炸了，异常就没人兜）。
+    /// </summary>
+    private sealed class ThrowOnceOnErrorLogger : ILogger<EventBus>
+    {
+        private readonly object _gate = new();
+        private readonly List<string> _messages = new();
+        private bool _thrown;
+
+        /// <summary>已记录的日志（按记录顺序）。</summary>
+        public IReadOnlyList<string> Messages
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _messages.ToArray();
+                }
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (_gate)
+            {
+                _messages.Add(formatter(state, exception));
+
+                if (logLevel == LogLevel.Error && !_thrown)
+                {
+                    _thrown = true;
+                    throw new InvalidOperationException("这个日志器故意在写错误日志时抛异常");
+                }
+            }
+        }
+    }
+
+    /// <summary>等某个条件成立（超时即测试失败）。</summary>
+    private static async Task WaitUntilAsync(Func<bool> condition, string what)
+    {
+        var deadline = DateTime.UtcNow.Add(Timeout);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(20);
+        }
+
+        Assert.True(condition(), $"等待超时：{what}");
     }
 
     /// <summary>

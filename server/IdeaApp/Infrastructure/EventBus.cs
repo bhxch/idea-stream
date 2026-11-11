@@ -156,15 +156,8 @@ public sealed class EventBus : IEventPublisher, IAsyncDisposable
 
         if (await Task.WhenAny(consumers, Task.Delay(_drainTimeout)) == consumers)
         {
-            try
-            {
-                await consumers;
-            }
-            catch (Exception ex)
-            {
-                // 消费循环自己兜住了异常，这里只是兜底：释放失败不该把应用带崩。
-                _logger.LogError(ex, "事件总线排空时消费循环异常");
-            }
+            // 正常排空：消费循环的异常要观察掉（不能变成没人看见的未观察异常）。
+            await ObserveConsumersAsync(consumers);
 
             _shutdown.Dispose();
             _abort.Dispose();
@@ -178,9 +171,46 @@ public sealed class EventBus : IEventPublisher, IAsyncDisposable
         // 强制结束读循环；已经在跑的 handler 由它自己收尾。
         _abort.Cancel();
 
-        await Task.WhenAny(consumers, Task.Delay(ForceStopGrace));
+        if (await Task.WhenAny(consumers, Task.Delay(ForceStopGrace)) == consumers)
+        {
+            // 消费循环这时结束了：把它的异常观察掉。
+            await ObserveConsumersAsync(consumers);
+        }
+        else
+        {
+            // 消费循环还卡在 handler 里：挂一个观察者继续等它。
+            // 它之后以异常结束时，异常也要被记进日志 ——
+            // 没人 await 这个任务的话，异常会静默丢失。
+            _ = ObserveConsumersAsync(consumers);
+        }
 
         // 不释放 token 源：可能还有 handler 在跑，它还要用这个 token。
+    }
+
+    /// <summary>
+    /// 观察消费循环的异常：把它记进日志，而不是让它变成没人看见的未观察异常。
+    /// </summary>
+    /// <remarks>
+    /// 消费循环自己兜住了 handler 的异常，正常情况下不会到这里；
+    /// 兜不住（例如日志器自己抛异常）时也不能让异常静默丢失。
+    /// </remarks>
+    private async Task ObserveConsumersAsync(Task consumers)
+    {
+        try
+        {
+            await consumers;
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                _logger.LogError(ex, "事件总线的消费循环异常结束");
+            }
+            catch
+            {
+                // 连记日志都失败了：观察者自己不能变成新的未观察异常。
+            }
+        }
     }
 
     /// <summary>
