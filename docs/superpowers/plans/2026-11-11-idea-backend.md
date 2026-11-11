@@ -1029,7 +1029,7 @@ bash server/scripts/aot-smoke.sh
 - [ ] **Step 3: 实现**
   - `TrashService.List()`：先查已删项目（`project.deleted_at IS NOT NULL`），每个项目取其**全部** idea（含已删）作为容器；再查顶层 idea = `idea.deleted_at IS NOT NULL` 且（所属项目未删除，或 `idea.deleted_at != project.deleted_at`）。容器排在顶层之前。
   - `RestoreProject`：`UPDATE idea SET deleted_at=NULL, updated_at=now WHERE project_id=? AND deleted_at IS NOT NULL AND deleted_at = (SELECT deleted_at FROM project WHERE id=?)` —— 只恢复「因删项目而删」的。
-  - **删项目时必须同步写其下想法的 `deleted_at`**（与项目 `deleted_at` 同一时刻）。`ProjectService.Delete`（Task 4 建的）现在**只软删项目行**，其下想法仍是 active —— 结果是「删掉的项目下的想法继续出现在 `GET /api/ideas` 列表里」。本 task 要把这段语义补上：`ProjectService.Delete` 改为在同一个事务里把项目 `deleted_at` 与其下未删想法的 `deleted_at` 一起置为同一时刻。**这是 Task 10 的核心职责，不是可选的。**
+  - **删项目时必须同步写其下想法的 `deleted_at`**（与项目 `deleted_at` 同一时刻）。**并且要为每条被软删的想法补发一条 `idea.deleted` 事件** —— 否则订阅端（浏览器、SSE）只知道项目没了，不知道它下面的想法也没了，前端列表会留着已删的条目。`ProjectService.Delete`（Task 4 建的）现在**只软删项目行**，其下想法仍是 active —— 结果是「删掉的项目下的想法继续出现在 `GET /api/ideas` 列表里」。本 task 要把这段语义补上：`ProjectService.Delete` 改为在同一个事务里把项目 `deleted_at` 与其下未删想法的 `deleted_at` 一起置为同一时刻。**这是 Task 10 的核心职责，不是可选的。**
   - **恢复项目时的原子性**：项目行与其下想法的 `deleted_at` 必须在**同一个事务**里一起恢复（用 `IdeaRepository.InTransaction()`）。
   - `IdeaService.Restore` 恢复一条想法时，若其所属项目仍在回收站，则**允许恢复**（恢复后该想法出现在所属项目的列表里，但项目本身仍在回收站，直到项目被恢复或到期清理）—— 与 spec §10.5 一致。**不要**因此拒绝恢复。
   - `TrashCleanupWorker`：启动时立刻跑一次，之后每小时一次。判定 `deleted_at < now - RetentionDays`。
@@ -1359,6 +1359,9 @@ app.UseStaticFiles();                 // Vite 产物在 wwwroot/assets/，没有
 
 // 建库必须在 Run 之前，且不能被这段替换丢掉
 app.Services.GetRequiredService<SqliteDatabase>().Initialize();
+
+// ApiResults 若用静态日志器（Task 8 建的），必须在这里注入，否则未预期异常不记日志
+ApiResults.UseLogger(app.Logger);
 
 app.MapOpenApi("/openapi/{documentName}.json");
 app.MapHealthEndpoints();
