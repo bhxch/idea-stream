@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -427,9 +428,19 @@ public sealed class EventPublishingTests
     }
 
     /// <summary>
-    /// 防幽灵事件：事务中途失败并回滚时，**一个事件都不能发出去**。
+    /// 防幽灵事件：事务失败并回滚时，**一个事件都不能发出去**。
     /// 事件必须在事务提交之后才 publish。
     /// </summary>
+    /// <remarks>
+    /// 失败点选在**提交那一刻**（延迟外键约束要到 COMMIT 才检查）：
+    /// 于是整个事务体都跑完了 —— 包括任何写在回调末尾的 publish ——
+    /// 提交时才失败回滚。这样把 publish 挪进事务回调（哪怕挪到最后一句）
+    /// 也会被这条测试抓住。
+    /// <para>
+    /// 用「硬删第二条源想法时失败」那种触发器则不行：失败发生在 publish 之前，
+    /// publish 根本执行不到，测试照样绿 —— 证伪力不够。
+    /// </para>
+    /// </remarks>
     [Fact]
     public async Task Events_are_published_only_after_the_transaction_commits()
     {
@@ -443,11 +454,15 @@ public sealed class EventPublishingTests
         // 准备阶段的事件不算（下面只关心这次失败的事务有没有留下幽灵事件）。
         publisher.Clear();
 
-        // 在硬删第二条源想法时制造失败：合并的事务会整体回滚。
-        // 触发器里不能用绑定变量，id 直接写死在 DDL 里。
+        // 延迟外键：违规要到 COMMIT 时才报。
+        // 触发器在合并结果插进 idea 表的那一刻，往这张表里塞一个指向不存在
+        // 想法的行 —— 事务体照常跑完，提交时才失败。
         Execute(factory.DatabasePath,
-            $"CREATE TRIGGER block_delete BEFORE DELETE ON idea WHEN OLD.id = '{second}' " +
-            "BEGIN SELECT RAISE(ABORT, 'blocked'); END;");
+            "CREATE TABLE commit_guard(id INTEGER PRIMARY KEY, " +
+            "idea_id TEXT REFERENCES idea(id) DEFERRABLE INITIALLY DEFERRED);");
+        Execute(factory.DatabasePath,
+            "CREATE TRIGGER poison_commit AFTER INSERT ON idea BEGIN " +
+            "INSERT INTO commit_guard(idea_id) VALUES('00000000000000000000000000000000'); END;");
 
         var response = await client.PostAsJsonAsync("/api/ideas/merge", new { ids = new[] { first, second } });
 
@@ -455,6 +470,22 @@ public sealed class EventPublishingTests
 
         // 事务回滚了 → 不能有任何事件被发出去。
         Assert.Empty(publisher.Events);
+
+        // 回滚是真的回滚了：两条源想法都还在（第一条的硬删也被撤销），
+        // 也没有留下合并结果。
+        var listed = await client.GetAsync("/api/ideas");
+        Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+
+        using var document = JsonDocument.Parse(await listed.Content.ReadAsStringAsync());
+        var ids = document.RootElement.EnumerateArray()
+            .Select(element => element.GetProperty("id").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, ids.Length);
+        Assert.Contains(first, ids);
+        Assert.Contains(second, ids);
+
+        Assert.Equal(2, QuerySingleInt(factory.DatabasePath, "SELECT COUNT(*) FROM idea;"));
     }
 
     /// <summary>建一条想法并返回它的 id。</summary>
@@ -500,6 +531,28 @@ public sealed class EventPublishingTests
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             command.ExecuteNonQuery();
+        }
+        finally
+        {
+            connection.Dispose();
+        }
+    }
+
+    /// <summary>在测试库里查一个整数（断言回滚有没有真的发生）。</summary>
+    private static long QuerySingleInt(string databasePath, string sql)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath
+        }.ToString());
+
+        connection.Open();
+
+        try
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
         }
         finally
         {
