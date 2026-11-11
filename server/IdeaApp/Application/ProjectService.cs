@@ -43,11 +43,12 @@ public sealed class ProjectService(
         // 否则删掉一个项目再新建，会和回收站里那个项目撞 sort_order。
         var sortOrder = repo.MaxSortOrder() + 1;
 
-        var dto = ToDto(repo.Insert(trimmed, sortOrder));
+        var project = repo.Insert(trimmed, sortOrder);
+        var dto = ToDto(project);
 
         publisher.Publish(EventFactory.Create(
             EventTypes.ProjectCreated,
-            project: ToSnapshot(dto),
+            project: ProjectSnapshot.From(project),
             idea: null));
 
         return dto;
@@ -58,11 +59,12 @@ public sealed class ProjectService(
     {
         EnsureExists(id);
 
-        var dto = ToDto(repo.Rename(id, NormalizeName(name)));
+        var project = repo.Rename(id, NormalizeName(name));
+        var dto = ToDto(project);
 
         publisher.Publish(EventFactory.Create(
             EventTypes.ProjectUpdated,
-            project: ToSnapshot(dto),
+            project: ProjectSnapshot.From(project),
             idea: null,
             changed: new[] { "name" }));
 
@@ -81,6 +83,11 @@ public sealed class ProjectService(
     /// 「项目没了、想法还在」的半截状态 —— 那条想法会继续出现在
     /// <c>GET /api/ideas</c> 里，而它的项目已经不在了。
     /// </para>
+    /// <para>
+    /// 重复删除是**空操作**：项目已经在回收站里时再删一次不改任何状态、不发任何事件。
+    /// 再写一次 <c>deleted_at</c> 会破坏上面那个「同一时刻」的不变量 ——
+    /// 恢复项目时那些想法就回不来了，只能以顶层条目留在回收站里。
+    /// </para>
     /// </remarks>
     public void Delete(string id)
     {
@@ -89,22 +96,35 @@ public sealed class ProjectService(
             throw new ApiException(400, "inbox_not_deletable", "内置收件箱不能删除");
         }
 
-        var (project, deletedIdeas) = db.InTransaction((boundIdeas, boundProjects) =>
+        var (project, deletedIdeas, changed) = db.InTransaction((boundIdeas, boundProjects) =>
         {
             var project = boundProjects.Get(id)
                           ?? throw new ApiException(404, "project_not_found", $"项目不存在：{id}");
+
+            // 已经在回收站里：空操作。
+            if (project.DeletedAt is not null)
+            {
+                return (project, (IReadOnlyList<Idea>)Array.Empty<Idea>(), false);
+            }
 
             var now = DateTimeOffset.UtcNow;
 
             boundProjects.SoftDelete(id, now);
             var deleted = boundIdeas.SoftDeleteByProject(id, now);
 
-            return (project, deleted);
+            return (project, deleted, true);
         });
+
+        if (!changed)
+        {
+            // 已经在回收站里的项目：不发事件 —— 它早就被删了，
+            // 再发一次「项目被删了」会误导客户端。
+            return;
+        }
 
         publisher.Publish(EventFactory.Create(
             EventTypes.ProjectDeleted,
-            project: ToSnapshot(project),
+            project: ProjectSnapshot.From(project),
             idea: null));
 
         // 项目下面的想法也进了回收站：订阅端（浏览器、SSE）要知道它们也不在了，
@@ -148,7 +168,7 @@ public sealed class ProjectService(
             {
                 publisher.Publish(EventFactory.Create(
                     EventTypes.ProjectUpdated,
-                    project: ToSnapshot(project),
+                    project: ProjectSnapshot.From(project),
                     idea: null,
                     changed: new[] { "sortOrder" }));
             }
@@ -193,10 +213,4 @@ public sealed class ProjectService(
         LastActivityAt: projects.LastActivityAt(project.Id),
         CreatedAt: project.CreatedAt,
         UpdatedAt: project.UpdatedAt);
-
-    /// <summary>DTO → 事件载荷里的项目快照。</summary>
-    private static ProjectSnapshot ToSnapshot(ProjectDto dto) => new(dto.Id, dto.Name, dto.SortOrder);
-
-    /// <summary>项目 → 事件载荷里的项目快照。</summary>
-    private static ProjectSnapshot ToSnapshot(Project project) => new(project.Id, project.Name, project.SortOrder);
 }

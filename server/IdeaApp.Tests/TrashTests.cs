@@ -5,6 +5,8 @@ using System.Text.Json;
 using IdeaApp.Domain;
 using IdeaApp.Infrastructure;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -303,6 +305,102 @@ public sealed class TrashTests
     }
 
     /// <summary>
+    /// 重复删除已在回收站里的项目是**空操作**：不改状态、不发事件。
+    /// </summary>
+    /// <remarks>
+    /// 再写一次 <c>deleted_at</c> 会破坏「想法与项目同一时刻」的不变量 ——
+    /// 恢复项目时靠这个等值判定决定带不带出想法，不变量破了那些想法就回不来了。
+    /// 事件同样不能再发：项目早就被删了，再发一次「项目被删了」会误导客户端。
+    /// </remarks>
+    [Fact]
+    public async Task Delete_project_twice_is_idempotent()
+    {
+        var publisher = new RecordingEventPublisher();
+        using var factory = new TestAppFactory(publisher: publisher);
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "项目");
+        var ideaId = await CreateIdeaAsync(client, "想法", projectId);
+
+        await client.DeleteAsync($"/api/projects/{projectId}");
+
+        var projectDeletedAt = QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM project WHERE id = $id;", projectId);
+        var ideaDeletedAt = QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM idea WHERE id = $id;", ideaId);
+
+        publisher.Clear();
+
+        var again = await client.DeleteAsync($"/api/projects/{projectId}");
+        Assert.Equal(HttpStatusCode.NoContent, again.StatusCode);
+
+        // 状态没变。
+        Assert.Equal(projectDeletedAt, QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM project WHERE id = $id;", projectId));
+        Assert.Equal(ideaDeletedAt, QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM idea WHERE id = $id;", ideaId));
+
+        // 也没有事件。
+        Assert.Empty(publisher.Events);
+
+        // 不变量没被破坏：恢复项目时想法跟着回来。
+        var restored = await client.PostAsync($"/api/projects/{projectId}/restore", null);
+        Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
+        Assert.Equal(new[] { ideaId }, await ReadIdeaIdsAsync(client));
+    }
+
+    /// <summary>恢复一条**不在回收站**里的想法是业务错误：400 + code=not_in_trash。</summary>
+    [Fact]
+    public async Task Restore_idea_not_in_trash_returns_400_with_code_not_in_trash()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var ideaId = await CreateIdeaAsync(client, "活着的想法");
+
+        var response = await client.PostAsync($"/api/ideas/{ideaId}/restore", null);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("not_in_trash", problem.GetProperty("code").GetString());
+    }
+
+    /// <summary>恢复一个**不在回收站**里的项目是业务错误：400 + code=not_in_trash。</summary>
+    [Fact]
+    public async Task Restore_project_not_in_trash_returns_400_with_code_not_in_trash()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "活着的项目");
+
+        var response = await client.PostAsync($"/api/projects/{projectId}/restore", null);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("not_in_trash", problem.GetProperty("code").GetString());
+    }
+
+    /// <summary>
+    /// Testing 环境**不注册**自动清理任务：集成测试启动宿主就会触发一次清理写事务，
+    /// 与测试请求并发争同一个 SQLite 文件（<c>SQLITE_BUSY</c> 抖动窗口）。
+    /// </summary>
+    /// <remarks>
+    /// 要验证清理逻辑时直接调 <see cref="TrashCleanupWorker.Cleanup"/>（它是 public 的测试缝）。
+    /// </remarks>
+    [Fact]
+    public void Cleanup_worker_is_not_registered_in_the_testing_environment()
+    {
+        using var factory = new TestAppFactory();
+
+        var hosted = factory.Services.GetServices<IHostedService>();
+
+        Assert.DoesNotContain(hosted, service => service is TrashCleanupWorker);
+    }
+
+    /// <summary>
     /// 过了保留期（默认 30 天）的条目被自动清理掉：想法行被删，回收站里也不再出现。
     /// </summary>
     [Fact]
@@ -379,12 +477,114 @@ public sealed class TrashTests
             "SELECT COUNT(*) FROM webhook WHERE id = $id;", webhookId));
     }
 
+    /// <summary>
+    /// 清理不产生事件：对象已经不存在了，通知没有意义。
+    /// </summary>
+    [Fact]
+    public async Task Cleanup_does_not_publish_events()
+    {
+        var publisher = new RecordingEventPublisher();
+        using var factory = new TestAppFactory(publisher: publisher);
+        using var client = factory.CreateClient();
+
+        var ideaId = await CreateIdeaAsync(client, "过期的想法");
+        await client.DeleteAsync($"/api/ideas/{ideaId}");
+
+        SetDeletedAt(factory.DatabasePath, "idea", ideaId, DateTimeOffset.UtcNow.AddDays(-39));
+
+        publisher.Clear();
+
+        CreateWorker(factory).Cleanup();
+
+        // 条目确实被清掉了，但没有任何事件被发出去。
+        Assert.Empty(await ReadTrashAsync(client));
+        Assert.Empty(publisher.Events);
+    }
+
+    /// <summary>
+    /// 保留期配成非正数时按下限 1 天处理：不能「下一小时把整个回收站清空」。
+    /// </summary>
+    [Fact]
+    public async Task Cleanup_with_non_positive_retention_days_keeps_entries_within_one_day()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var recent = await CreateIdeaAsync(client, "两小时前删的想法");
+        var old = await CreateIdeaAsync(client, "两天前删的想法");
+
+        await client.DeleteAsync($"/api/ideas/{recent}");
+        await client.DeleteAsync($"/api/ideas/{old}");
+
+        SetDeletedAt(factory.DatabasePath, "idea", recent, DateTimeOffset.UtcNow.AddHours(-2));
+        SetDeletedAt(factory.DatabasePath, "idea", old, DateTimeOffset.UtcNow.AddDays(-2));
+
+        CreateWorker(factory, retentionDays: 0).Cleanup();
+
+        // 两小时前的那条还在（保留期下限是一天），两天前的那条被清了。
+        var entries = await ReadTrashAsync(client);
+        var kept = Assert.Single(entries);
+        Assert.Equal(recent, kept.IdeaId);
+    }
+
+    /// <summary>
+    /// 保留期配成非正数时，启动时要打一条警告：用户得知道自己配错了。
+    /// </summary>
+    [Fact]
+    public async Task Cleanup_warns_when_retention_days_is_not_positive()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var logger = new CapturingLogger<TrashCleanupWorker>();
+        var worker = new TrashCleanupWorker(
+            new SqliteDatabase(factory.DatabasePath),
+            Options.Create(new AppOptions { Trash = new TrashOptions { RetentionDays = 0 } }),
+            logger);
+
+        await worker.StartAsync(CancellationToken.None);
+
+        // 警告在 StartAsync 里同步打出：不依赖后台任务的调度时机，断言才稳定。
+        Assert.Equal(1, logger.WarningCount);
+
+        await worker.StopAsync(CancellationToken.None);
+
+        // 一次启动只警告一条。
+        Assert.Equal(1, logger.WarningCount);
+    }
+
+    /// <summary>
+    /// 启动时立刻清一次：进程可能停了很久（机器休眠、容器被暂停），
+    /// 启动时补一次才对得上「到期即清理」的约定 —— 不用等第一个小时。
+    /// </summary>
+    [Fact]
+    public async Task Cleanup_runs_once_at_startup()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var ideaId = await CreateIdeaAsync(client, "过期的想法");
+        await client.DeleteAsync($"/api/ideas/{ideaId}");
+
+        SetDeletedAt(factory.DatabasePath, "idea", ideaId, DateTimeOffset.UtcNow.AddDays(-39));
+
+        var worker = CreateWorker(factory);
+        await worker.StartAsync(CancellationToken.None);
+
+        Assert.Empty(await ReadTrashAsync(client));
+
+        await worker.StopAsync(CancellationToken.None);
+    }
+
     /// <summary>造一个清理任务（指向本次测试的临时库）。</summary>
-    private static TrashCleanupWorker CreateWorker(TestAppFactory factory)
+    private static TrashCleanupWorker CreateWorker(TestAppFactory factory, int retentionDays = 30)
     {
         return new TrashCleanupWorker(
             new SqliteDatabase(factory.DatabasePath),
-            Options.Create(new AppOptions()),
+            Options.Create(new AppOptions
+            {
+                Trash = new TrashOptions { RetentionDays = retentionDays }
+            }),
             NullLogger<TrashCleanupWorker>.Instance);
     }
 
@@ -460,6 +660,17 @@ public sealed class TrashTests
         }
 
         return entries;
+    }
+
+    /// <summary>读 ProblemDetails 响应体。</summary>
+    private static async Task<JsonElement> ReadProblemAsync(HttpResponseMessage response)
+    {
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        // JsonElement 在文档释放后失效，复制一份出去。
+        return document.RootElement.Clone();
     }
 
     private static string? QuerySingleString(string databasePath, string sql, string id)

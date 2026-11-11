@@ -74,6 +74,11 @@ public sealed class TrashService(
     /// <remarks>
     /// 所属项目还在回收站时**允许**恢复：恢复后这条想法出现在所属项目的列表里，
     /// 但项目本身仍留在回收站，直到项目被恢复或到期清理。
+    /// <para>
+    /// 目标不在回收站里时报 400（<c>not_in_trash</c>）：它确实存在，
+    /// 但「恢复」它没有意义 —— 硬恢复只会白刷新一次 <c>updated_at</c>
+    /// （把它挪到列表最下面）并发出一事件假的 <c>idea.restored</c>。
+    /// </para>
     /// </remarks>
     public IdeaDto RestoreIdea(string id)
     {
@@ -83,6 +88,11 @@ public sealed class TrashService(
             if (existing is null)
             {
                 throw new ApiException(404, "idea_not_found", $"想法不存在：{id}");
+            }
+
+            if (existing.DeletedAt is null)
+            {
+                throw new ApiException(400, "not_in_trash", $"想法不在回收站里，无需恢复：{id}");
             }
 
             r.Restore(id);
@@ -111,6 +121,11 @@ public sealed class TrashService(
     /// 项目行与想法行必须在**同一个事务**里改：中途失败会留下
     /// 「项目回来了、想法还在回收站」这种半截状态。
     /// </para>
+    /// <para>
+    /// 目标不在回收站里时报 400（<c>not_in_trash</c>）：它确实存在，
+    /// 但「恢复」它没有意义 —— 硬恢复只会白刷新一次 <c>updated_at</c>
+    /// （影响 recent 回落排序）并发出一事件假的 <c>project.updated</c>。
+    /// </para>
     /// </remarks>
     public ProjectDto RestoreProject(string id)
     {
@@ -118,6 +133,11 @@ public sealed class TrashService(
         {
             var existing = boundProjects.Get(id)
                             ?? throw new ApiException(404, "project_not_found", $"项目不存在：{id}");
+
+            if (existing.DeletedAt is null)
+            {
+                throw new ApiException(400, "not_in_trash", $"项目不在回收站里，无需恢复：{id}");
+            }
 
             // 先恢复想法：判定「是不是因删项目而删的」靠的是想法的 deleted_at
             // 与项目的 deleted_at 相同 —— 项目行恢复之后这个依据就没了。
@@ -135,7 +155,7 @@ public sealed class TrashService(
         // 加 changed = ["deletedAt"] 表达「这个项目从回收站回来了」。
         publisher.Publish(EventFactory.Create(
             EventTypes.ProjectUpdated,
-            project: new ProjectSnapshot(dto.Id, dto.Name, dto.SortOrder),
+            project: ProjectSnapshot.From(project),
             idea: null,
             changed: new[] { "deletedAt" }));
 

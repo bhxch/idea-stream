@@ -25,16 +25,44 @@ public sealed class TrashCleanupWorker(
     private static readonly TimeSpan Interval = TimeSpan.FromHours(1);
 
     /// <summary>
-    /// 定时清理：启动时立刻跑一次，之后每小时一次。
+    /// 保留期的下限：一天。
     /// </summary>
     /// <remarks>
-    /// 启动时先跑一次：进程可能停了很久（机器休眠、容器被暂停），
-    /// 启动时补一次才对得上「到期即清理」的约定。
+    /// 保留期是本应用**唯一不可逆**的开关：配成 0 等于「下一小时把整个回收站清空」。
+    /// 非正值按下限 1 天处理，并在启动时打一条警告让用户知道自己配错了。
     /// </remarks>
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    private const int MinimumRetentionDays = 1;
+
+    /// <summary>
+    /// 启动：告警 + 立刻清一次。
+    /// </summary>
+    /// <remarks>
+    /// 这两件事放在 <see cref="StartAsync"/> 而不是 <see cref="ExecuteAsync"/>：
+    /// .NET 10 的 <see cref="BackgroundService"/> 用 <c>Task.Run</c> 调度 ExecuteAsync，
+    /// 它跑在池线程上、与宿主启动并行 ——
+    /// <list type="bullet">
+    /// <item>清理的写事务会跟第一个请求抢同一个 SQLite 文件（SQLITE_BUSY 抖动）；</item>
+    /// <item>警告可能晚到，甚至在紧接着停机时一次都没打出来
+    /// （停机取消得比池线程开跑还快时，那个任务压根不会执行）。</item>
+    /// </list>
+    /// 在 StartAsync 里同步做完：宿主还没开始收请求，状态是确定的，警告也确定发得出去。
+    /// </remarks>
+    public override Task StartAsync(CancellationToken cancellationToken)
     {
+        WarnIfRetentionDaysMisconfigured();
+
+        // 启动时先清一次：进程可能停了很久（机器休眠、容器被暂停），
+        // 启动时补一次才对得上「到期即清理」的约定。
         RunCleanup();
 
+        return base.StartAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 定时清理：之后每小时一次。
+    /// </summary>
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
         using var timer = new PeriodicTimer(Interval);
 
         try
@@ -47,6 +75,20 @@ public sealed class TrashCleanupWorker(
         catch (OperationCanceledException)
         {
             // 应用要停了：正常收工。
+        }
+    }
+
+    /// <summary>保留期配成非正数时提醒用户：那个值没有意义，我们按下限处理了。</summary>
+    private void WarnIfRetentionDaysMisconfigured()
+    {
+        var configured = options.Value.Trash.RetentionDays;
+
+        if (configured <= 0)
+        {
+            logger.LogWarning(
+                "回收站保留期配成了 {RetentionDays}，非正数没有意义 —— 按 {Minimum} 天处理",
+                configured,
+                MinimumRetentionDays);
         }
     }
 
@@ -64,7 +106,8 @@ public sealed class TrashCleanupWorker(
     /// </remarks>
     public int Cleanup()
     {
-        var retentionDays = Math.Max(0, options.Value.Trash.RetentionDays);
+        // 非正值按下限 1 天处理：0 天等于「下一小时把整个回收站清空」。
+        var retentionDays = Math.Max(MinimumRetentionDays, options.Value.Trash.RetentionDays);
         var cutoff = SqliteDatabase.FormatTimestamp(DateTimeOffset.UtcNow.AddDays(-retentionDays));
 
         using var connection = db.Open();
