@@ -14,6 +14,11 @@
 
 - 目标框架 `net10.0`；发布时 `PublishAot=true`、`InvariantGlobalization=true`、`TrimMode=full`。
 - **禁止**反射式序列化：所有 JSON 走 `JsonSerializerContext` 源生成。
+- **AOT 下端点返回 JSON 的硬性要求**（Task 1 实测踩出来的）：`Results.Ok(匿名对象)` 在 Native AOT 产物下返回 **500**（没有 `JsonTypeInfo` 元数据）。因此：
+  - 所有端点返回**静态类型**的 DTO，不返回匿名对象；
+  - `IdeaJsonContext` 必须在 `JsonOptions.SerializerOptions.TypeInfoResolverChain` 中注册（Task 3 负责），此后 `Results.Ok(dto)` 对已登记的 DTO 可用；
+  - 创建类响应（201）用 `Results.Json(dto, IdeaJsonContext.Default.XxxDto, statusCode: 201)` 显式带 `JsonTypeInfo`；
+  - 任何返回 DTO 的端点都要有一个集成测试断言它返回 200/201 而**不是 500**。
 - **禁止** `ActivatorUtilities`、动态代理、运行时表达式编译。
 - SQL 手写，不引入 EF Core 或任何 ORM。
 - 命名空间根：`IdeaApp`（`Domain` / `Application` / `Infrastructure` / `Contracts` / `Endpoints`）。
@@ -22,8 +27,9 @@
 - API 路径前缀 `/api`；JSON 字段名 camelCase；错误统一 RFC 9457 ProblemDetails + 扩展字段 `code`。
 - 列表排序恒为 `updated_at ASC, id ASC`。
 - 事件不参与 SQLite 事务：领域服务先提交事务，再发布事件。
-- 每个 task 结束提交一次，commit message 用 Conventional Commits（中文正文）。
+- 每个 task 结束提交一次，commit message 用 Conventional Commits（**中文正文，要有 body 说明 why**）。
 - 引用类型可空性全部显式标注；`Directory.Build.props` 开启 `Nullable=enable` 与 `TreatWarningsAsErrors`。
+- 集成测试里 `WebApplicationFactory` 必须 `using` 释放（`using var factory = new TestAppFactory();`），每个测试用独立临时库。
 
 ## Review Focus
 
@@ -228,6 +234,7 @@ git commit -m "feat(server): 搭建解决方案骨架与健康检查端点"
 - Create: `server/IdeaApp.Tests/DatabaseInitTests.cs`
 - Modify: `server/IdeaApp/Program.cs`
 - Modify: `server/IdeaApp/appsettings.json`
+- Modify: `server/IdeaApp/IdeaApp.csproj`（补 `TrimMode` 与运行时包版本）
 
 **Interfaces:**
 - Consumes: Task 1 的 `Program`。
@@ -316,6 +323,17 @@ VALUES ('inbox', '收件箱', 0, NULL, :now, :now);
 
 `SqliteDatabase` 构造时若 `databasePath` 是相对路径，按**当前工作目录**解析；目录不存在要自动创建（`Path.GetDirectoryName` → `Directory.CreateDirectory`）。
 
+**csproj 补两行**（Task 1 评审的 Minor 1 与 2）：
+
+```xml
+<TrimMode>full</TrimMode>
+<RuntimeFrameworkVersion>10.0.14</RuntimeFrameworkVersion>
+```
+
+`RuntimeFrameworkVersion` 是为了让运行时包与 Task 1 已固定的 `KnownILCompilerPack` 10.0.14 同版本（SDK 内置的运行时包是 10.0.13，版本错配会让日后 AOT 下的 SQLite 互操作 / SSE 问题难以归因）。
+
+> 若 `RuntimeFrameworkVersion 10.0.14` 导致 restore 拉不到包（离线环境），改为把 `KnownILCompilerPack` 退回 SDK 内置的 10.0.13，并在 csproj 里对 `Microsoft.DotNet.ILCompiler` 单独抑制 `NU1903`（不要全局关掉 `TreatWarningsAsErrors`）。**选哪种都行，但要在报告里写明选了哪种、为什么。**
+
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS
 
 - [ ] **Step 5: 提交** → `git commit -m "feat(server): 建立 SQLite schema 与内置收件箱"`
@@ -328,6 +346,8 @@ VALUES ('inbox', '收件箱', 0, NULL, :now, :now);
 - Create: `server/IdeaApp/Domain/Idea.cs`、`server/IdeaApp/Domain/Project.cs`
 - Create: `server/IdeaApp/Contracts/Dtos.cs`、`server/IdeaApp/Contracts/JsonContext.cs`
 - Create: `server/IdeaApp.Tests/JsonSerializationTests.cs`
+- Modify: `server/IdeaApp/Endpoints/HealthEndpoints.cs`（把 Task 1 的 `HealthJsonContext` 并入 `IdeaJsonContext`）
+- Delete: `server/IdeaApp/Endpoints/HealthJsonContext.cs`（Task 1 建的临时上下文，合并后删掉）
 
 **Interfaces:**
 - Produces（**后续所有 task 都依赖这些类型，名字不得改**）:
@@ -385,7 +405,7 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
 
 - [ ] **Step 1: 写失败测试**
 
-`JsonSerializationTests.cs`：
+`server/IdeaApp.Tests/JsonSerializationTests.cs`：
 
 ```csharp
 [Fact] public void IdeaDto_serializes_with_camel_case_and_iso_timestamps()
@@ -398,8 +418,26 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
 // WebhookDto 只含 HasSecret 布尔，不含 secret 明文字段
 ```
 
+再加一个 **AOT 回归测试**（Task 1 踩出来的坑，必须钉住）：
+
+```csharp
+[Fact] public async Task Health_endpoint_returns_200_not_500_under_aot()
+// 复用 Task 1 的 /api/health，但断言的是：响应 200 + 用 JsonDocument.Parse 能解析出根对象的 status == "ok"
+// 目的：任何返回 DTO 的端点一旦退回匿名对象或漏注册 resolver chain，AOT 下会变成 500
+```
+
 - [ ] **Step 2: 运行测试确认失败** → Expected: FAIL
 - [ ] **Step 3: 实现** —— 按上面的签名逐字建类型，JsonContext 用 `JsonSerializerContext` 源生成。
+
+  另外三件必须做的事：
+
+  1. **把 Task 1 的 `HealthResponse` 挪进 `Contracts/Dtos.cs`，把 `HealthJsonContext` 并进 `IdeaJsonContext`**，删掉 Task 1 建的独立 `HealthJsonContext` 文件，`HealthEndpoints.cs` 改为用 `IdeaJsonContext.Default.HealthResponse`。全项目只留**一个**源生成上下文。
+  2. **在组合根把 `IdeaJsonContext` 注册进 JSON 解析链**，否则 `Results.Ok(dto)` 在 AOT 下是 500：
+     ```csharp
+     builder.Services.ConfigureHttpJsonOptions(o =>
+         o.SerializerOptions.TypeInfoResolverChain.Insert(0, IdeaJsonContext.Default));
+     ```
+  3. `IdeaJsonContext` 上加 `[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]`，并把 `HealthResponse` 也登记进去。
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS
 - [ ] **Step 5: 提交** → `git commit -m "feat(server): 定义领域模型、对外 DTO 与 JSON 源生成上下文"`
 
