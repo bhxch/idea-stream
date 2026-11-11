@@ -213,5 +213,45 @@ check_endpoint "/api/ideas" "201" \
     POST \
     '{"content":"AOT 冒烟","title":"标题","tags":["冒烟"]}'
 
+echo "==> GET /api/events (SSE)"
+# SSE 是长连接：不能像别的端点那样把响应体读完（读完会一直等到超时）。
+# 这里断言三件事：连得上（200）、头是 text/event-stream、
+# 写操作产生的事件帧真的推过来了。
+# 最后一件事守住的是「事件帧的 JSON 走源生成的上下文」：
+# AOT 下少了 IdeaEvent 的元数据就推不出帧（普通 dotnet test 测不出来）。
+SSE_HEADERS="$WORK_DIR/sse-headers.txt"
+SSE_BODY="$WORK_DIR/sse-body.txt"
+curl -sS -N -D "$SSE_HEADERS" --max-time 4 "$BASE_URL/api/events" >"$SSE_BODY" 2>/dev/null &
+SSE_PID=$!
+sleep 1
+
+# 写一条想法：它的事件应当被推给 SSE 订阅端。
+check_endpoint "/api/ideas" "201" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("id", out var id) && id.GetString() is { Length: 32 }' \
+    POST \
+    '{"content":"AOT 冒烟 SSE","title":"SSE"}'
+
+wait "$SSE_PID" 2>/dev/null || true
+
+if ! grep -qi '^HTTP/1.1 200' "$SSE_HEADERS"; then
+    echo "--- 应用日志 ---" >&2
+    cat "$WORK_DIR/app.log" >&2
+    fail "/api/events 没有返回 200"
+fi
+
+if ! grep -qi '^content-type: text/event-stream' "$SSE_HEADERS"; then
+    echo "--- 应用日志 ---" >&2
+    cat "$WORK_DIR/app.log" >&2
+    fail "/api/events 的 Content-Type 不是 text/event-stream"
+fi
+
+if ! grep -q '^event: idea.created' "$SSE_BODY"; then
+    echo "--- 应用日志 ---" >&2
+    cat "$WORK_DIR/app.log" >&2
+    echo "--- 收到的内容 ---" >&2
+    cat "$SSE_BODY" >&2
+    fail "/api/events 没有推送到 idea.created 事件帧"
+fi
+
 echo "PASS: AOT 产物下所有被检查的端点都返回预期状态码与响应体"
 exit 0
