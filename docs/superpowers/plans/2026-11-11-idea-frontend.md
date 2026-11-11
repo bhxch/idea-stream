@@ -37,6 +37,7 @@
   → **不要按「`changed` 里有该字段 = 值真变了」写逻辑**。
 - **重排的事件条数** = `sort_order` 值**真的变了**的项目数，**不是**请求里的 id 数（后端会重写全表 `sort_order`，但只有活跃项目的变化产生事件）。
 - **`project.updated` 的 `changed` 可能有第五种取值 `["deletedAt"]`** —— 项目从回收站恢复时发的，前端要认识它。
+- **切换排序方式（recent → manual）会发一批 `project.updated`（`changed=["sortOrder"]`）** —— 因为初始化把全表 `sort_order` 重写了一遍。客户端按 sortOrder 重排看到的顺序与切换前一致（不跳位），但这是一次设置操作引发 N 条业务事件，前端要能承受。
 - 客户端断开后重连用 `EventSource` 的自动重连即可，但**要自己带 `Last-Event-ID`**（后端支持 `?lastEventId=` 或请求头）。
 
 **API 契约**：
