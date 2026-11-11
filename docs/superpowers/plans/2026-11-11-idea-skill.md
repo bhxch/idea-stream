@@ -18,7 +18,7 @@
 - 脚本必须可直接执行：`chmod +x`，shebang `#!/usr/bin/env python3`。
 - 连接配置只从环境变量读，**不读命令行明文密码**：`IDEA_BASE_URL`、`IDEA_USER`、`IDEA_PASS`、`IDEA_TOKEN`。
 - 默认输出 JSON（`--format json`，可省略）；`--format text` 给人类看。
-- **⚠️ 不要泄露 webhook 的 url**：Telegram 的 bot token 就在 URL 路径里（`/bot<TOKEN>/sendMessage`），而 API 会把 `url` 原样返回。**不要把 webhook 的 url 打进日志、错误信息或异常消息里** —— 需要引用时只显示 host 与路径形状（例如 `api.telegram.org/bot***/sendMessage`）。
+- **⚠️ 不要泄露 webhook 的 url 与 headers**：Telegram 的 bot token 就在 URL 路径里（`/bot<TOKEN>/sendMessage`），而 API 会把 `url` 与 `headers` **都原样返回**（headers 里可能还有 `Authorization: Bearer …`）。**不要把它们打进日志、错误信息或异常消息里** —— 需要引用时只显示 host 与路径形状（例如 `api.telegram.org/bot***/sendMessage`），headers 只显示键名。
 - 错误处理：非 2xx 解析 ProblemDetails，stderr 打印 `code: detail`，退出码 1；网络错误 stderr 打印 `network_error: ...`，退出码 2。
 - **skill 目录不得包含任何真实凭据**（bot token、密码）。
 - 每个 task 结束提交一次，commit message 用 Conventional Commits（中文正文）。
@@ -246,9 +246,10 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 | `invalid_webhook_scope` | scope 不是 `global` / `project` | 用这两个值之一 |
 | `invalid_webhook_project` | scope=project 但没给 project_id，或该项目不存在 | 补一个存在的项目 id |
 | `invalid_body_template` | Body 模板不是合法 JSON | 模板本身必须是一个 JSON 文档 |
+| `invalid_event_type` | 订阅的事件名不在 8 种事件类型里 | 用 `EventTypes.All` 里的名字 |
 | `webhook_not_found` | webhook 不存在 | 重新拉列表，可能是别的设备删了 |
 
-Task 11 会新增 webhook 相关的 `code`，届时补进这张表。
+（Task 11 的 webhook 相关 `code` 已补进这张表。）
 
 每个 code 一行：`code` → 含义 → agent 该怎么办。
 

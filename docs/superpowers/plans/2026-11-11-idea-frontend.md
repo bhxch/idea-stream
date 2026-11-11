@@ -50,7 +50,7 @@
 | `POST /api/ideas/{id}/restore` | 200 + 想法 | 目标不在回收站 → 400 `not_in_trash` |
 | `DELETE /api/ideas/{id}` | 204 | **幂等**：已在回收站的想法再删一次也是 204，不改 `deleted_at`、不发事件 |
 
-**错误码**（ProblemDetails 的 `code` 扩展字段）：`idea_not_found`、`project_not_found`、`inbox_not_deletable`、`invalid_content`、`invalid_project_name`、`invalid_reorder_ids`、`invalid_status`、`invalid_tag_mode`、`invalid_merge_selection`、`merge_cross_project`、`not_in_trash`、`too_many_ideas`，以及 webhook 相关的 `invalid_webhook_name`/`invalid_webhook_url`/`invalid_webhook_scope`/`invalid_webhook_project`/`invalid_body_template`/`webhook_not_found`。**全集见 skill 计划的错误码表。**
+**错误码**（ProblemDetails 的 `code` 扩展字段）：`idea_not_found`、`project_not_found`、`inbox_not_deletable`、`invalid_content`、`invalid_project_name`、`invalid_reorder_ids`、`invalid_status`、`invalid_tag_mode`、`invalid_merge_selection`、`merge_cross_project`、`not_in_trash`、`too_many_ideas`，以及 webhook 相关的 `invalid_webhook_name`/`invalid_webhook_url`/`invalid_webhook_scope`/`invalid_webhook_project`/`invalid_body_template`/`invalid_event_type`/`webhook_not_found`。**全集见 skill 计划的错误码表。**
 
 ## Review Focus
 
