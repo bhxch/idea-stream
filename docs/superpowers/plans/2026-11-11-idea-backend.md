@@ -740,10 +740,18 @@ bash server/scripts/aot-smoke.sh
 - Create: `server/IdeaApp.Tests/BulkAndMergeTests.cs`
 
 **Interfaces:**
-- Consumes: Task 5 的 `IdeaService`、`IdeaRepository`。
+- Consumes: Task 5 的 `IdeaService`、`IdeaRepository`、Task 6 的 `ApiResults`。
 - Produces:
   - `IdeaService` 新增：`IReadOnlyList<IdeaDto> BulkSetDone(IReadOnlyList<string> ids, bool done)`、`IReadOnlyList<IdeaDto> BulkSetTags(IReadOnlyList<string> ids, IReadOnlyList<string> tags, bool replace)`、`void BulkDelete(IReadOnlyList<string> ids)`、`IdeaDto Merge(IReadOnlyList<string> ids, string? content, string? title)`
   - 端点：`POST /api/ideas/bulk/complete`（body `{ids[], done}`）、`POST /api/ideas/bulk/tags`（body `{ids[], tags[], replace?}`）、`POST /api/ideas/bulk/delete`（body `{ids[]}`）、`POST /api/ideas/merge`（body `{ids[], content?, title?}`）
+
+**前序 task 留下的、你必须知道的事**
+
+- **`IdeaService` 的构造函数是 `(IdeaRepository, ProjectRepository, IOptions<AppOptions>)`** —— Task 6 为了在服务层做 `too_many_ideas` 检查加了 `IOptions<AppOptions>`。你要往 `IdeaService` 加方法时**不要改这个构造函数**；若你确实要手工 new 一个 `IdeaService`（比如测试里），必须补上 `IOptions<AppOptions>` 参数。
+- **新端点一律用 `Endpoints/ApiResults.cs` 里的 `ApiResults.Run`** 包起来（Task 6 抽出来的共用异常包装，把 `ApiException` 转成 ProblemDetails + `Extensions["code"]`）。**不要**再写一份局部 `Run`。
+- **`IdeaRepository.InTransaction(...)`** 是「仓储不自行开事务、事务边界在服务层」的落地方式。**合并必须是原子的**：插新想法 + 写标签 + 硬删源想法，这几步必须在**同一个事务**里。
+- **`IdeaFilter.Matches(Idea idea, IdeaQuery query)`** 的第二个形参名是 `query`（不是 `q`）。调用时**不要用具名实参**，避免与计划里的签名对不上。
+- **`IdeaQuery` / `IdeaFilter` 在 `IdeaApp.Domain` 命名空间**（Task 6 归位过）。
 
 - [ ] **Step 1: 写失败测试**
 

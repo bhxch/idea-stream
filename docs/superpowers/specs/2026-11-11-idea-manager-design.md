@@ -230,7 +230,7 @@ CREATE TABLE setting (
 
 - 自由文本，不预置。
 - 写入时按大小写不敏感去重；同名的 tag 行复用。
-- 自动补全：优先列出**当前项目**用过的标签，不足时补全局其它标签。
+- 自动补全：优先列出**当前项目**用过的标签，不足时补全局其它标签。走 `GET /api/tags/suggest`。
 - 标签在想法被软删除后仍保留在字典里（`idea_tag` 随 idea 走，idea 彻底删除时才级联清理）。
 
 ### 10.4 合并
@@ -447,7 +447,8 @@ public interface IEventHandler
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/events` | SSE 事件流（无过滤参数） |
-| GET | `/api/tags` | 标签字典（含使用计数） |
+| GET | `/api/tags` | 标签字典（含使用计数）。**计数只统计未删除的想法** —— 已进回收站的想法不计入，但标签本身仍留在字典里（计数为 0），因为字典是全局的、随想法走 |
+| GET | `/api/tags/suggest` | 标签补全。参数 `projectId`（可选）、`prefix`（可选）。**优先返回当前项目用过的标签**，再补全局其它标签，按大小写不敏感去重 |
 | GET | `/api/settings` | `setting` 表里的应用偏好（如 `project.sort_mode`）。**不含配置文件里的任何项** |
 | PUT | `/api/settings/{key}` | 改 `setting` 表里的单个键。**只接受 `setting` 表已定义的键**，其它一律 400 |
 | GET/POST | `/api/webhooks` | 全局 webhook 列表 / 创建 |
