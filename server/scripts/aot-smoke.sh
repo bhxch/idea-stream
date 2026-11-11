@@ -137,8 +137,11 @@ echo "==> GET /api/projects"
 # 业务端点：返回静态类型 List<ProjectDto>，根是**数组**。
 # 这一条守住「集合包装类型的 JSON 元数据在 AOT 下可用」——
 # 白名单里少登记 List<ProjectDto> 时，这个端点在 AOT 产物下就是 500。
+# 只断言「数组里有收件箱」，不守顺序：列表顺序由 project.sort_mode 决定
+# （默认 recent 按最近活动时间排），拿「第一个是 inbox」当断言，
+# 将来在这条前面加一步建项目就会以「AOT 回归」的面貌失败。
 check_endpoint "/api/projects" "200" \
-    'root.ValueKind == JsonValueKind.Array && root.GetArrayLength() >= 1 && root[0].GetProperty("id").GetString() == "inbox"'
+    'root.ValueKind == JsonValueKind.Array && root.GetArrayLength() >= 1 && root.EnumerateArray().Any(p => p.GetProperty("id").GetString() == "inbox")'
 
 echo "==> DELETE /api/projects/inbox"
 # 业务错误路径：ApiException → ProblemDetails，扩展字段 code 扁平化在顶层。
