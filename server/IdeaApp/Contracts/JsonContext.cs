@@ -57,4 +57,10 @@ namespace IdeaApp.Contracts;
 [JsonSerializable(typeof(UpdateIdeaRequest))]
 [JsonSerializable(typeof(SetTagsRequest))]
 [JsonSerializable(typeof(SetDoneRequest))]
+// 批量与合并的请求体：请求体的反序列化同样走源生成元数据，
+// 少登记一个，在开发期就抛 NoMetadataForType、在 AOT 产物下直接失败。
+[JsonSerializable(typeof(BulkCompleteRequest))]
+[JsonSerializable(typeof(BulkTagsRequest))]
+[JsonSerializable(typeof(BulkDeleteRequest))]
+[JsonSerializable(typeof(MergeIdeasRequest))]
 public sealed partial class IdeaJsonContext : JsonSerializerContext;

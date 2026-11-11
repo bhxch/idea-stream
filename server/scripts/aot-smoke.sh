@@ -39,21 +39,30 @@ fail() {
     exit 1
 }
 
-# check_endpoint <路径> <期望状态码> <C# 布尔表达式> [HTTP 方法，默认 GET]
+# check_endpoint <路径> <期望状态码> <C# 布尔表达式> [HTTP 方法，默认 GET] [请求体 JSON]
 #
 # 表达式在 JsonDocument 的根元素 root 上求值，root 是 JsonElement。
 # 根元素的类型（对象/数组）也由表达式自己断言 —— 集合包装类型的端点
 # （如 GET /api/projects 返回 List<ProjectDto>）根是数组，不是对象。
 # 端点返回静态类型 DTO 时，AOT 下缺元数据会直接 500，状态码断言先把它拦下来。
+#
+# 给请求体时按 application/json 发送：带请求体的端点（POST /api/ideas/bulk/* 等）
+# 在 AOT 下同样需要源生成的请求体元数据，少登记一个这里就会暴露成 500。
 check_endpoint() {
     local path="$1"
     local expected="$2"
     local assertion="$3"
     local method="${4:-GET}"
+    local body="${5:-}"
 
     local body_file="$WORK_DIR/body-$(echo "$path" | tr '/' '_').json"
     local code
-    code="$(curl -sS -X "$method" -o "$body_file" -w '%{http_code}' "$BASE_URL$path")"
+    if [[ -n "$body" ]]; then
+        code="$(curl -sS -X "$method" -H 'Content-Type: application/json' -d "$body" \
+            -o "$body_file" -w '%{http_code}' "$BASE_URL$path")"
+    else
+        code="$(curl -sS -X "$method" -o "$body_file" -w '%{http_code}' "$BASE_URL$path")"
+    fi
 
     if [[ "$code" != "$expected" ]]; then
         echo "--- 应用日志 ---" >&2
@@ -84,6 +93,30 @@ CS
 
     if ! (cd "$assert_dir" && dotnet run assert.cs <"$body_file"); then
         fail "$path 的响应体断言不成立"
+    fi
+}
+
+# check_status <路径> <期望状态码> [HTTP 方法，默认 GET] [请求体 JSON]
+#
+# 只断言状态码：204 这类没有响应体的端点用不了 check_endpoint（它要解析响应体）。
+check_status() {
+    local path="$1"
+    local expected="$2"
+    local method="${3:-GET}"
+    local body="${4:-}"
+
+    local code
+    if [[ -n "$body" ]]; then
+        code="$(curl -sS -X "$method" -H 'Content-Type: application/json' -d "$body" \
+            -o /dev/null -w '%{http_code}' "$BASE_URL$path")"
+    else
+        code="$(curl -sS -X "$method" -o /dev/null -w '%{http_code}' "$BASE_URL$path")"
+    fi
+
+    if [[ "$code" != "$expected" ]]; then
+        echo "--- 应用日志 ---" >&2
+        cat "$WORK_DIR/app.log" >&2
+        fail "$path 期望 HTTP $expected，实际 $code"
     fi
 }
 
@@ -156,6 +189,32 @@ echo "==> GET /api/tags/suggest?prefix=a"
 # 返回静态类型 List<string>：字符串数组的包装类型也要登记，否则 AOT 产物下 500。
 check_endpoint "/api/tags/suggest?prefix=a" "200" \
     'root.ValueKind == JsonValueKind.Array'
+
+echo "==> POST /api/ideas/bulk/complete"
+# 批量端点：返回静态类型 List<IdeaDto>（裸数组），请求体也要有源生成元数据。
+# ids 给空数组是合法的空操作 —— 这一条只验「端点能通 + 集合类型可用」。
+check_endpoint "/api/ideas/bulk/complete" "200" \
+    'root.ValueKind == JsonValueKind.Array' \
+    POST \
+    '{"ids":[],"done":true}'
+
+echo "==> POST /api/ideas/bulk/tags"
+check_endpoint "/api/ideas/bulk/tags" "200" \
+    'root.ValueKind == JsonValueKind.Array' \
+    POST \
+    '{"ids":[],"tags":["a"]}'
+
+echo "==> POST /api/ideas/bulk/delete"
+# 204 没有响应体，只断言状态码：请求体照样要能反序列化（没登记元数据时这里是 500）。
+check_status "/api/ideas/bulk/delete" "204" POST '{"ids":[]}'
+
+echo "==> POST /api/ideas/merge"
+# 合并少于两条是业务错误：400 + code=invalid_merge_selection。
+# 这一条同时守住合并端点的请求体元数据。
+check_endpoint "/api/ideas/merge" "400" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("code", out var code) && code.GetString() == "invalid_merge_selection"' \
+    POST \
+    '{"ids":["0198f0a1b2c3d4e5f60718293a4b5c01"]}'
 
 echo "PASS: AOT 产物下所有被检查的端点都返回预期状态码与响应体"
 exit 0

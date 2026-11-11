@@ -38,3 +38,29 @@ public sealed record SetTagsRequest(string[]? Tags);
 
 /// <summary>标记完成/取消完成的请求体。</summary>
 public sealed record SetDoneRequest(bool Done);
+
+/// <summary>
+/// 批量标记完成/取消完成的请求体：<c>ids</c> 是要改的想法 id。
+/// </summary>
+public sealed record BulkCompleteRequest(string[]? Ids, bool Done);
+
+/// <summary>
+/// 批量设置标签的请求体：<c>ids</c> 是要改的想法 id，<c>tags</c> 是要写的标签。
+/// </summary>
+/// <remarks>
+/// <c>Replace</c> 缺省或为 false 时是**并集式追加**（保留原有标签），
+/// 为 true 时覆盖成 <c>Tags</c> 给的那批。
+/// </remarks>
+public sealed record BulkTagsRequest(string[]? Ids, string[]? Tags, bool? Replace);
+
+/// <summary>批量删除的请求体：<c>ids</c> 是要移进回收站的想法 id。</summary>
+public sealed record BulkDeleteRequest(string[]? Ids);
+
+/// <summary>
+/// 合并想法的请求体：<c>ids</c> 是要合并的想法 id（至少两条）。
+/// </summary>
+/// <remarks>
+/// <c>Content</c> 缺省时用源想法正文按 <c>updated_at</c> 升序拼接的结果；
+/// <c>Title</c> 缺省时用第一条源想法的标题。
+/// </remarks>
+public sealed record MergeIdeasRequest(string[]? Ids, string? Content, string? Title);

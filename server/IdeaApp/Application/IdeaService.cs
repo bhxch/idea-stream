@@ -173,6 +173,192 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
         return ToDto(restored);
     }
 
+    /// <summary>
+    /// 批量标记完成/取消完成。返回受影响的想法（按请求里 id 的顺序）。
+    /// </summary>
+    /// <remarks>
+    /// 批量也是写操作：每条被改的想法都刷新 <c>updated_at</c>，因此挪到列表最下面。
+    /// <para>
+    /// 任一条 id 不存在（或已在回收站）就整批 404，一条都不改 —— 半改半不改的结果最难解释。
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<IdeaDto> BulkSetDone(IReadOnlyList<string> ids, bool done)
+    {
+        var targets = NormalizeIds(ids);
+
+        return repo.InTransaction(r =>
+        {
+            // 先整批校验存在性，再动任何一条。
+            var existing = targets.Select(id => RequireExisting(r, id)).ToList();
+
+            var results = new List<IdeaDto>(existing.Count);
+            foreach (var idea in existing)
+            {
+                results.Add(ToDto(r.SetDone(idea.Id, done)));
+            }
+
+            return (IReadOnlyList<IdeaDto>)results;
+        });
+    }
+
+    /// <summary>
+    /// 批量设置标签。<paramref name="replace"/> 为 false（默认）时是**并集式追加**
+    /// （保留每条想法原有的标签），为 true 时覆盖成给定的标签集。
+    /// </summary>
+    /// <remarks>
+    /// 返回受影响的想法（按请求里 id 的顺序）。换标签也是写操作，同样刷新 <c>updated_at</c>。
+    /// </remarks>
+    public IReadOnlyList<IdeaDto> BulkSetTags(IReadOnlyList<string> ids, IReadOnlyList<string> tags, bool replace)
+    {
+        var targets = NormalizeIds(ids);
+        var requested = NormalizeTags(tags);
+
+        return repo.InTransaction(r =>
+        {
+            var existing = targets.Select(id => RequireExisting(r, id)).ToList();
+
+            var results = new List<IdeaDto>(existing.Count);
+            foreach (var idea in existing)
+            {
+                // 追加模式下先算并集再整体写入：原有标签的写法优先保留
+                //（标签字典按大小写不敏感唯一，写法以最早那次为准）。
+                var next = replace
+                    ? requested
+                    : NormalizeTags(idea.Tags.Concat(requested).ToArray());
+
+                r.ReplaceTags(idea.Id, next);
+                results.Add(ToDto(r.Get(idea.Id)!));
+            }
+
+            return (IReadOnlyList<IdeaDto>)results;
+        });
+    }
+
+    /// <summary>
+    /// 批量删除想法（软删，移进回收站）。
+    /// </summary>
+    /// <remarks>
+    /// 与合并不同：批量删除是**软删**，源想法还在库里（在回收站里）。
+    /// 只有合并的源想法才硬删。
+    /// </remarks>
+    public void BulkDelete(IReadOnlyList<string> ids)
+    {
+        var targets = NormalizeIds(ids);
+
+        repo.InTransaction(r =>
+        {
+            var existing = targets.Select(id => RequireExisting(r, id)).ToList();
+
+            // 同一批用同一时刻进回收站。
+            var now = DateTimeOffset.UtcNow;
+            foreach (var idea in existing)
+            {
+                r.SoftDelete(idea.Id, now);
+            }
+        });
+    }
+
+    /// <summary>
+    /// 把多条想法合并成一条**全新**的想法：正文按源想法的 <c>updated_at</c> 升序以空行拼接，
+    /// 标签取所有源标签的并集，标题取第一条源的标题。源想法**硬删除**（不进回收站）。
+    /// </summary>
+    /// <param name="ids">要合并的想法 id，至少两条。</param>
+    /// <param name="content">给字符串则用它当正文；null 表示用自动拼接的结果。</param>
+    /// <param name="title">给字符串则用它当标题；null 表示用第一条源的标题。</param>
+    /// <remarks>
+    /// 跨项目合并不允许（400 <c>merge_cross_project</c>）：把一个项目的想法拼到
+    /// 另一个项目下，源与结果之间的归属关系就断了。
+    /// <para>
+    /// 整件事在一个事务里：插新想法 → 写并集标签 → 硬删源想法，
+    /// 要么全成要么全不成，不会出现「源想法没了、合并结果也没建」的中间态。
+    /// </para>
+    /// </remarks>
+    public IdeaDto Merge(IReadOnlyList<string> ids, string? content, string? title)
+    {
+        var targets = NormalizeIds(ids);
+        if (targets.Count < 2)
+        {
+            throw new ApiException(400, "invalid_merge_selection", "合并至少需要两条想法");
+        }
+
+        var merged = repo.InTransaction(r =>
+        {
+            // 源排序：updated_at ASC, id ASC（全序，顺序可复现）。
+            var sources = targets
+                .Select(id => RequireExisting(r, id))
+                .OrderBy(idea => idea.UpdatedAt)
+                .ThenBy(idea => idea.Id, StringComparer.Ordinal)
+                .ToList();
+
+            var projectIds = sources
+                .Select(idea => idea.ProjectId)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            if (projectIds.Count > 1)
+            {
+                throw new ApiException(400, "merge_cross_project",
+                    "不能跨项目合并想法：源想法分属不同项目");
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            var idea = new Idea(
+                Id: MonotonicGuid.NewUuid7().ToString("N"),
+                ProjectId: projectIds[0],
+                Title: title is not null ? NormalizeTitle(title) : sources[0].Title,
+                Content: content is not null
+                    ? ValidateContent(content)
+                    : string.Join("\n\n", sources.Select(source => source.Content)),
+                Tags: NormalizeTags(sources.SelectMany(source => source.Tags).ToArray()),
+                Done: false,
+                CreatedAt: now,
+                UpdatedAt: now,
+                DeletedAt: null);
+
+            // Insert 会一并写入标签链接（并集就是标签集）。
+            var created = r.Insert(idea);
+
+            // 源想法硬删：idea_tag 靠外键 CASCADE 一起清掉。
+            foreach (var source in sources)
+            {
+                r.HardDelete(source.Id);
+            }
+
+            return created;
+        });
+
+        return ToDto(merged);
+    }
+
+    /// <summary>
+    /// 请求里的 id 列表：去掉首尾空白、丢掉空项、按原样去重（保序）。
+    /// </summary>
+    /// <remarks>
+    /// 去重是为了「同一个 id 传两次」不被当成两条想法：合并只有一条源想法时
+    /// 应当按非法选择拒绝，而不是凭空造出一条重复内容的想法。
+    /// </remarks>
+    private static IReadOnlyList<string> NormalizeIds(IReadOnlyList<string?> ids)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var raw in ids)
+        {
+            var id = raw?.Trim() ?? string.Empty;
+            if (id.Length == 0)
+            {
+                continue;
+            }
+
+            if (seen.Add(id))
+            {
+                result.Add(id);
+            }
+        }
+
+        return result;
+    }
+
     /// <summary>取一条存在且不在回收站的想法，否则 404。</summary>
     private static Idea RequireExisting(IdeaRepository repo, string id)
     {

@@ -33,6 +33,7 @@ app.Services.GetRequiredService<SqliteDatabase>().Initialize();
 app.MapHealthEndpoints();
 app.MapProjectEndpoints();
 app.MapIdeaEndpoints();
+app.MapBulkIdeaEndpoints();
 app.MapTagEndpoints();
 
 app.Run();
