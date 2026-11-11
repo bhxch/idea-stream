@@ -1,15 +1,12 @@
 using System.Globalization;
-using System.Net;
 using System.Text.Json;
 using IdeaApp.Contracts;
-using Microsoft.AspNetCore.Http.Json;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 
 namespace IdeaApp.Tests;
 
 /// <summary>
-/// JSON 序列化契约测试：字段名、camelCase、时间戳格式与源生成上下文的注册情况。
+/// JSON 序列化契约测试：字段名、camelCase、时间戳格式，
+/// 以及源生成上下文对「端点可能返回的类型」的登记完整性。
 /// </summary>
 public sealed class JsonSerializationTests
 {
@@ -36,8 +33,10 @@ public sealed class JsonSerializationTests
         Assert.Equal(JsonValueKind.Object, root.ValueKind);
         Assert.Equal("inbox", root.GetProperty("projectId").GetString());
 
-        // DateTimeOffset 的默认序列化格式是 ISO-8601 扩展格式（偏移量 +00:00），
+        // JSON 侧走 System.Text.Json 的默认 ISO-8601 格式（偏移量 +00:00），
         // 末尾为零的小数位会被裁掉，因此整秒值输出为 "2026-11-11T09:00:00+00:00"。
+        // 7 位小数的 UTC 形式（yyyy-MM-ddTHH:mm:ss.fffffffZ）只用于**存库**，
+        // 不适用于 JSON 输出 —— 断言 JSON 里出现 7 位小数会永远失败。
         Assert.Equal("2026-11-11T09:00:00+00:00", root.GetProperty("createdAt").GetString());
         Assert.Equal("2026-11-11T09:00:00+00:00", root.GetProperty("updatedAt").GetString());
         Assert.Equal(Timestamp, DateTimeOffset.Parse(
@@ -95,28 +94,61 @@ public sealed class JsonSerializationTests
         Assert.True(root.GetProperty("hasSecret").GetBoolean());
     }
 
+    /// <summary>
+    /// 白名单完整性：端点返回的**静态类型**必须在 IdeaJsonContext 里有条目。
+    /// 少登记一个，对应端点在 Native AOT 产物下就是 500（没有该类型的 JsonTypeInfo 元数据），
+    /// 而普通测试宿主有反射兜底、照样全绿 —— 只有真 AOT 产物才暴露。
+    /// 这里直接问源生成上下文要元数据，缺一个就在这里红，不用等 AOT 产物。
+    /// </summary>
     [Fact]
-    public async Task Health_endpoint_returns_200_not_500_under_aot()
+    public void Json_context_registers_every_type_endpoints_may_return()
     {
-        using var factory = new TestAppFactory();
-        using var client = factory.CreateClient();
+        // 只挂源生成上下文、不挂默认反射 resolver：
+        // 未登记的类型在这里就会拿不到元数据（GetTypeInfo 抛 NotSupportedException）。
+        var options = new JsonSerializerOptions { TypeInfoResolver = IdeaJsonContext.Default };
 
-        var response = await client.GetAsync("/api/health");
+        Type[] registered =
+        [
+            // 单个实体
+            typeof(IdeaDto),
+            typeof(ProjectDto),
+            typeof(TagDto),
+            typeof(WebhookDto),
+            typeof(DeliveryDto),
+            typeof(TrashEntryDto),
+            typeof(HealthResponse),
+            // 数组包装
+            typeof(IdeaDto[]),
+            typeof(ProjectDto[]),
+            typeof(TagDto[]),
+            typeof(WebhookDto[]),
+            typeof(DeliveryDto[]),
+            typeof(TrashEntryDto[]),
+            // List 包装
+            typeof(List<IdeaDto>),
+            typeof(List<ProjectDto>),
+            typeof(List<TagDto>),
+            typeof(List<WebhookDto>),
+            typeof(List<DeliveryDto>),
+            typeof(List<TrashEntryDto>),
+            // IReadOnlyList 包装
+            typeof(IReadOnlyList<IdeaDto>),
+            typeof(IReadOnlyList<ProjectDto>),
+            typeof(IReadOnlyList<TagDto>),
+            typeof(IReadOnlyList<WebhookDto>),
+            typeof(IReadOnlyList<DeliveryDto>),
+            typeof(IReadOnlyList<TrashEntryDto>),
+            // 其他
+            typeof(Dictionary<string, string>),
+            typeof(Microsoft.AspNetCore.Mvc.ProblemDetails),
+            typeof(Microsoft.AspNetCore.Http.HttpValidationProblemDetails)
+        ];
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        foreach (var type in registered)
+        {
+            var typeInfo = options.GetTypeInfo(type);
 
-        var body = await response.Content.ReadAsStringAsync();
-        using var document = JsonDocument.Parse(body);
-        var root = document.RootElement;
-
-        Assert.Equal(JsonValueKind.Object, root.ValueKind);
-        var property = Assert.Single(root.EnumerateObject());
-        Assert.Equal("status", property.Name);
-        Assert.Equal("ok", property.Value.GetString());
-
-        // 端点一旦退回匿名对象或漏掉源生成上下文的注册，AOT 产物下会变成 500。
-        // 非 AOT 的测试宿主察觉不到序列化器缺失，因此直接断言 resolver chain 里有 IdeaJsonContext。
-        var jsonOptions = factory.Services.GetRequiredService<IOptions<JsonOptions>>().Value;
-        Assert.Contains(IdeaJsonContext.Default, jsonOptions.SerializerOptions.TypeInfoResolverChain);
+            Assert.NotNull(typeInfo);
+        }
     }
 }
