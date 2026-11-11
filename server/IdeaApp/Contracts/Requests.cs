@@ -14,3 +14,27 @@ public sealed record RenameProjectRequest(string Name);
 /// （.NET 10 默认不校验非空 ctor 参数），所以这里如实标成可空，由服务层收敛成 400。
 /// </remarks>
 public sealed record ReorderProjectsRequest(string[]? Ids);
+
+/// <summary>
+/// 创建想法的请求体。
+/// </summary>
+/// <remarks>
+/// <c>ProjectId</c> 缺省或为空串时落到内置收件箱；<c>Content</c> 缺省或全空白是非法正文
+/// （400 <c>invalid_content</c>）；<c>Tags</c> 缺省表示不带标签。
+/// </remarks>
+public sealed record CreateIdeaRequest(string? ProjectId, string? Content, string? Title, string[]? Tags);
+
+/// <summary>
+/// 修改想法的请求体。
+/// </summary>
+/// <remarks>
+/// <c>Title</c> 为 null 表示**不改标题**，给字符串（含空串）表示改成那个标题；
+/// <c>Content</c> 为 null 表示不改正文。与出参语义不同：DTO 里 <c>"title": null</c> 是「无标题」。
+/// </remarks>
+public sealed record UpdateIdeaRequest(string? Title, string? Content);
+
+/// <summary>覆盖式设置标签的请求体：<c>tags</c> 缺省或为空表示清空标签。</summary>
+public sealed record SetTagsRequest(string[]? Tags);
+
+/// <summary>标记完成/取消完成的请求体。</summary>
+public sealed record SetDoneRequest(bool Done);

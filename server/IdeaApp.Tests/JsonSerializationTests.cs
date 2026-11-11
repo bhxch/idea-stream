@@ -145,7 +145,11 @@ public sealed class JsonSerializationTests
             // 请求体记录（Native AOT 下反序列化同样需要元数据）
             typeof(CreateProjectRequest),
             typeof(RenameProjectRequest),
-            typeof(ReorderProjectsRequest)
+            typeof(ReorderProjectsRequest),
+            typeof(CreateIdeaRequest),
+            typeof(UpdateIdeaRequest),
+            typeof(SetTagsRequest),
+            typeof(SetDoneRequest)
         ];
 
         foreach (var type in registered)

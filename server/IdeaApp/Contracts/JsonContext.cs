@@ -51,4 +51,8 @@ namespace IdeaApp.Contracts;
 [JsonSerializable(typeof(CreateProjectRequest))]
 [JsonSerializable(typeof(RenameProjectRequest))]
 [JsonSerializable(typeof(ReorderProjectsRequest))]
+[JsonSerializable(typeof(CreateIdeaRequest))]
+[JsonSerializable(typeof(UpdateIdeaRequest))]
+[JsonSerializable(typeof(SetTagsRequest))]
+[JsonSerializable(typeof(SetDoneRequest))]
 public sealed partial class IdeaJsonContext : JsonSerializerContext;
