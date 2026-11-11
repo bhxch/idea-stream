@@ -44,6 +44,24 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
         return result;
     }
 
+    /// <summary>
+    /// 把 HTTP 查询参数翻译成查询条件。
+    /// </summary>
+    /// <remarks>
+    /// 放在服务层而不是 <see cref="IdeaQuery"/> 那边：查询规格（<see cref="IdeaQuery"/>）
+    /// 与匹配判定（<see cref="IdeaFilter"/>）是纯领域概念，留在 <c>Domain</c> 层，
+    /// 不依赖应用层；而「不认识的过滤值要收敛成 400」这件事要用
+    /// <see cref="ApiException"/>（应用层），因此解析留在这一层。
+    /// </remarks>
+    public static IdeaQuery ParseQuery(string? projectId, string? status, string? tags, string? tagMode)
+    {
+        return new IdeaQuery(
+            NormalizeParameter(projectId),
+            ParseStatus(status),
+            ParseTags(tags),
+            ParseTagMode(tagMode));
+    }
+
     /// <summary>新建想法。<paramref name="projectId"/> 为空时落到内置收件箱。</summary>
     public IdeaDto Create(string projectId, string content, string? title, IReadOnlyList<string> tags)
     {
@@ -221,6 +239,91 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
             }
 
             var name = raw.Trim();
+            if (seen.Add(name))
+            {
+                result.Add(name);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>查询参数去掉首尾空白；空串一律当成「没给」。</summary>
+    private static string? NormalizeParameter(string? value)
+    {
+        var trimmed = value?.Trim();
+
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
+
+    /// <summary>
+    /// 状态过滤参数。缺省或空串 = 不过滤；不认识的值一律 400 ——
+    /// 默默当成「不过滤」的话，用户以为筛了却拿到全量结果，比报错更难查。
+    /// </summary>
+    private static IdeaStatusFilter ParseStatus(string? value)
+    {
+        var normalized = NormalizeParameter(value);
+
+        if (normalized is null
+            || string.Equals(normalized, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            return IdeaStatusFilter.All;
+        }
+
+        if (string.Equals(normalized, "open", StringComparison.OrdinalIgnoreCase))
+        {
+            return IdeaStatusFilter.Open;
+        }
+
+        if (string.Equals(normalized, "done", StringComparison.OrdinalIgnoreCase))
+        {
+            return IdeaStatusFilter.Done;
+        }
+
+        throw new ApiException(400, "invalid_status", $"状态过滤只支持 all / open / done，收到：{normalized}");
+    }
+
+    /// <summary>标签匹配方式参数。缺省或空串 = OR；不认识的值一律 400。</summary>
+    private static TagMatchMode ParseTagMode(string? value)
+    {
+        var normalized = NormalizeParameter(value);
+
+        if (normalized is null
+            || string.Equals(normalized, "or", StringComparison.OrdinalIgnoreCase))
+        {
+            return TagMatchMode.Or;
+        }
+
+        if (string.Equals(normalized, "and", StringComparison.OrdinalIgnoreCase))
+        {
+            return TagMatchMode.And;
+        }
+
+        throw new ApiException(400, "invalid_tag_mode", $"标签匹配方式只支持 or / and，收到：{normalized}");
+    }
+
+    /// <summary>
+    /// 逗号分隔的标签列表。去掉首尾空白、丢掉空项，
+    /// 按大小写不敏感去重（保留首次出现的写法）。
+    /// </summary>
+    private static IReadOnlyList<string> ParseTags(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return Array.Empty<string>();
+        }
+
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var part in value.Split(','))
+        {
+            var name = part.Trim();
+            if (name.Length == 0)
+            {
+                continue;
+            }
+
             if (seen.Add(name))
             {
                 result.Add(name);

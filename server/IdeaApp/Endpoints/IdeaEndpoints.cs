@@ -22,7 +22,7 @@ public static class IdeaEndpoints
             (string? projectId, string? status, string? tags, string? tagMode, IdeaService service) =>
                 ApiResults.Run(() =>
                 {
-                    var query = IdeaQuery.FromParameters(projectId, status, tags, tagMode);
+                    var query = IdeaService.ParseQuery(projectId, status, tags, tagMode);
 
                     return Results.Json(service.List(query).ToList(), IdeaJsonContext.Default.ListIdeaDto);
                 }));

@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text;
-using IdeaApp.Application;
 using IdeaApp.Domain;
 using Microsoft.Data.Sqlite;
 
