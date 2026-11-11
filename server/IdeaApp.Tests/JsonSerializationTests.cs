@@ -141,7 +141,11 @@ public sealed class JsonSerializationTests
             // 其他
             typeof(Dictionary<string, string>),
             typeof(Microsoft.AspNetCore.Mvc.ProblemDetails),
-            typeof(Microsoft.AspNetCore.Http.HttpValidationProblemDetails)
+            typeof(Microsoft.AspNetCore.Http.HttpValidationProblemDetails),
+            // 请求体记录（Native AOT 下反序列化同样需要元数据）
+            typeof(CreateProjectRequest),
+            typeof(RenameProjectRequest),
+            typeof(ReorderProjectsRequest)
         ];
 
         foreach (var type in registered)

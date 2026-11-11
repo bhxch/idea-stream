@@ -6,8 +6,8 @@ namespace IdeaApp.Contracts;
 
 /// <summary>
 /// 全项目唯一的 JSON 源生成上下文。Native AOT 下反射式序列化不可用，
-/// 所有对外 DTO 都必须登记在这里，并在组合根把它注册进
-/// <c>JsonOptions.SerializerOptions.TypeInfoResolverChain</c>。
+/// 所有对外 DTO 都必须登记在这里，并在组合根把它注册成
+/// <c>JsonOptions.SerializerOptions.TypeInfoResolver</c>。
 /// </summary>
 /// <remarks>
 /// 白名单的登记范围：端点返回的**静态类型**必须在这里有条目。
@@ -46,4 +46,9 @@ namespace IdeaApp.Contracts;
 // ProblemDetails 及其子类：子类元数据不会从基类自动继承，必须各自登记。
 [JsonSerializable(typeof(ProblemDetails))]
 [JsonSerializable(typeof(HttpValidationProblemDetails))]
+// 请求体记录：Native AOT 下请求体的反序列化同样需要源生成元数据，
+// 否则端点在开发期就抛 NoMetadataForType、在 AOT 产物下直接失败。
+[JsonSerializable(typeof(CreateProjectRequest))]
+[JsonSerializable(typeof(RenameProjectRequest))]
+[JsonSerializable(typeof(ReorderProjectsRequest))]
 public sealed partial class IdeaJsonContext : JsonSerializerContext;

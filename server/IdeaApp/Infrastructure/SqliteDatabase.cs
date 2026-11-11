@@ -13,7 +13,7 @@ public sealed class SqliteDatabase(string databasePath)
     private const string SchemaResourceName = "IdeaApp.Infrastructure.schema.sql";
 
     /// <summary>时间戳在库中的统一格式：UTC ISO-8601。</summary>
-    private const string TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffffffZ";
+    public const string TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffffffZ";
 
     /// <summary>数据库文件的绝对路径（相对路径按当前工作目录解析）。</summary>
     public string DatabasePath { get; } = ResolveDatabasePath(databasePath);
@@ -93,8 +93,22 @@ public sealed class SqliteDatabase(string databasePath)
         }
     }
 
-    private static string UtcNow() =>
-        DateTimeOffset.UtcNow.ToString(TimestampFormat, CultureInfo.InvariantCulture);
+    private static string UtcNow() => FormatTimestamp(DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// 把时间点转成库里的存储格式（UTC ISO-8601，7 位小数）。
+    /// 仓储层写库时统一走这里，格式只有这一处定义。
+    /// </summary>
+    public static string FormatTimestamp(DateTimeOffset value) =>
+        value.ToUniversalTime().ToString(TimestampFormat, CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// 解析库里的时间戳字符串。库里一律是 UTC，解析时也按 UTC 处理，
+    /// 免得本机时区把偏移量带偏。
+    /// </summary>
+    public static DateTimeOffset ParseTimestamp(string text) =>
+        DateTimeOffset.ParseExact(text, TimestampFormat, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
 
     /// <summary>相对路径按当前工作目录解析，并确保所在目录存在。</summary>
     private static string ResolveDatabasePath(string path)

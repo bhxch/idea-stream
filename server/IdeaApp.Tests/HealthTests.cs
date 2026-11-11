@@ -25,16 +25,12 @@ public class HealthTests
     }
 
     /// <summary>
-    /// 源生成上下文必须挂在应用的 JSON 解析链上，否则端点在 Native AOT 下无法序列化 DTO。
-    ///
-    /// 注意本测试**只**守得住「上下文已注册」这一半：端点若退回匿名对象
-    /// （<c>Results.Ok(new { status = "ok" })</c>），普通测试宿主有反射兜底，
-    /// 输出与静态类型 DTO 逐字节相同，这里测不出来。那一半由
-    /// <c>server/scripts/aot-smoke.sh</c> 在真 AOT 产物上守
-    /// （匿名类型没有 JsonTypeInfo → AOT 下 500）。
+    /// 源生成上下文必须是 JSON 解析器本身（<c>TypeInfoResolver</c>），
+    /// 不能只是解析链里的一个成员：链条里那个默认反射 resolver 会让未登记的类型
+    /// 在开发期照样序列化，形成「开发全绿、AOT 产物全挂」。
     /// </summary>
     [Fact]
-    public async Task Json_context_is_registered_in_the_resolver_chain()
+    public async Task Json_context_is_the_only_type_info_resolver()
     {
         using var factory = new TestAppFactory();
         using var client = factory.CreateClient();
@@ -47,6 +43,6 @@ public class HealthTests
             .GetRequiredService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>()
             .Value;
 
-        Assert.Contains(IdeaJsonContext.Default, jsonOptions.SerializerOptions.TypeInfoResolverChain);
+        Assert.Same(IdeaJsonContext.Default, jsonOptions.SerializerOptions.TypeInfoResolver);
     }
 }
