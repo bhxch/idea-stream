@@ -263,6 +263,46 @@ public sealed class TrashTests
     }
 
     /// <summary>
+    /// 在项目仍在回收站时单独恢复一条想法要有**可见效果**：
+    /// 它从容器里消失、回到正常列表。
+    /// </summary>
+    /// <remarks>
+    /// 容器下挂的是该项目下**仍在回收站里**的想法（不是全部想法）：
+    /// 恢复完它还杵在容器里的话，用户会以为恢复没生效。
+    /// </remarks>
+    [Fact]
+    public async Task Restore_idea_in_trashed_project_leaves_the_container_and_comes_back()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "项目");
+        var ideaId = await CreateIdeaAsync(client, "想法", projectId);
+
+        await client.DeleteAsync($"/api/projects/{projectId}");
+
+        // 想法随项目进了回收站，挂在容器条目下。
+        var container = Assert.Single(await ReadTrashAsync(client));
+        Assert.Equal(new[] { ideaId }, container.IdeaIds);
+
+        var response = await client.PostAsync($"/api/ideas/{ideaId}/restore", null);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // 恢复有可见效果：它从容器里消失了（容器还在，项目还在回收站里）。
+        var entries = await ReadTrashAsync(client);
+        var restoredContainer = Assert.Single(entries);
+        Assert.Equal("project", restoredContainer.Kind);
+        Assert.Empty(restoredContainer.IdeaIds);
+
+        // 而且它回到正常列表里了。
+        Assert.Equal(new[] { ideaId }, await ReadIdeaIdsAsync(client));
+
+        // 项目本身仍在回收站里。
+        Assert.NotNull(QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM project WHERE id = $id;", projectId));
+    }
+
+    /// <summary>
     /// 过了保留期（默认 30 天）的条目被自动清理掉：想法行被删，回收站里也不再出现。
     /// </summary>
     [Fact]

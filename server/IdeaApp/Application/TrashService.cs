@@ -10,10 +10,10 @@ namespace IdeaApp.Application;
 /// <para>
 /// 回收站装两类东西：
 /// <list type="bullet">
-/// <item><b>容器条目</b>：被删除的项目，下挂它所属的**全部**想法；</item>
+/// <item><b>容器条目</b>：被删除的项目，下挂它下面**仍在回收站里**的想法；</item>
 /// <item><b>顶层条目</b>：被单独删除的想法（它的项目还活着）。</item>
 /// </list>
-/// 同一个想法不会在两处同时出现：项目被删时，它下面的想法一律只在容器里。
+/// 两类互补、互不重叠：同一个想法不会在两处同时出现 —— 所属项目被删的想法只出现在容器里。
 /// </para>
 ///
 /// <para>
@@ -37,12 +37,13 @@ public sealed class TrashService(
     {
         var entries = new List<TrashEntryDto>();
 
-        // 容器条目：已删的项目，它下面的**全部**想法都在里面
+        // 容器条目：已删的项目，它下面**仍在回收站里**的想法都在里面
         // （无论它们是随项目一起删的，还是在项目被删之前就被单独删掉的）。
+        // 已被单独恢复的想法不在里面 —— 它已经回到正常列表了。
         foreach (var project in projects.ListDeleted())
         {
             var children = new List<IdeaDto>();
-            foreach (var idea in ideas.ListByProject(project.Id))
+            foreach (var idea in ideas.ListDeletedByProject(project.Id))
             {
                 children.Add(IdeaService.ToDto(idea));
             }

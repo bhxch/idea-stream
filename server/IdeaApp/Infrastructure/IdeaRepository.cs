@@ -146,15 +146,22 @@ public sealed class IdeaRepository(SqliteDatabase db)
     }
 
     /// <summary>
-    /// 列出某个项目下的**全部**想法（含回收站里的），按 <c>updated_at ASC, id ASC</c> 排序。
+    /// 列出某个项目下**仍在回收站里**的想法（<c>deleted_at</c> 非空），
+    /// 按 <c>updated_at ASC, id ASC</c> 排序。
     /// </summary>
     /// <remarks>
-    /// 回收站的容器条目用它：已删项目下挂的是它**全部**的想法，
+    /// 回收站的容器条目用它：已删项目下挂的是它下面**仍在回收站里**的想法 ——
     /// 无论它们是随项目一起删的，还是在项目被删之前就被单独删掉的。
+    /// <para>
+    /// **不含从未删除的想法**：项目还在回收站时被单独恢复的想法已经回到正常列表，
+    /// 它还杵在容器里的话，用户会以为恢复没生效。
+    /// </para>
     /// </remarks>
-    public IReadOnlyList<Idea> ListByProject(string projectId)
+    public IReadOnlyList<Idea> ListDeletedByProject(string projectId)
     {
-        return Query((connection, transaction) => ReadByProject(connection, transaction, projectId));
+        return Query((connection, transaction) => ReadByProject(connection, transaction, projectId)
+            .Where(idea => idea.DeletedAt is not null)
+            .ToList());
     }
 
     /// <summary>
