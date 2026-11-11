@@ -208,6 +208,14 @@ echo "==> POST /api/ideas/bulk/delete"
 # 204 没有响应体，只断言状态码：请求体照样要能反序列化（没登记元数据时这里是 500）。
 check_status "/api/ideas/bulk/delete" "204" POST '{"ids":[]}'
 
+echo "==> POST /api/ideas/bulk/complete （id 全都不存在）"
+# 批量对「陈旧 id」宽容：一个都不存在时报 404 + code=idea_not_found。
+# 这条守住批量端点的错误路径在 AOT 下同样走得通。
+check_endpoint "/api/ideas/bulk/complete" "404" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("code", out var code) && code.GetString() == "idea_not_found"' \
+    POST \
+    '{"ids":["0198f0a1b2c3d4e5f60718293a4b5cff"],"done":true}'
+
 echo "==> POST /api/ideas/merge"
 # 合并少于两条是业务错误：400 + code=invalid_merge_selection。
 # 这一条同时守住合并端点的请求体元数据。

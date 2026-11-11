@@ -174,12 +174,14 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
     }
 
     /// <summary>
-    /// 批量标记完成/取消完成。返回受影响的想法（按请求里 id 的顺序）。
+    /// 批量标记完成/取消完成。返回**实际被处理到的**想法（按请求里 id 的顺序）。
     /// </summary>
     /// <remarks>
     /// 批量也是写操作：每条被改的想法都刷新 <c>updated_at</c>，因此挪到列表最下面。
     /// <para>
-    /// 任一条 id 不存在（或已在回收站）就整批 404，一条都不改 —— 半改半不改的结果最难解释。
+    /// 不存在的 id（或已在回收站的）直接跳过，不报错：这工具是多端实时同步的，
+    /// 「你在电脑上选中的 5 条，手机上刚被删掉 1 条」是常态，不是异常。
+    /// 但传的 id 一个都不存在时报 404 —— 「全选错」与「部分对」要能区分开。
     /// </para>
     /// </remarks>
     public IReadOnlyList<IdeaDto> BulkSetDone(IReadOnlyList<string> ids, bool done)
@@ -188,8 +190,8 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
 
         return repo.InTransaction(r =>
         {
-            // 先整批校验存在性，再动任何一条。
-            var existing = targets.Select(id => RequireExisting(r, id)).ToList();
+            var existing = ResolveExisting(r, targets);
+            EnsureSomethingProcessed(targets, existing.Count);
 
             var results = new List<IdeaDto>(existing.Count);
             foreach (var idea in existing)
@@ -206,7 +208,9 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
     /// （保留每条想法原有的标签），为 true 时覆盖成给定的标签集。
     /// </summary>
     /// <remarks>
-    /// 返回受影响的想法（按请求里 id 的顺序）。换标签也是写操作，同样刷新 <c>updated_at</c>。
+    /// 返回**实际被处理到的**想法（按请求里 id 的顺序）；不存在的 id 跳过，
+    /// 一个都不存在时报 404（见 <see cref="BulkSetDone"/>）。
+    /// 换标签也是写操作，同样刷新 <c>updated_at</c>。
     /// </remarks>
     public IReadOnlyList<IdeaDto> BulkSetTags(IReadOnlyList<string> ids, IReadOnlyList<string> tags, bool replace)
     {
@@ -215,7 +219,8 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
 
         return repo.InTransaction(r =>
         {
-            var existing = targets.Select(id => RequireExisting(r, id)).ToList();
+            var existing = ResolveExisting(r, targets);
+            EnsureSomethingProcessed(targets, existing.Count);
 
             var results = new List<IdeaDto>(existing.Count);
             foreach (var idea in existing)
@@ -235,7 +240,7 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
     }
 
     /// <summary>
-    /// 批量删除想法（软删，移进回收站）。
+    /// 批量删除想法（软删，移进回收站）。不存在的 id 跳过，一个都不存在时报 404。
     /// </summary>
     /// <remarks>
     /// 与合并不同：批量删除是**软删**，源想法还在库里（在回收站里）。
@@ -247,7 +252,8 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
 
         repo.InTransaction(r =>
         {
-            var existing = targets.Select(id => RequireExisting(r, id)).ToList();
+            var existing = ResolveExisting(r, targets);
+            EnsureSomethingProcessed(targets, existing.Count);
 
             // 同一批用同一时刻进回收站。
             var now = DateTimeOffset.UtcNow;
@@ -268,6 +274,10 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
     /// <remarks>
     /// 跨项目合并不允许（400 <c>merge_cross_project</c>）：把一个项目的想法拼到
     /// 另一个项目下，源与结果之间的归属关系就断了。
+    /// <para>
+    /// 与批量操作不同，合并**不跳过**不存在的 id：语义是「这 N 条合成一条」，
+    /// 少一条就合成不了，所以整体拒绝（404 <c>idea_not_found</c>），一条都不改。
+    /// </para>
     /// <para>
     /// 整件事在一个事务里：插新想法 → 写并集标签 → 硬删源想法，
     /// 要么全成要么全不成，不会出现「源想法没了、合并结果也没建」的中间态。
@@ -357,6 +367,45 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 挑出这批 id 里**存在且未删**的想法（不存在的直接跳过），保持请求里的顺序。
+    /// </summary>
+    /// <remarks>
+    /// 批量操作对「陈旧 id」宽容：多端实时同步下，客户端手里的 id 随时可能失效。
+    /// 注意这与合并相反 —— 合并的语义是「这 N 条合成一条」，少一条就没法合，
+    /// 所以合并必须全部存在。
+    /// </remarks>
+    private static List<Idea> ResolveExisting(IdeaRepository repo, IReadOnlyList<string> ids)
+    {
+        var result = new List<Idea>();
+
+        foreach (var id in ids)
+        {
+            var idea = repo.Get(id);
+            if (idea is not null && idea.DeletedAt is null)
+            {
+                result.Add(idea);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 传的 id 一个都不存在时报错：「全选错」与「部分对」要能区分开。
+    /// </summary>
+    /// <remarks>
+    /// 传空列表不算「全选错」：那是「没选东西」，空操作即可。
+    /// </remarks>
+    private static void EnsureSomethingProcessed(IReadOnlyList<string> requested, int processed)
+    {
+        if (requested.Count > 0 && processed == 0)
+        {
+            throw new ApiException(404, "idea_not_found",
+                "选中的想法都不存在了（可能已被删除或合并）");
+        }
     }
 
     /// <summary>取一条存在且不在回收站的想法，否则 404。</summary>

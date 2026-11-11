@@ -16,6 +16,9 @@ public sealed class BulkAndMergeTests
     /// <summary>直接写库时用的固定时间戳（早于任何真实写入）。</summary>
     private const string OldStamp = "2026-01-01T00:00:00.0000000Z";
 
+    /// <summary>库里不存在的想法 id（模拟客户端手里过期的 id）。</summary>
+    private const string MissingId = "0198f0a1b2c3d4e5f60718293a4b5cff";
+
     [Fact]
     public async Task Bulk_complete_marks_all_and_bumps_updated_at()
     {
@@ -89,6 +92,130 @@ public sealed class BulkAndMergeTests
             Assert.NotNull(QuerySingleString(factory.DatabasePath,
                 "SELECT deleted_at FROM idea WHERE id = $id0;", id));
         }
+    }
+
+    /// <summary>
+    /// 批量操作**跳过**不存在的 id：多端实时同步下客户端手里的 id 随时可能失效，
+    /// 「你在电脑上选中的 5 条，手机上刚被删掉 1 条」是常态，不是异常。
+    /// </summary>
+    [Fact]
+    public async Task Bulk_complete_skips_unknown_ids()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var first = await CreateIdeaAsync(client, "第一条");
+        var second = await CreateIdeaAsync(client, "第二条");
+
+        // 中间夹一个不存在的 id：处理掉两条有效的，不报错。
+        var response = await client.PostAsJsonAsync("/api/ideas/bulk/complete",
+            new { ids = new[] { first, MissingId, second }, done = true });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // 返回体是**实际被处理到的**那些想法（跳过的不在里面），顺序按请求。
+        var ideas = await ReadIdeasAsync(response);
+        Assert.Equal(new[] { first, second }, ideas.Select(idea => idea.Id).ToArray());
+        Assert.All(ideas, idea => Assert.True(idea.Done));
+    }
+
+    [Fact]
+    public async Task Bulk_tags_skips_unknown_ids()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var first = await CreateIdeaAsync(client, "第一条");
+        var second = await CreateIdeaAsync(client, "第二条");
+
+        var response = await client.PostAsJsonAsync("/api/ideas/bulk/tags",
+            new { ids = new[] { first, MissingId, second }, tags = new[] { "x" } });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var ideas = await ReadIdeasAsync(response);
+        Assert.Equal(new[] { first, second }, ideas.Select(idea => idea.Id).ToArray());
+        Assert.All(ideas, idea => Assert.Equal(new[] { "x" }, idea.Tags));
+
+        // 被跳过的那条当然没被动过 —— 它本来就不存在。
+        Assert.Equal(0, QuerySingleInt(factory.DatabasePath,
+            "SELECT COUNT(*) FROM idea WHERE id = $id0;", MissingId));
+    }
+
+    [Fact]
+    public async Task Bulk_delete_skips_unknown_ids()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var first = await CreateIdeaAsync(client, "第一条");
+        var second = await CreateIdeaAsync(client, "第二条");
+
+        var response = await client.PostAsJsonAsync("/api/ideas/bulk/delete",
+            new { ids = new[] { first, MissingId, second } });
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        // 两条有效的都进回收站了。
+        Assert.Empty(await ReadIdeasAsync(await client.GetAsync("/api/ideas")));
+
+        foreach (var id in new[] { first, second })
+        {
+            Assert.NotNull(QuerySingleString(factory.DatabasePath,
+                "SELECT deleted_at FROM idea WHERE id = $id0;", id));
+        }
+    }
+
+    /// <summary>
+    /// 传的 id 一个都不存在时报 404 <c>idea_not_found</c>：
+    /// 「全选错」与「部分对」要能区分开。
+    /// </summary>
+    [Fact]
+    public async Task Bulk_with_only_unknown_ids_returns_404_code_idea_not_found()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var complete = await client.PostAsJsonAsync("/api/ideas/bulk/complete",
+            new { ids = new[] { MissingId }, done = true });
+        Assert.Equal(HttpStatusCode.NotFound, complete.StatusCode);
+        Assert.Equal("idea_not_found",
+            (await ReadProblemAsync(complete)).GetProperty("code").GetString());
+
+        var tags = await client.PostAsJsonAsync("/api/ideas/bulk/tags",
+            new { ids = new[] { MissingId }, tags = new[] { "x" } });
+        Assert.Equal(HttpStatusCode.NotFound, tags.StatusCode);
+        Assert.Equal("idea_not_found",
+            (await ReadProblemAsync(tags)).GetProperty("code").GetString());
+
+        var delete = await client.PostAsJsonAsync("/api/ideas/bulk/delete",
+            new { ids = new[] { MissingId } });
+        Assert.Equal(HttpStatusCode.NotFound, delete.StatusCode);
+        Assert.Equal("idea_not_found",
+            (await ReadProblemAsync(delete)).GetProperty("code").GetString());
+    }
+
+    /// <summary>
+    /// 合并**不跳过**：少一条就合成不了，整体拒绝且一条都不改。
+    /// </summary>
+    [Fact]
+    public async Task Merge_with_unknown_id_returns_404_and_changes_nothing()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var first = await CreateIdeaAsync(client, "第一条");
+
+        var response = await client.PostAsJsonAsync("/api/ideas/merge",
+            new { ids = new[] { first, MissingId } });
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("idea_not_found",
+            (await ReadProblemAsync(response)).GetProperty("code").GetString());
+
+        // 源想法还在，也没有多出合并结果。
+        var ideas = await ReadIdeasAsync(await client.GetAsync("/api/ideas"));
+        Assert.Equal(first, Assert.Single(ideas).Id);
     }
 
     [Fact]
