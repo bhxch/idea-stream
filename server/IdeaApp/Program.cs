@@ -22,6 +22,8 @@ builder.Services.AddSingleton<ProjectRepository>();
 builder.Services.AddSingleton<ProjectService>();
 builder.Services.AddSingleton<IdeaRepository>();
 builder.Services.AddSingleton<IdeaService>();
+builder.Services.AddSingleton<TagRepository>();
+builder.Services.AddSingleton<TagService>();
 
 var app = builder.Build();
 
@@ -31,6 +33,7 @@ app.Services.GetRequiredService<SqliteDatabase>().Initialize();
 app.MapHealthEndpoints();
 app.MapProjectEndpoints();
 app.MapIdeaEndpoints();
+app.MapTagEndpoints();
 
 app.Run();
 

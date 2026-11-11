@@ -36,6 +36,8 @@ namespace IdeaApp.Contracts;
 [JsonSerializable(typeof(List<WebhookDto>))]
 [JsonSerializable(typeof(List<DeliveryDto>))]
 [JsonSerializable(typeof(List<TrashEntryDto>))]
+// 补全结果是纯字符串数组：包装类型也要登记，否则 AOT 产物下端点直接 500。
+[JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(IReadOnlyList<IdeaDto>))]
 [JsonSerializable(typeof(IReadOnlyList<ProjectDto>))]
 [JsonSerializable(typeof(IReadOnlyList<TagDto>))]

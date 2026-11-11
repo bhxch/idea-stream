@@ -137,5 +137,25 @@ check_endpoint "/api/projects/inbox" "400" \
     'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("code", out var code) && code.GetString() == "inbox_not_deletable"' \
     DELETE
 
+echo "==> GET /api/ideas"
+# 返回静态类型 List<IdeaDto>（裸数组）。白名单里少登记它时，这个端点在 AOT 产物下就是 500。
+check_endpoint "/api/ideas" "200" \
+    'root.ValueKind == JsonValueKind.Array'
+
+echo "==> GET /api/ideas?status=open&tagMode=and"
+# 带过滤参数的同一个端点：查询参数绑定与解析在 AOT 下同样要走真实的路由代码。
+check_endpoint "/api/ideas?status=open&tagMode=and" "200" \
+    'root.ValueKind == JsonValueKind.Array'
+
+echo "==> GET /api/tags"
+# 返回静态类型 List<TagDto>（裸数组）。
+check_endpoint "/api/tags" "200" \
+    'root.ValueKind == JsonValueKind.Array'
+
+echo "==> GET /api/tags/suggest?prefix=a"
+# 返回静态类型 List<string>：字符串数组的包装类型也要登记，否则 AOT 产物下 500。
+check_endpoint "/api/tags/suggest?prefix=a" "200" \
+    'root.ValueKind == JsonValueKind.Array'
+
 echo "PASS: AOT 产物下所有被检查的端点都返回预期状态码与响应体"
 exit 0

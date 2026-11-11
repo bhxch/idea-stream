@@ -270,6 +270,49 @@ public sealed class IdeaApiTests
         Assert.Equal("新正文", idea.Content);
     }
 
+    /// <summary>
+    /// 入参 <c>title = ""</c> 表示「把标题清空」（出参是 <c>"title": null</c>），
+    /// 与入参 <c>title = null</c>（「不修改标题」）不是一回事。
+    /// </summary>
+    [Fact]
+    public async Task Update_idea_with_empty_title_clears_title()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var id = await CreateIdeaAsync(client, "正文");
+
+        var titled = await client.PatchAsJsonAsync($"/api/ideas/{id}", new { title = "标题" });
+        Assert.Equal(HttpStatusCode.OK, titled.StatusCode);
+        Assert.Equal("标题", ReadIdea(await titled.Content.ReadAsStringAsync()).Title);
+
+        var cleared = await client.PatchAsJsonAsync($"/api/ideas/{id}", new { title = "" });
+
+        Assert.Equal(HttpStatusCode.OK, cleared.StatusCode);
+
+        // 空标题 = 无标题，出参是 null（不是空串）。
+        Assert.Null(ReadIdea(await cleared.Content.ReadAsStringAsync()).Title);
+    }
+
+    /// <summary>
+    /// 入参 <c>content = null</c> 表示「不改正文」，正文原样保留。
+    /// </summary>
+    [Fact]
+    public async Task Update_idea_with_null_content_keeps_existing_content()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var id = await CreateIdeaAsync(client, "原正文");
+
+        var response = await client.PatchAsJsonAsync($"/api/ideas/{id}", new { content = (string?)null });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var idea = ReadIdea(await response.Content.ReadAsStringAsync());
+        Assert.Equal("原正文", idea.Content);
+    }
+
     private static bool IsLowerHex(char c) => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
 
     /// <summary>建一条想法并返回它的 id。</summary>

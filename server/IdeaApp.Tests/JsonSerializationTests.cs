@@ -131,6 +131,7 @@ public sealed class JsonSerializationTests
             typeof(List<WebhookDto>),
             typeof(List<DeliveryDto>),
             typeof(List<TrashEntryDto>),
+            typeof(List<string>),
             // IReadOnlyList 包装
             typeof(IReadOnlyList<IdeaDto>),
             typeof(IReadOnlyList<ProjectDto>),

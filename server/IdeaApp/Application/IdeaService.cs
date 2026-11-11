@@ -1,6 +1,7 @@
 using IdeaApp.Contracts;
 using IdeaApp.Domain;
 using IdeaApp.Infrastructure;
+using Microsoft.Extensions.Options;
 
 namespace IdeaApp.Application;
 
@@ -8,12 +9,31 @@ namespace IdeaApp.Application;
 /// 想法领域服务。业务规则在这里，仓储只管存。
 /// 所有 4xx 业务错误都通过 <see cref="ApiException"/> 抛出。
 /// </summary>
-public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects)
+public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects, IOptions<AppOptions> options)
 {
-    /// <summary>列出未删除的想法，按 <c>updated_at ASC, id ASC</c> 排序。</summary>
+    /// <summary>列出未删除的想法（不带过滤条件），按 <c>updated_at ASC, id ASC</c> 排序。</summary>
     public IReadOnlyList<IdeaDto> List()
     {
-        var ideas = repo.List();
+        return List(IdeaQuery.Everything);
+    }
+
+    /// <summary>
+    /// 按查询条件列出想法，按 <c>updated_at ASC, id ASC</c> 排序。
+    /// </summary>
+    /// <remarks>
+    /// 命中数超过 <see cref="ApiOptions.MaxIdeasPerResponse"/> 时抛 400
+    /// （<c>too_many_ideas</c>）：这个接口不分页，静默截断的话用户根本不知道自己漏看了。
+    /// </remarks>
+    public IReadOnlyList<IdeaDto> List(IdeaQuery query)
+    {
+        var ideas = repo.List(query);
+
+        var limit = options.Value.Api.MaxIdeasPerResponse;
+        if (ideas.Count > limit)
+        {
+            throw new ApiException(400, "too_many_ideas",
+                $"命中 {ideas.Count} 条想法，超过单次返回上限 {limit}，请收窄过滤条件");
+        }
 
         var result = new List<IdeaDto>(ideas.Count);
         foreach (var idea in ideas)

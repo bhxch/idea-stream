@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Text;
+using IdeaApp.Application;
 using IdeaApp.Domain;
 using Microsoft.Data.Sqlite;
 
@@ -8,8 +10,17 @@ namespace IdeaApp.Infrastructure;
 /// 想法仓储。手写 SQL，每次操作自己开连接、自己关连接。
 ///
 /// 一次业务写操作往往要改多张表（idea 行 + idea_tag），这必须是一个事务。
-/// 事务边界由调用方（<see cref="Application.IdeaService"/>）通过 <see cref="InTransaction{T}"/>
-/// 划定：仓储自己不隐式开事务，只负责在给定的事务里执行语句。
+/// <para>
+/// <b>事务边界由调用方划定</b>：调用方通过 <see cref="InTransaction{T}"/> 把一组写操作
+/// 圈进同一个事务，仓储只负责在给定的事务里执行语句；
+/// 单独调用一个多语句写方法时（没有外层事务），仓储自己兜一个事务，
+/// 避免出现「写了一半」。
+/// </para>
+/// <para>
+/// <see cref="InTransaction{T}"/> 存在的理由：仓储方法签名里没有连接/事务参数，
+/// 要让「更新 idea 行 → 写 idea_tag → 提交」原子完成，唯一的办法就是让调用方
+/// 拿到一个绑定在同一事务上的仓储。
+/// </para>
 /// </summary>
 public sealed class IdeaRepository(SqliteDatabase db)
 {
@@ -81,8 +92,8 @@ public sealed class IdeaRepository(SqliteDatabase db)
     /// 列出未删除的想法，按 <c>updated_at ASC, id ASC</c> 排序（最老的在顶、最新的在底）。
     /// </summary>
     /// <remarks>
-    /// 过滤（项目 / 状态 / 标签）由 <see cref="Application.IdeaService"/> 侧的查询条件负责；
-    /// 后续加带条件的重载时，本方法即无参的那个。
+    /// 这是不带过滤条件的那个重载，等价于 <see cref="List(IdeaQuery)"/> 传
+    /// <see cref="IdeaQuery.Everything"/>。
     /// <para>
     /// 排序是全序：<c>updated_at</c> 相同时按 <c>id ASC</c> 兜底，同一批数据的顺序永远一致。
     /// <c>id</c> 是自实现的**单调** UUIDv7（见 <see cref="Domain.MonotonicGuid"/>）——
@@ -92,15 +103,35 @@ public sealed class IdeaRepository(SqliteDatabase db)
     /// </remarks>
     public IReadOnlyList<Idea> List()
     {
+        return List(IdeaQuery.Everything);
+    }
+
+    /// <summary>
+    /// 按查询条件列出想法，按 <c>updated_at ASC, id ASC</c> 排序（最老的在顶、最新的在底）。
+    /// </summary>
+    /// <remarks>
+    /// 一次 SQL 取候选集（项目 + 未删 + 状态），再在内存里用
+    /// <see cref="IdeaFilter.Matches"/> 判标签 —— 标签是「想法的标签集合」与
+    /// 「选中的标签集合」的关系，交给内存判比拼 SQL 简单得多。
+    /// </remarks>
+    public IReadOnlyList<Idea> List(IdeaQuery query)
+    {
         return Query((connection, transaction) =>
         {
+            var (where, parameters) = BuildFilter(query);
+
             var ideas = new List<Idea>();
 
             using (var command = connection.CreateCommand())
             {
                 command.Transaction = transaction;
                 command.CommandText =
-                    $"SELECT {SelectColumns} FROM idea WHERE deleted_at IS NULL ORDER BY updated_at ASC, id ASC;";
+                    $"SELECT {SelectColumns} FROM idea WHERE {where} ORDER BY updated_at ASC, id ASC;";
+
+                foreach (var (name, value) in parameters)
+                {
+                    command.Parameters.AddWithValue(name, value);
+                }
 
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
@@ -110,15 +141,44 @@ public sealed class IdeaRepository(SqliteDatabase db)
             }
 
             // 标签一次性批量取，避免每条想法各查一次。
-            var tags = ReadTagNamesOfActive(connection, transaction);
+            var tags = ReadTagNamesOfCandidates(connection, transaction, where, parameters);
 
             return ideas
                 .Select(idea => idea with
                 {
                     Tags = tags.TryGetValue(idea.Id, out var names) ? names : Array.Empty<string>()
                 })
+                .Where(idea => IdeaFilter.Matches(idea, query))
                 .ToList();
         });
+    }
+
+    /// <summary>
+    /// 把查询条件翻译成 SQL 的 WHERE 子句与参数。
+    /// 候选集与候选集的标签用同一份 WHERE，保证两边口径一致。
+    /// </summary>
+    private static (string Where, Dictionary<string, object> Parameters) BuildFilter(IdeaQuery query)
+    {
+        var where = new StringBuilder("deleted_at IS NULL");
+        var parameters = new Dictionary<string, object>(StringComparer.Ordinal);
+
+        if (!string.IsNullOrWhiteSpace(query.ProjectId))
+        {
+            where.Append(" AND project_id = $projectId");
+            parameters["$projectId"] = query.ProjectId;
+        }
+
+        switch (query.Status)
+        {
+            case IdeaStatusFilter.Open:
+                where.Append(" AND done = 0");
+                break;
+            case IdeaStatusFilter.Done:
+                where.Append(" AND done = 1");
+                break;
+        }
+
+        return (where.ToString(), parameters);
     }
 
     /// <summary>
@@ -318,18 +378,26 @@ public sealed class IdeaRepository(SqliteDatabase db)
         return names;
     }
 
-    /// <summary>一次性读完所有未删除想法的标签：想法 id → 标签名列表。</summary>
-    private static Dictionary<string, string[]> ReadTagNamesOfActive(
-        SqliteConnection connection, SqliteTransaction? transaction)
+    /// <summary>一次性读完候选想法的标签：想法 id → 标签名列表。</summary>
+    private static Dictionary<string, string[]> ReadTagNamesOfCandidates(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string where,
+        Dictionary<string, object> parameters)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
-            "SELECT it.idea_id, t.name FROM idea_tag it " +
+            "SELECT i.id, t.name FROM idea i " +
+            "JOIN idea_tag it ON it.idea_id = i.id " +
             "JOIN tag t ON t.id = it.tag_id " +
-            "JOIN idea i ON i.id = it.idea_id " +
-            "WHERE i.deleted_at IS NULL " +
+            $"WHERE {where} " +
             "ORDER BY t.name COLLATE NOCASE ASC, t.name ASC;";
+
+        foreach (var (name, value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value);
+        }
 
         var result = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         using var reader = command.ExecuteReader();
