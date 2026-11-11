@@ -53,8 +53,9 @@ public static class IdeaEndpoints
                 return Results.NoContent();
             }));
 
-        app.MapPost("/api/ideas/{id}/restore", (string id, IdeaService service) =>
-            ApiResults.Run(() => Results.Json(service.Restore(id), IdeaJsonContext.Default.IdeaDto)));
+        // 恢复语义归回收站管（见 TrashService）。
+        app.MapPost("/api/ideas/{id}/restore", (string id, TrashService service) =>
+            ApiResults.Run(() => Results.Json(service.RestoreIdea(id), IdeaJsonContext.Default.IdeaDto)));
 
         return app;
     }

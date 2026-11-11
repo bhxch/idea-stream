@@ -9,10 +9,13 @@ namespace IdeaApp.Application;
 /// 所有 4xx 业务错误都通过 <see cref="ApiException"/> 抛出。
 /// </summary>
 /// <remarks>
-/// 每个写方法在写库成功之后发一条事件（SSE 推送、webhook 投递都靠它）。
-/// <see cref="Restore"/> 的事件归 Task 10（回收站）接。
+/// 每个写方法在写库成功之后发事件（SSE 推送、webhook 投递都靠它）。
+/// 恢复项目的语义（连带恢复想法、恢复事件）归 <see cref="TrashService"/>。
 /// </remarks>
-public sealed class ProjectService(ProjectRepository repo, IEventPublisher publisher)
+public sealed class ProjectService(
+    ProjectRepository repo,
+    SqliteDatabase db,
+    IEventPublisher publisher)
 {
     /// <summary>内置收件箱的 id。它不能被删除，但可以改名、可以参与排序。</summary>
     public const string InboxId = "inbox";
@@ -66,7 +69,19 @@ public sealed class ProjectService(ProjectRepository repo, IEventPublisher publi
         return dto;
     }
 
-    /// <summary>把项目移进回收站（软删）。</summary>
+    /// <summary>
+    /// 把项目移进回收站（软删），**连带**把它下面未删的想法一起移进去。
+    /// </summary>
+    /// <remarks>
+    /// 项目的 <c>deleted_at</c> 与它下面想法的 <c>deleted_at</c> 是**同一时刻**：
+    /// 恢复项目时靠这个相等关系区分「是不是随项目一起删的」
+    /// （见 <see cref="TrashService.RestoreProject"/>）。
+    /// <para>
+    /// 项目行与想法行必须在**同一个事务**里改：中途失败会留下
+    /// 「项目没了、想法还在」的半截状态 —— 那条想法会继续出现在
+    /// <c>GET /api/ideas</c> 里，而它的项目已经不在了。
+    /// </para>
+    /// </remarks>
     public void Delete(string id)
     {
         if (id == InboxId)
@@ -74,23 +89,33 @@ public sealed class ProjectService(ProjectRepository repo, IEventPublisher publi
             throw new ApiException(400, "inbox_not_deletable", "内置收件箱不能删除");
         }
 
-        var project = EnsureExists(id);
+        var (project, deletedIdeas) = db.InTransaction((boundIdeas, boundProjects) =>
+        {
+            var project = boundProjects.Get(id)
+                          ?? throw new ApiException(404, "project_not_found", $"项目不存在：{id}");
 
-        repo.SoftDelete(id, DateTimeOffset.UtcNow);
+            var now = DateTimeOffset.UtcNow;
+
+            boundProjects.SoftDelete(id, now);
+            var deleted = boundIdeas.SoftDeleteByProject(id, now);
+
+            return (project, deleted);
+        });
 
         publisher.Publish(EventFactory.Create(
             EventTypes.ProjectDeleted,
             project: ToSnapshot(project),
             idea: null));
-    }
 
-    /// <summary>从回收站恢复项目。</summary>
-    public ProjectDto Restore(string id)
-    {
-        EnsureExists(id);
-        repo.Restore(id);
-
-        return ToDto(repo.Get(id)!);
+        // 项目下面的想法也进了回收站：订阅端（浏览器、SSE）要知道它们也不在了，
+        // 否则本地列表里会留着这些条目。
+        foreach (var idea in deletedIdeas)
+        {
+            publisher.Publish(EventFactory.Create(
+                EventTypes.IdeaDeleted,
+                project: null,
+                idea: IdeaSnapshot.From(idea)));
+        }
     }
 
     /// <summary>
@@ -151,12 +176,21 @@ public sealed class ProjectService(ProjectRepository repo, IEventPublisher publi
         return trimmed;
     }
 
-    private ProjectDto ToDto(Project project) => new(
+    private ProjectDto ToDto(Project project) => ToDto(project, repo);
+
+    /// <summary>
+    /// 项目 → DTO（含未删想法数与最近活动时间）。
+    /// </summary>
+    /// <remarks>
+    /// 静态的：回收站视图也要用同一份口径（想法计数、最近活动时间），
+    /// 两边各写一份的话，前端显示的「最近活动」和列表里的会对不上。
+    /// </remarks>
+    internal static ProjectDto ToDto(Project project, ProjectRepository projects) => new(
         Id: project.Id,
         Name: project.Name,
         SortOrder: project.SortOrder,
-        IdeaCount: repo.CountActiveIdeas(project.Id),
-        LastActivityAt: repo.LastActivityAt(project.Id),
+        IdeaCount: projects.CountActiveIdeas(project.Id),
+        LastActivityAt: projects.LastActivityAt(project.Id),
         CreatedAt: project.CreatedAt,
         UpdatedAt: project.UpdatedAt);
 

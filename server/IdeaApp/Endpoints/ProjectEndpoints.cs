@@ -33,8 +33,9 @@ public static class ProjectEndpoints
                 return Results.NoContent();
             }));
 
-        app.MapPost("/api/projects/{id}/restore", (string id, ProjectService service) =>
-            ApiResults.Run(() => Results.Json(service.Restore(id), IdeaJsonContext.Default.ProjectDto)));
+        // 恢复语义归回收站管：连带恢复「因删项目而删」的想法（见 TrashService）。
+        app.MapPost("/api/projects/{id}/restore", (string id, TrashService service) =>
+            ApiResults.Run(() => Results.Json(service.RestoreProject(id), IdeaJsonContext.Default.ProjectDto)));
 
         app.MapPost("/api/projects/reorder", (ReorderProjectsRequest request, ProjectService service) =>
             ApiResults.Run(() => Results.Json(service.Reorder(request.Ids).ToList(),

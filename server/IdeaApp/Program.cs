@@ -25,6 +25,11 @@ builder.Services.AddSingleton<IdeaRepository>();
 builder.Services.AddSingleton<IdeaService>();
 builder.Services.AddSingleton<TagRepository>();
 builder.Services.AddSingleton<TagService>();
+builder.Services.AddSingleton<TrashService>();
+
+// 回收站自动清理：到期条目唯一的出口（没有手动彻底删除）。
+// 保留期只从配置读（Trash:RetentionDays），页面与 API 都不提供设置入口。
+builder.Services.AddHostedService<TrashCleanupWorker>();
 
 // 事件总线：服务层只认 IEventPublisher，测试可以换成记录型的 fake。
 // IEventHandler 的实现 Task 9（SSE）/ 14（webhook）才注册，
@@ -60,6 +65,7 @@ app.MapIdeaEndpoints();
 app.MapBulkIdeaEndpoints();
 app.MapTagEndpoints();
 app.MapEventEndpoints();
+app.MapTrashEndpoints();
 
 app.Run();
 

@@ -27,14 +27,30 @@ public interface IEventHandler
 /// <c>sortOrder</c> 时，订阅端要拿到**新值**才能更新本地顺序，
 /// 缺了它就只能整表重拉。
 /// </remarks>
-public sealed record ProjectSnapshot(string Id, string Name, int SortOrder);
+public sealed record ProjectSnapshot(string Id, string Name, int SortOrder)
+{
+    /// <summary>从领域记录造快照。</summary>
+    public static ProjectSnapshot From(Project project) => new(project.Id, project.Name, project.SortOrder);
+}
 
 /// <summary>
 /// 想法的对外快照：想法去掉 <c>DeletedAt</c>、标签转成字符串数组。
 /// </summary>
 public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, string Content,
                                   string[] Tags, bool Done,
-                                  DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+                                  DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt)
+{
+    /// <summary>从领域记录造快照（标签转成数组）。</summary>
+    public static IdeaSnapshot From(Idea idea) => new(
+        idea.Id,
+        idea.ProjectId,
+        idea.Title,
+        idea.Content,
+        idea.Tags.ToArray(),
+        idea.Done,
+        idea.CreatedAt,
+        idea.UpdatedAt);
+}
 
 /// <summary>
 /// 一个领域事件。
@@ -67,6 +83,8 @@ public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, st
 /// <item>项目<b>重排</b>（同样是 <c>project.updated</c>）是<b>有条件地</b>列
 /// <c>["sortOrder"]</c>：只有 <c>sort_order</c> 真变了的项目才发这条事件，
 /// 事件里的 <c>changed</c> 就带 <c>sortOrder</c> —— 没有它表示「这个项目的位置没变」。</item>
+/// <item>项目<b>从回收站恢复</b>（也是 <c>project.updated</c>，因为事件类型只有 8 种，
+/// 没有 <c>project.restored</c>）一律列 <c>["deletedAt"]</c>。</item>
 /// </list>
 /// </para>
 /// <para>

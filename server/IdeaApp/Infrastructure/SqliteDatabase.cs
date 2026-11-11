@@ -96,6 +96,33 @@ public sealed class SqliteDatabase(string databasePath)
     private static string UtcNow() => FormatTimestamp(DateTimeOffset.UtcNow);
 
     /// <summary>
+    /// 在一个 SQLite 事务里执行一组写操作：全部成功才提交，任一步抛异常则整体回滚。
+    /// 回调拿到两条**绑定在该事务上**的仓储：它们之间的读能看到彼此未提交的写入，
+    /// 因此「改项目行 + 改想法行」这类跨表操作可以是原子的。
+    /// </summary>
+    /// <remarks>
+    /// 事务边界由调用方划定：调用方把要同生共死的一组写操作圈进这个回调，
+    /// 仓储只负责在给定的事务里执行语句。
+    /// <para>
+    /// 回收站用它做两件事：删项目时连带软删它下面的想法、
+    /// 恢复项目时连带恢复「因删项目而删」的想法 —— 两者都要项目行与想法行同时生效，
+    /// 中途失败会留下「项目回来了、想法还在回收站」这种半截状态。
+    /// </para>
+    /// </remarks>
+    public T InTransaction<T>(Func<IdeaRepository, ProjectRepository, T> work)
+    {
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+
+        var result = work(
+            new IdeaRepository(this, connection, transaction),
+            new ProjectRepository(this, connection, transaction));
+
+        transaction.Commit();
+        return result;
+    }
+
+    /// <summary>
     /// 把时间点转成库里的存储格式（UTC ISO-8601，7 位小数）。
     /// 仓储层写库时统一走这里，格式只有这一处定义。
     /// </summary>

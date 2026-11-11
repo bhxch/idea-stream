@@ -213,31 +213,6 @@ public sealed class IdeaService(
             idea: ToSnapshot(dto)));
     }
 
-    /// <summary>从回收站恢复想法。</summary>
-    public IdeaDto Restore(string id)
-    {
-        var restored = repo.InTransaction(r =>
-        {
-            var existing = r.Get(id);
-            if (existing is null)
-            {
-                throw new ApiException(404, "idea_not_found", $"想法不存在：{id}");
-            }
-
-            r.Restore(id);
-            return r.Get(id)!;
-        });
-
-        var dto = ToDto(restored);
-
-        publisher.Publish(EventFactory.Create(
-            EventTypes.IdeaRestored,
-            project: null,
-            idea: ToSnapshot(dto)));
-
-        return dto;
-    }
-
     /// <summary>
     /// 批量标记完成/取消完成。返回**实际被处理到的**想法（按请求里 id 的顺序）。
     /// </summary>
@@ -683,7 +658,14 @@ public sealed class IdeaService(
         return result;
     }
 
-    private static IdeaDto ToDto(Idea idea) => new(
+    /// <summary>
+    /// 想法 → DTO。
+    /// </summary>
+    /// <remarks>
+    /// 静态的：回收站视图也要用同一份口径，两边各写一份的话，
+    /// 列表里的想法与回收站里的同一条想法会长得不一样。
+    /// </remarks>
+    internal static IdeaDto ToDto(Idea idea) => new(
         Id: idea.Id,
         ProjectId: idea.ProjectId,
         Title: idea.Title,

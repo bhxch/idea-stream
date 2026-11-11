@@ -166,6 +166,12 @@ echo "==> GET /api/tags/suggest?prefix=a"
 check_endpoint "/api/tags/suggest?prefix=a" "200" \
     'root.ValueKind == JsonValueKind.Array'
 
+echo "==> GET /api/trash"
+# 回收站视图：返回静态类型 List<TrashEntryDto>（裸数组）。
+# 白名单里少登记这个集合包装类型时，这个端点在 AOT 产物下就是 500。
+check_endpoint "/api/trash" "200" \
+    'root.ValueKind == JsonValueKind.Array'
+
 echo "==> POST /api/ideas/bulk/complete"
 # 批量端点：返回静态类型 List<IdeaDto>（裸数组），请求体也要有源生成元数据。
 # ids 给空数组是合法的空操作 —— 这一条只验「端点能通 + 集合类型可用」。

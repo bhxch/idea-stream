@@ -30,7 +30,7 @@ public sealed class IdeaRepository(SqliteDatabase db)
     private readonly SqliteConnection? _connection = null;
     private readonly SqliteTransaction? _transaction = null;
 
-    private IdeaRepository(SqliteDatabase db, SqliteConnection connection, SqliteTransaction transaction)
+    internal IdeaRepository(SqliteDatabase db, SqliteConnection connection, SqliteTransaction transaction)
         : this(db)
     {
         _connection = connection;
@@ -43,24 +43,17 @@ public sealed class IdeaRepository(SqliteDatabase db)
     /// </summary>
     public T InTransaction<T>(Func<IdeaRepository, T> work)
     {
-        using var connection = db.Open();
-        using var transaction = connection.BeginTransaction();
-
-        var result = work(new IdeaRepository(db, connection, transaction));
-
-        transaction.Commit();
-        return result;
+        return db.InTransaction((ideas, _) => work(ideas));
     }
 
     /// <summary>在一个 SQLite 事务里执行一组写操作（无返回值版本）。</summary>
     public void InTransaction(Action<IdeaRepository> work)
     {
-        using var connection = db.Open();
-        using var transaction = connection.BeginTransaction();
-
-        work(new IdeaRepository(db, connection, transaction));
-
-        transaction.Commit();
+        db.InTransaction((ideas, _) =>
+        {
+            work(ideas);
+            return 0;
+        });
     }
 
     /// <summary>按 id 取一条想法（含回收站里的），带上它的标签。找不到返回 null。</summary>
@@ -148,6 +141,135 @@ public sealed class IdeaRepository(SqliteDatabase db)
                     Tags = tags.TryGetValue(idea.Id, out var names) ? names : Array.Empty<string>()
                 })
                 .Where(idea => IdeaFilter.Matches(idea, query))
+                .ToList();
+        });
+    }
+
+    /// <summary>
+    /// 列出某个项目下的**全部**想法（含回收站里的），按 <c>updated_at ASC, id ASC</c> 排序。
+    /// </summary>
+    /// <remarks>
+    /// 回收站的容器条目用它：已删项目下挂的是它**全部**的想法，
+    /// 无论它们是随项目一起删的，还是在项目被删之前就被单独删掉的。
+    /// </remarks>
+    public IReadOnlyList<Idea> ListByProject(string projectId)
+    {
+        return Query((connection, transaction) => ReadByProject(connection, transaction, projectId));
+    }
+
+    /// <summary>
+    /// 回收站里的**顶层**想法：已删，且它的项目**没有**被删。
+    /// </summary>
+    /// <remarks>
+    /// 项目被删时，它下面的想法一律以容器条目的形式出现（不论何时删除），
+    /// 这里不再重复列一遍 —— 同一个想法不会在两处同时出现。
+    /// </remarks>
+    public IReadOnlyList<Idea> ListTopLevelTrash()
+    {
+        return Query((connection, transaction) =>
+        {
+            // 顶层 = 已删，且它的项目不在回收站里。
+            const string where =
+                "deleted_at IS NOT NULL AND project_id NOT IN " +
+                "(SELECT id FROM project WHERE deleted_at IS NOT NULL)";
+
+            var ideas = new List<Idea>();
+
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText =
+                    $"SELECT {SelectColumns} FROM idea WHERE {where} ORDER BY deleted_at ASC, id ASC;";
+
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    ideas.Add(Read(reader));
+                }
+            }
+
+            var tags = ReadTagNamesOfCandidates(
+                connection,
+                transaction,
+                where,
+                new Dictionary<string, object>(StringComparer.Ordinal));
+
+            return ideas
+                .Select(idea => idea with
+                {
+                    Tags = tags.TryGetValue(idea.Id, out var names) ? names : Array.Empty<string>()
+                })
+                .ToList();
+        });
+    }
+
+    /// <summary>
+    /// 把项目下**未删**的想法一并软删（<c>deleted_at</c> 置为同一时刻），
+    /// 返回被软删的想法（软删之后的样子）。
+    /// </summary>
+    /// <remarks>
+    /// 「未删」是硬要求：项目被删之前就被单独删掉的想法带着自己的删除时刻，
+    /// 恢复项目时靠这个时刻区分「是不是随项目一起删的」。
+    /// </remarks>
+    public IReadOnlyList<Idea> SoftDeleteByProject(string projectId, DateTimeOffset at)
+    {
+        return Write((connection, transaction) =>
+        {
+            var affected = ReadByProject(connection, transaction, projectId)
+                .Where(idea => idea.DeletedAt is null)
+                .ToList();
+
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText =
+                    "UPDATE idea SET deleted_at = $at, updated_at = $at " +
+                    "WHERE project_id = $projectId AND deleted_at IS NULL;";
+                command.Parameters.AddWithValue("$at", SqliteDatabase.FormatTimestamp(at));
+                command.Parameters.AddWithValue("$projectId", projectId);
+                command.ExecuteNonQuery();
+            }
+
+            // UPDATE 写的就是 deleted_at / updated_at，回读一次不必要：
+            // 直接把这两个字段换成写入的值，结果与回读一致。
+            return affected
+                .Select(idea => idea with { DeletedAt = at, UpdatedAt = at })
+                .ToList();
+        });
+    }
+
+    /// <summary>
+    /// 恢复项目时连带恢复「因删项目而删」的想法，返回被恢复的想法。
+    /// </summary>
+    /// <remarks>
+    /// 判定依据是想法的 <c>deleted_at</c> 与项目的 <c>deleted_at</c> **相同**
+    /// （两者在删除项目时被写成同一时刻）。
+    /// 在项目被删之前就被单独删掉的想法不复活 —— 它们仍以顶层条目的形式留在回收站里。
+    /// </remarks>
+    public IReadOnlyList<Idea> RestoreWithProject(string projectId, DateTimeOffset now)
+    {
+        return Write((connection, transaction) =>
+        {
+            var projectDeletedAt = ReadProjectDeletedAt(connection, transaction, projectId);
+
+            var affected = ReadByProject(connection, transaction, projectId)
+                .Where(idea => projectDeletedAt is not null && idea.DeletedAt == projectDeletedAt)
+                .ToList();
+
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText =
+                    "UPDATE idea SET deleted_at = NULL, updated_at = $now " +
+                    "WHERE project_id = $projectId AND deleted_at IS NOT NULL " +
+                    "AND deleted_at = (SELECT deleted_at FROM project WHERE id = $projectId);";
+                command.Parameters.AddWithValue("$now", SqliteDatabase.FormatTimestamp(now));
+                command.Parameters.AddWithValue("$projectId", projectId);
+                command.ExecuteNonQuery();
+            }
+
+            return affected
+                .Select(idea => idea with { DeletedAt = null, UpdatedAt = now })
                 .ToList();
         });
     }
@@ -375,6 +497,58 @@ public sealed class IdeaRepository(SqliteDatabase db)
         }
 
         return names;
+    }
+
+    /// <summary>
+    /// 读某个项目下的**全部**想法（含回收站里的），带上标签，
+    /// 按 <c>updated_at ASC, id ASC</c> 排序。
+    /// </summary>
+    private static IReadOnlyList<Idea> ReadByProject(
+        SqliteConnection connection, SqliteTransaction? transaction, string projectId)
+    {
+        var ideas = new List<Idea>();
+
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText =
+                $"SELECT {SelectColumns} FROM idea WHERE project_id = $projectId " +
+                "ORDER BY updated_at ASC, id ASC;";
+            command.Parameters.AddWithValue("$projectId", projectId);
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                ideas.Add(Read(reader));
+            }
+        }
+
+        var parameters = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["$projectId"] = projectId
+        };
+
+        var tags = ReadTagNamesOfCandidates(connection, transaction, "project_id = $projectId", parameters);
+
+        return ideas
+            .Select(idea => idea with
+            {
+                Tags = tags.TryGetValue(idea.Id, out var names) ? names : Array.Empty<string>()
+            })
+            .ToList();
+    }
+
+    /// <summary>读项目的删除时刻；项目不在回收站里（或不存在）时返回 null。</summary>
+    private static DateTimeOffset? ReadProjectDeletedAt(
+        SqliteConnection connection, SqliteTransaction? transaction, string projectId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT deleted_at FROM project WHERE id = $projectId;";
+        command.Parameters.AddWithValue("$projectId", projectId);
+
+        var value = command.ExecuteScalar() as string;
+        return value is null ? null : SqliteDatabase.ParseTimestamp(value);
     }
 
     /// <summary>一次性读完候选想法的标签：想法 id → 标签名列表。</summary>
