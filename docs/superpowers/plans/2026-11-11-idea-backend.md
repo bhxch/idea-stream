@@ -1373,7 +1373,10 @@ builder.Services.AddSingleton(sp => new EventBus(
     sp.GetRequiredService<ILogger<EventBus>>()));
 builder.Services.AddSingleton<WebhookDeliveryWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<WebhookDeliveryWorker>());
-builder.Services.AddHostedService<TrashCleanupWorker>();
+// Testing 环境不注册清理 worker：它启动即跑一次清理写事务，会与测试请求并发争同一个
+// SQLite 文件（SQLITE_BUSY 抖动窗口 → flaky 测试）。要测清理逻辑时直接调 TrashCleanupWorker.Cleanup()。
+if (!builder.Environment.IsEnvironment("Testing"))
+    builder.Services.AddHostedService<TrashCleanupWorker>();
 builder.Services.AddHttpClient();
 builder.Services.AddOpenApi();
 
