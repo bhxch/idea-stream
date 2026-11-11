@@ -8,7 +8,11 @@ namespace IdeaApp.Application;
 /// 项目领域服务。业务规则在这里，仓储只管存。
 /// 所有 4xx 业务错误都通过 <see cref="ApiException"/> 抛出。
 /// </summary>
-public sealed class ProjectService(ProjectRepository repo)
+/// <remarks>
+/// 每个写方法在写库成功之后发一条事件（SSE 推送、webhook 投递都靠它）。
+/// <see cref="Restore"/> 的事件归 Task 10（回收站）接。
+/// </remarks>
+public sealed class ProjectService(ProjectRepository repo, IEventPublisher publisher)
 {
     /// <summary>内置收件箱的 id。它不能被删除，但可以改名、可以参与排序。</summary>
     public const string InboxId = "inbox";
@@ -36,7 +40,14 @@ public sealed class ProjectService(ProjectRepository repo)
         // 否则删掉一个项目再新建，会和回收站里那个项目撞 sort_order。
         var sortOrder = repo.MaxSortOrder() + 1;
 
-        return ToDto(repo.Insert(trimmed, sortOrder));
+        var dto = ToDto(repo.Insert(trimmed, sortOrder));
+
+        publisher.Publish(EventFactory.Create(
+            EventTypes.ProjectCreated,
+            project: ToSnapshot(dto),
+            idea: null));
+
+        return dto;
     }
 
     /// <summary>改项目名。</summary>
@@ -44,7 +55,15 @@ public sealed class ProjectService(ProjectRepository repo)
     {
         EnsureExists(id);
 
-        return ToDto(repo.Rename(id, NormalizeName(name)));
+        var dto = ToDto(repo.Rename(id, NormalizeName(name)));
+
+        publisher.Publish(EventFactory.Create(
+            EventTypes.ProjectUpdated,
+            project: ToSnapshot(dto),
+            idea: null,
+            changed: new[] { "name" }));
+
+        return dto;
     }
 
     /// <summary>把项目移进回收站（软删）。</summary>
@@ -55,8 +74,14 @@ public sealed class ProjectService(ProjectRepository repo)
             throw new ApiException(400, "inbox_not_deletable", "内置收件箱不能删除");
         }
 
-        EnsureExists(id);
+        var project = EnsureExists(id);
+
         repo.SoftDelete(id, DateTimeOffset.UtcNow);
+
+        publisher.Publish(EventFactory.Create(
+            EventTypes.ProjectDeleted,
+            project: ToSnapshot(project),
+            idea: null));
     }
 
     /// <summary>从回收站恢复项目。</summary>
@@ -83,17 +108,34 @@ public sealed class ProjectService(ProjectRepository repo)
             throw new ApiException(400, "invalid_reorder_ids", "重排请求必须给出至少一个项目 id");
         }
 
+        // 重排会重写所有项目的 sort_order（没被列出的接在后面），
+        // 所以先记下原来的顺序、改完再对比：只有顺序真的变了才发事件。
+        var before = repo.ListActive().ToDictionary(
+            project => project.Id,
+            project => project.SortOrder,
+            StringComparer.Ordinal);
+
         repo.Reorder(ids);
+
+        foreach (var project in repo.ListActive())
+        {
+            if (!before.TryGetValue(project.Id, out var previous) || previous != project.SortOrder)
+            {
+                publisher.Publish(EventFactory.Create(
+                    EventTypes.ProjectUpdated,
+                    project: ToSnapshot(project),
+                    idea: null,
+                    changed: new[] { "sortOrder" }));
+            }
+        }
 
         return List();
     }
 
-    private void EnsureExists(string id)
+    /// <summary>取一条存在的项目，否则 404。</summary>
+    private Project EnsureExists(string id)
     {
-        if (repo.Get(id) is null)
-        {
-            throw new ApiException(404, "project_not_found", $"项目不存在：{id}");
-        }
+        return repo.Get(id) ?? throw new ApiException(404, "project_not_found", $"项目不存在：{id}");
     }
 
     /// <summary>项目名去掉首尾空白；空名字不算合法项目名。</summary>
@@ -117,4 +159,10 @@ public sealed class ProjectService(ProjectRepository repo)
         LastActivityAt: repo.LastActivityAt(project.Id),
         CreatedAt: project.CreatedAt,
         UpdatedAt: project.UpdatedAt);
+
+    /// <summary>DTO → 事件载荷里的项目快照。</summary>
+    private static ProjectSnapshot ToSnapshot(ProjectDto dto) => new(dto.Id, dto.Name);
+
+    /// <summary>项目 → 事件载荷里的项目快照。</summary>
+    private static ProjectSnapshot ToSnapshot(Project project) => new(project.Id, project.Name);
 }

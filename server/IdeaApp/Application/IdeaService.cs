@@ -9,7 +9,15 @@ namespace IdeaApp.Application;
 /// 想法领域服务。业务规则在这里，仓储只管存。
 /// 所有 4xx 业务错误都通过 <see cref="ApiException"/> 抛出。
 /// </summary>
-public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects, IOptions<AppOptions> options)
+/// <remarks>
+/// 每个写方法在**事务提交之后**发一条事件（SSE 推送、webhook 投递都靠它）。
+/// 绝不能在事务回调里发：事务回滚了却把事件发出去，订阅端就会收到幽灵事件。
+/// </remarks>
+public sealed class IdeaService(
+    IdeaRepository repo,
+    ProjectRepository projects,
+    IOptions<AppOptions> options,
+    IEventPublisher publisher)
 {
     /// <summary>列出未删除的想法（不带过滤条件），按 <c>updated_at ASC, id ASC</c> 排序。</summary>
     public IReadOnlyList<IdeaDto> List()
@@ -88,7 +96,15 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
         // 复用的是那一行，写法以字典里最早出现的那次为准）。
         var created = repo.InTransaction(r => r.Insert(idea));
 
-        return ToDto(created);
+        var dto = ToDto(created);
+
+        // 事件在事务提交之后才发。
+        publisher.Publish(EventFactory.Create(
+            EventTypes.IdeaCreated,
+            project: null,
+            idea: ToSnapshot(dto)));
+
+        return dto;
     }
 
     /// <summary>
@@ -102,17 +118,35 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
     /// </remarks>
     public IdeaDto Update(string id, string? title, string? content)
     {
-        var updated = repo.InTransaction(r =>
+        // changed 只列**真正改了**的字段，所以要在事务里跟改之前的值比。
+        var (dto, changed) = repo.InTransaction(r =>
         {
             var existing = RequireExisting(r, id);
 
             var nextTitle = title is null ? existing.Title : NormalizeTitle(title);
             var nextContent = content is null ? existing.Content : ValidateContent(content);
 
-            return r.UpdateContent(id, nextTitle, nextContent);
+            var changed = new List<string>(2);
+            if (!string.Equals(existing.Title, nextTitle, StringComparison.Ordinal))
+            {
+                changed.Add("title");
+            }
+
+            if (!string.Equals(existing.Content, nextContent, StringComparison.Ordinal))
+            {
+                changed.Add("content");
+            }
+
+            return (ToDto(r.UpdateContent(id, nextTitle, nextContent)), changed.ToArray());
         });
 
-        return ToDto(updated);
+        publisher.Publish(EventFactory.Create(
+            EventTypes.IdeaUpdated,
+            project: null,
+            idea: ToSnapshot(dto),
+            changed: changed));
+
+        return dto;
     }
 
     /// <summary>覆盖式设置标签：把标签集替换成给定的那批。</summary>
@@ -128,7 +162,15 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
             return r.Get(id)!;
         });
 
-        return ToDto(updated);
+        var dto = ToDto(updated);
+
+        publisher.Publish(EventFactory.Create(
+            EventTypes.IdeaUpdated,
+            project: null,
+            idea: ToSnapshot(dto),
+            changed: new[] { "tags" }));
+
+        return dto;
     }
 
     /// <summary>设置完成标记。</summary>
@@ -141,18 +183,34 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
             return r.SetDone(id, done);
         });
 
-        return ToDto(updated);
+        var dto = ToDto(updated);
+
+        publisher.Publish(EventFactory.Create(
+            EventTypes.IdeaUpdated,
+            project: null,
+            idea: ToSnapshot(dto),
+            changed: new[] { "done" }));
+
+        return dto;
     }
 
     /// <summary>把想法移进回收站（软删）。</summary>
     public void Delete(string id)
     {
-        repo.InTransaction(r =>
+        var dto = repo.InTransaction(r =>
         {
             RequireExisting(r, id);
 
             r.SoftDelete(id, DateTimeOffset.UtcNow);
+
+            // 回读一次：updated_at 被刷新过了，载荷是删除之后的样子。
+            return ToDto(r.Get(id)!);
         });
+
+        publisher.Publish(EventFactory.Create(
+            EventTypes.IdeaDeleted,
+            project: null,
+            idea: ToSnapshot(dto)));
     }
 
     /// <summary>从回收站恢复想法。</summary>
@@ -170,7 +228,14 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
             return r.Get(id)!;
         });
 
-        return ToDto(restored);
+        var dto = ToDto(restored);
+
+        publisher.Publish(EventFactory.Create(
+            EventTypes.IdeaRestored,
+            project: null,
+            idea: ToSnapshot(dto)));
+
+        return dto;
     }
 
     /// <summary>
@@ -188,7 +253,7 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
     {
         var targets = NormalizeIds(ids);
 
-        return repo.InTransaction(r =>
+        var updated = repo.InTransaction(r =>
         {
             var existing = ResolveExisting(r, targets);
             EnsureSomethingProcessed(targets, existing.Count);
@@ -201,6 +266,18 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
 
             return (IReadOnlyList<IdeaDto>)results;
         });
+
+        // 批量是「每条想法一个事件」：订阅端逐条更新，不用重新拉整个列表。
+        foreach (var dto in updated)
+        {
+            publisher.Publish(EventFactory.Create(
+                EventTypes.IdeaUpdated,
+                project: null,
+                idea: ToSnapshot(dto),
+                changed: new[] { "done" }));
+        }
+
+        return updated;
     }
 
     /// <summary>
@@ -217,7 +294,7 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
         var targets = NormalizeIds(ids);
         var requested = NormalizeTags(tags);
 
-        return repo.InTransaction(r =>
+        var updated = repo.InTransaction(r =>
         {
             var existing = ResolveExisting(r, targets);
             EnsureSomethingProcessed(targets, existing.Count);
@@ -237,6 +314,17 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
 
             return (IReadOnlyList<IdeaDto>)results;
         });
+
+        foreach (var dto in updated)
+        {
+            publisher.Publish(EventFactory.Create(
+                EventTypes.IdeaUpdated,
+                project: null,
+                idea: ToSnapshot(dto),
+                changed: new[] { "tags" }));
+        }
+
+        return updated;
     }
 
     /// <summary>
@@ -254,7 +342,7 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
     {
         var targets = NormalizeIds(ids);
 
-        return repo.InTransaction(r =>
+        var deleted = repo.InTransaction(r =>
         {
             var existing = ResolveExisting(r, targets);
             EnsureSomethingProcessed(targets, existing.Count);
@@ -272,6 +360,16 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
 
             return (IReadOnlyList<IdeaDto>)results;
         });
+
+        foreach (var dto in deleted)
+        {
+            publisher.Publish(EventFactory.Create(
+                EventTypes.IdeaDeleted,
+                project: null,
+                idea: ToSnapshot(dto)));
+        }
+
+        return deleted;
     }
 
     /// <summary>
@@ -301,7 +399,7 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
             throw new ApiException(400, "invalid_merge_selection", "合并至少需要两条想法");
         }
 
-        var merged = repo.InTransaction(r =>
+        var (merged, mergedFrom) = repo.InTransaction(r =>
         {
             // 源排序：updated_at ASC, id ASC（全序，顺序可复现）。
             var sources = targets
@@ -344,10 +442,17 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
                 r.HardDelete(source.Id);
             }
 
-            return created;
+            return (ToDto(created), sources.Select(source => source.Id).ToArray());
         });
 
-        return ToDto(merged);
+        // 载荷带上被硬删的源 id：订阅端据此把源条目从本地列表里去掉。
+        publisher.Publish(EventFactory.Create(
+            EventTypes.IdeaMerged,
+            project: null,
+            idea: ToSnapshot(merged),
+            mergedFrom: mergedFrom));
+
+        return merged;
     }
 
     /// <summary>
@@ -587,4 +692,15 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects,
         Done: idea.Done,
         CreatedAt: idea.CreatedAt,
         UpdatedAt: idea.UpdatedAt);
+
+    /// <summary>DTO → 事件载荷里的想法快照。</summary>
+    private static IdeaSnapshot ToSnapshot(IdeaDto dto) => new(
+        Id: dto.Id,
+        ProjectId: dto.ProjectId,
+        Title: dto.Title,
+        Content: dto.Content,
+        Tags: dto.Tags,
+        Done: dto.Done,
+        CreatedAt: dto.CreatedAt,
+        UpdatedAt: dto.UpdatedAt);
 }

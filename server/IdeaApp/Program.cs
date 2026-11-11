@@ -1,5 +1,6 @@
 using IdeaApp.Application;
 using IdeaApp.Contracts;
+using IdeaApp.Domain;
 using IdeaApp.Endpoints;
 using IdeaApp.Infrastructure;
 using Microsoft.Extensions.Options;
@@ -24,6 +25,13 @@ builder.Services.AddSingleton<IdeaRepository>();
 builder.Services.AddSingleton<IdeaService>();
 builder.Services.AddSingleton<TagRepository>();
 builder.Services.AddSingleton<TagService>();
+
+// 事件总线：服务层只认 IEventPublisher，测试可以换成记录型的 fake。
+// IEventHandler 的实现 Task 9（SSE）/ 14（webhook）才注册，
+// 那时通道数不为 0；现在通道数为 0，publish 是空操作 —— 这是对的。
+builder.Services.AddSingleton<IEventPublisher>(sp => new EventBus(
+    sp.GetServices<IEventHandler>(),
+    sp.GetRequiredService<ILogger<EventBus>>()));
 
 var app = builder.Build();
 

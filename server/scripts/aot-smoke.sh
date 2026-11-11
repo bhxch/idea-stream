@@ -204,5 +204,14 @@ check_endpoint "/api/ideas/merge" "400" \
     POST \
     '{"ids":["0198f0a1b2c3d4e5f60718293a4b5c01"]}'
 
+echo "==> POST /api/ideas"
+# 写路径：新建想法会走一遍事件发布（EventFactory → 单调 UUIDv7 → 事件总线）。
+# AOT 下这条链路要是断了（事件类型没登记进源生成上下文、事件构造用到反射），
+# 这里就是 500。id 必须是 32 位无连字符的小写 hex。
+check_endpoint "/api/ideas" "201" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("id", out var id) && id.GetString() is { Length: 32 }' \
+    POST \
+    '{"content":"AOT 冒烟","title":"标题","tags":["冒烟"]}'
+
 echo "PASS: AOT 产物下所有被检查的端点都返回预期状态码与响应体"
 exit 0
