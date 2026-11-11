@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -19,6 +20,13 @@ namespace IdeaApp.Infrastructure;
 /// </para>
 ///
 /// <para>
+/// JSON 的文本输出交给 <see cref="Utf8JsonWriter"/>：模板解析成 <see cref="JsonNode"/> 后递归遍历，
+/// 写出来的结果与 <c>JsonNode.ToJsonString(WriteIndented)</c> **逐字节相同**
+/// （缩进 2 格、数字保留原始字面量、字符串按 JSON 上下文转义）。手写 JSON 文本是最容易出细微错的地方
+/// （转义、缩进、数字字面量、空容器），不值得重造一遍 BCL。
+/// </para>
+///
+/// <para>
 /// 模板的形状也是契约的一部分：根节点必须是 JSON 对象，占位符不能出现在对象的键里 ——
 /// 渲染器不会处理键里的占位符，留到投递时才暴露这件事太晚了。
 /// </para>
@@ -29,9 +37,6 @@ public static class TemplateRenderer
     private static readonly Regex PlaceholderPattern =
         new(@"\{\{([a-zA-Z0-9_.]+)\}\}", RegexOptions.CultureInvariant);
 
-    /// <summary>输出 JSON 时每层缩进的空格数。</summary>
-    private const int IndentSize = 2;
-
     /// <summary>
     /// 渲染 JSON 模板：解析模板，把字符串值节点里的占位符替换掉，输出缩进 2 格的 JSON。
     /// </summary>
@@ -40,7 +45,7 @@ public static class TemplateRenderer
     /// 占位符的值。值是 <c>null</c> 表示「这个字段这次没有值」，渲染成空串；
     /// 字典里**没有**这个键才是「未识别的占位符」，原样保留。
     /// </param>
-    /// <returns>缩进 2 格的 JSON。</returns>
+    /// <returns>缩进 2 格的 JSON（与 <c>JsonNode.ToJsonString(WriteIndented)</c> 逐字节相同）。</returns>
     /// <exception cref="ArgumentException">
     /// 模板不是合法 JSON、根节点不是 JSON 对象，或对象的键里有占位符。
     /// </exception>
@@ -50,10 +55,13 @@ public static class TemplateRenderer
 
         var root = ParseTemplate(jsonTemplate);
 
-        var builder = new StringBuilder();
-        WriteNode(root, values, builder, 0);
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer, new JsonWriterOptions { Indented = true }))
+        {
+            WriteNode(writer, root, values);
+        }
 
-        return builder.ToString();
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
     }
 
     /// <summary>
@@ -116,7 +124,13 @@ public static class TemplateRenderer
         }
         catch (JsonException ex)
         {
-            throw new ArgumentException($"Body 模板必须是合法的 JSON：{ex.Message}");
+            throw new ArgumentException($"Body 模板必须是合法的 JSON：{ex.Message}", ex);
+        }
+        catch (ArgumentException ex)
+        {
+            // 不是语法问题，是结构问题：内部消息是英文的，换成中文再抛出去，
+            // 别把内部实现的消息直接透给 API 用户。
+            throw new ArgumentException("Body 模板的 JSON 结构不合法", ex);
         }
 
         if (root is not JsonObject obj)
@@ -124,27 +138,28 @@ public static class TemplateRenderer
             throw new ArgumentException("Body 模板的根节点必须是 JSON 对象");
         }
 
-        EnsureNoPlaceholderInKeys(obj);
+        EnsureValidShape(obj);
 
         return obj;
     }
 
     /// <summary>
-    /// 对象的键里不许有占位符：渲染器只处理字符串值节点，键里的占位符永远不会被替换。
+    /// 模板的形状检查：对象的键里不许有占位符（渲染器只处理字符串值节点，
+    /// 键里的占位符永远不会被替换），同一个对象里也不许有重复的键。
     /// </summary>
-    private static void EnsureNoPlaceholderInKeys(JsonNode? node)
+    private static void EnsureValidShape(JsonNode? node)
     {
         switch (node)
         {
             case JsonObject obj:
-                foreach (var (key, value) in obj)
+                foreach (var (key, value) in EnumerateEntries(obj))
                 {
                     if (PlaceholderPattern.IsMatch(key))
                     {
                         throw new ArgumentException($"Body 模板的键里不能有占位符：{key}");
                     }
 
-                    EnsureNoPlaceholderInKeys(value);
+                    EnsureValidShape(value);
                 }
 
                 break;
@@ -152,153 +167,118 @@ public static class TemplateRenderer
             case JsonArray array:
                 foreach (var item in array)
                 {
-                    EnsureNoPlaceholderInKeys(item);
+                    EnsureValidShape(item);
                 }
 
                 break;
         }
     }
 
-    /// <summary>把一个节点写成 JSON 文本。</summary>
-    private static void WriteNode(JsonNode? node, IReadOnlyDictionary<string, string?> values,
-                                  StringBuilder builder, int depth)
+    /// <summary>
+    /// 枚举对象的键值对。
+    /// </summary>
+    /// <remarks>
+    /// 重复的键要到这里才暴露：<see cref="JsonObject"/> 解析时不报错，**枚举**时才会抛
+    /// <see cref="ArgumentException"/>，消息是内部的英文（"An item with the same key has already been added"）。
+    /// 这里换成中文再抛出去，别把内部消息透给 API 用户。
+    /// </remarks>
+    private static List<KeyValuePair<string, JsonNode?>> EnumerateEntries(JsonObject obj)
+    {
+        try
+        {
+            return obj.ToList();
+        }
+        catch (ArgumentException ex)
+        {
+            throw new ArgumentException("Body 模板里同一个对象出现了重复的键", ex);
+        }
+    }
+
+    /// <summary>把一个节点写进 JSON 输出。</summary>
+    private static void WriteNode(Utf8JsonWriter writer, JsonNode? node,
+                                  IReadOnlyDictionary<string, string?> values)
     {
         switch (node)
         {
             case JsonObject obj:
-                WriteObject(obj, values, builder, depth);
+                writer.WriteStartObject();
+                foreach (var (key, value) in EnumerateEntries(obj))
+                {
+                    writer.WritePropertyName(key);
+                    WriteNode(writer, value, values);
+                }
+                writer.WriteEndObject();
                 break;
 
             case JsonArray array:
-                WriteArray(array, values, builder, depth);
+                writer.WriteStartArray();
+                foreach (var item in array)
+                {
+                    WriteNode(writer, item, values);
+                }
+                writer.WriteEndArray();
+                break;
+
+            case JsonValue value when value.GetValueKind() == JsonValueKind.String:
+                WriteStringValue(writer, value.GetValue<string>()!, values);
                 break;
 
             case JsonValue value:
-                WriteValue(value, values, builder);
+                WriteLiteral(writer, value);
                 break;
 
             default:
                 // null（JSON 的 null 节点）。
-                builder.Append("null");
+                writer.WriteNullValue();
                 break;
         }
     }
 
-    /// <summary>写一个 JSON 对象。</summary>
-    private static void WriteObject(JsonObject obj, IReadOnlyDictionary<string, string?> values,
-                                    StringBuilder builder, int depth)
-    {
-        if (obj.Count == 0)
-        {
-            builder.Append("{}");
-            return;
-        }
-
-        builder.Append("{\n");
-
-        var first = true;
-        foreach (var (key, value) in obj)
-        {
-            if (!first)
-            {
-                builder.Append(",\n");
-            }
-
-            first = false;
-
-            builder.Append(' ', (depth + 1) * IndentSize);
-            builder.Append('"');
-            builder.Append(JsonEncodedText.Encode(key).ToString());
-            builder.Append("\": ");
-            WriteNode(value, values, builder, depth + 1);
-        }
-
-        builder.Append('\n');
-        builder.Append(' ', depth * IndentSize);
-        builder.Append('}');
-    }
-
-    /// <summary>写一个 JSON 数组。</summary>
-    private static void WriteArray(JsonArray array, IReadOnlyDictionary<string, string?> values,
-                                   StringBuilder builder, int depth)
-    {
-        if (array.Count == 0)
-        {
-            builder.Append("[]");
-            return;
-        }
-
-        builder.Append("[\n");
-
-        for (var i = 0; i < array.Count; i++)
-        {
-            if (i > 0)
-            {
-                builder.Append(",\n");
-            }
-
-            builder.Append(' ', (depth + 1) * IndentSize);
-            WriteNode(array[i], values, builder, depth + 1);
-        }
-
-        builder.Append('\n');
-        builder.Append(' ', depth * IndentSize);
-        builder.Append(']');
-    }
-
-    /// <summary>写一个 JSON 值。</summary>
-    private static void WriteValue(JsonValue value, IReadOnlyDictionary<string, string?> values,
-                                   StringBuilder builder)
-    {
-        if (value.GetValueKind() == JsonValueKind.String)
-        {
-            builder.Append('"');
-            builder.Append(RenderString(value.GetValue<string>()!, values));
-            builder.Append('"');
-            return;
-        }
-
-        // 数字、布尔、null：原样写出（保留模板里的原始字面量，如 1.50 不被改写成 1.5）。
-        builder.Append(value.ToJsonString());
-    }
-
     /// <summary>
-    /// 替换字符串里的占位符，返回**已按 JSON 字符串上下文转义**的内容（不含两侧的引号）。
+    /// 写一个字符串值：按段写，占位符的值替换进去之后由 <see cref="Utf8JsonWriter"/> 转义。
     /// </summary>
     /// <remarks>
-    /// 逐段转义再拼接：字面量段与占位符的值各自转义一次，拼起来就是最终内容 ——
-    /// 值不能先转义再整体转义（那样会转两次）。
+    /// 逐段写而不是先拼成一个整串：<see cref="Utf8JsonWriter.WriteStringValueSegment(ReadOnlySpan{char}, bool)"/>
+    /// 自己会按 JSON 字符串上下文转义（用的就是默认编码器，与 <c>JsonEncodedText.Encode</c> 同一套），
+    /// 所以**不能**再先用 <c>JsonEncodedText.Encode</c> 转义一遍 —— 那会转义两次（引号会变成 <c>\\"</c>）。
     /// </remarks>
-    private static string RenderString(string text, IReadOnlyDictionary<string, string?> values)
+    private static void WriteStringValue(Utf8JsonWriter writer, string text,
+                                          IReadOnlyDictionary<string, string?> values)
     {
-        var builder = new StringBuilder();
         var position = 0;
 
         foreach (Match match in PlaceholderPattern.Matches(text))
         {
-            builder.Append(JsonEncodedText.Encode(text[position..match.Index]).ToString());
+            // 字面量段与占位符的值各写一段。
+            writer.WriteStringValueSegment(text.AsSpan(position, match.Index - position), isFinalSegment: false);
+            writer.WriteStringValueSegment(Resolve(match, values), isFinalSegment: false);
             position = match.Index + match.Length;
-
-            builder.Append(ResolveEscaped(match, values));
         }
 
-        builder.Append(JsonEncodedText.Encode(text[position..]).ToString());
-
-        return builder.ToString();
+        writer.WriteStringValueSegment(text.AsSpan(position), isFinalSegment: true);
     }
 
-    /// <summary>取占位符的值并按 JSON 字符串上下文转义（未识别的占位符原样保留）。</summary>
-    private static string ResolveEscaped(Match match, IReadOnlyDictionary<string, string?> values)
+    /// <summary>
+    /// 写一个非字符串的值（数字、布尔）：用底层的 <see cref="JsonElement"/> 写出，
+    /// 保留模板里的原始字面量（<c>1.50</c> 不会被改写成 <c>1.5</c>，<c>1e5</c> 不会被改写成 <c>100000</c>）。
+    /// </summary>
+    private static void WriteLiteral(Utf8JsonWriter writer, JsonValue value)
+    {
+        value.GetValue<JsonElement>().WriteTo(writer);
+    }
+
+    /// <summary>取占位符的值（未识别的占位符原样保留）。</summary>
+    private static string Resolve(Match match, IReadOnlyDictionary<string, string?> values)
     {
         var name = match.Groups[1].Value;
 
         if (!values.TryGetValue(name, out var value))
         {
             // 未识别的占位符：原样保留。
-            return JsonEncodedText.Encode(match.Value).ToString();
+            return match.Value;
         }
 
         // 值是 null：这次事件没有这个字段 → 空串（占位符的名字是认识的）。
-        return JsonEncodedText.Encode(value ?? string.Empty).ToString();
+        return value ?? string.Empty;
     }
 }

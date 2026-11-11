@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using IdeaApp.Application;
 using IdeaApp.Domain;
 using IdeaApp.Infrastructure;
@@ -95,6 +96,21 @@ public sealed class TemplateRendererTests
             new Dictionary<string, string?>()));
     }
 
+    /// <summary>
+    /// 渲染 JSON 模板时根节点也必须是 JSON 对象 —— 与 <see cref="TemplateRenderer.Validate"/> 同一份规则，
+    /// 不能出现「校验放行、渲染炸掉」的口子。
+    /// </summary>
+    [Fact]
+    public void Render_json_rejects_non_object_root()
+    {
+        var values = new Dictionary<string, string?>();
+
+        Assert.Throws<ArgumentException>(() => TemplateRenderer.RenderJson("123", values));
+        Assert.Throws<ArgumentException>(() => TemplateRenderer.RenderJson("\"x\"", values));
+        Assert.Throws<ArgumentException>(() => TemplateRenderer.RenderJson("[1,2]", values));
+        Assert.Throws<ArgumentException>(() => TemplateRenderer.RenderJson("null", values));
+    }
+
     /// <summary>嵌套对象与数组里的字符串值也要替换。</summary>
     [Fact]
     public void Render_json_renders_nested_objects_and_arrays()
@@ -130,6 +146,27 @@ public sealed class TemplateRendererTests
     }
 
     /// <summary>
+    /// 数字保留模板里的**原始字面量**：<c>1.50</c> 不被改写成 <c>1.5</c>，<c>1e5</c> 不被改写成 <c>100000</c>。
+    /// </summary>
+    /// <remarks>
+    /// 序列化时把数字重新算一遍（走 decimal/double）就会改掉字面量，
+    /// 所以输出必须直接用底层 <see cref="JsonElement"/> 的原始文本。
+    /// </remarks>
+    [Fact]
+    public void Render_json_preserves_number_literal()
+    {
+        var rendered = TemplateRenderer.RenderJson(
+            """{"a":1.50,"b":1e5,"c":3}""",
+            new Dictionary<string, string?>());
+
+        using var document = JsonDocument.Parse(rendered);
+
+        Assert.Equal("1.50", document.RootElement.GetProperty("a").GetRawText());
+        Assert.Equal("1e5", document.RootElement.GetProperty("b").GetRawText());
+        Assert.Equal("3", document.RootElement.GetProperty("c").GetRawText());
+    }
+
+    /// <summary>
     /// 占位符**在字典里但值是 null**（事件里没有这个字段）时，渲染成空串 ——
     /// 占位符名字是认识的，只是这次事件没有对应的值；留着 <c>{{project}}</c> 原样更糟。
     /// </summary>
@@ -159,6 +196,20 @@ public sealed class TemplateRendererTests
             new Dictionary<string, string?> { ["content"] = "a\"b\nc" });
 
         Assert.Equal("正文 a\"b\nc 结束 {{unknown}}", rendered);
+    }
+
+    /// <summary>
+    /// 纯文本模板里，**键存在但值是 null** 同样渲染成空串（与 <see cref="TemplateRenderer.RenderJson"/> 一致）：
+    /// 占位符的名字是认识的，只是这次事件没有对应的值。
+    /// </summary>
+    [Fact]
+    public void Render_plain_replaces_known_placeholder_with_empty_string_when_value_is_null()
+    {
+        var rendered = TemplateRenderer.RenderPlain(
+            "正文 [{{project}}] 结束 {{unknown}}",
+            new Dictionary<string, string?> { ["project"] = null });
+
+        Assert.Equal("正文 [] 结束 {{unknown}}", rendered);
     }
 
     [Fact]
@@ -203,6 +254,18 @@ public sealed class TemplateRendererTests
     {
         Assert.Equal(string.Empty, EventPlaceholders.Build(SampleEvent(), null)["idea.url"]);
         Assert.Equal(string.Empty, EventPlaceholders.Build(SampleEvent(), string.Empty)["idea.url"]);
+    }
+
+    /// <summary>
+    /// 事件里没有想法时，<c>{{idea.url}}</c> 同样是**空串**：没有 id 就拼不出深链，
+    /// 不能拼出一个 <c>/?idea=</c> 的半截链接。
+    /// </summary>
+    [Fact]
+    public void Build_idea_url_is_empty_when_idea_id_is_missing()
+    {
+        var evt = EventFactory.Create(EventTypes.IdeaCreated, project: null, idea: null);
+
+        Assert.Equal(string.Empty, EventPlaceholders.Build(evt, "https://x.example")["idea.url"]);
     }
 
     [Fact]
@@ -268,6 +331,68 @@ public sealed class TemplateRendererTests
     public void Telegram_preset_body_template_passes_validation()
     {
         TemplateRenderer.Validate(TelegramTemplate.BodyTemplate);
+    }
+
+    /// <summary>
+    /// 同一个对象里出现重复的键要拒掉，而且消息是**中文**的：
+    /// <see cref="JsonObject"/> 解析时不报错，要到枚举时才发现重复键，
+    /// 抛出来的是内部的英文消息（"An item with the same key has already been added"）——
+    /// 那条消息不能透给 API 用户。
+    /// </summary>
+    [Fact]
+    public void Validate_rejects_duplicate_keys_with_chinese_message()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => TemplateRenderer.Validate("""{"a":1,"a":2}"""));
+
+        Assert.Contains("重复", ex.Message);
+        Assert.DoesNotContain("same key", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 渲染结果与 BCL 自己的序列化（<c>JsonNode.ToJsonString(WriteIndented)</c>）**逐字节相同**：
+    /// 输出的格式（缩进、转义、数字字面量、空容器）是 BCL 的口径，不是我们自己拼的。
+    /// </summary>
+    /// <remarks>
+    /// 参照物是「占位符换成值之后的 JSON」交给 BCL 序列化 —— 转义与格式都由 BCL 决定，
+    /// 渲染器只要有一点自己拼文本的地方（缩进宽度、数字被改写、转义次数）这条就会红。
+    /// </remarks>
+    [Fact]
+    public void Render_json_output_matches_json_node_to_json_string_byte_for_byte()
+    {
+        const string template =
+            """{"text":"[{{project}}] {{event}}","n":1.50,"sci":1e5,"empty":{},"none":[],"nested":{"x":["{{x}}",true,null],"quote":"a\"b","chinese":"中文"}}""";
+
+        var values = new Dictionary<string, string?>
+        {
+            ["project"] = "项目A",
+            ["event"] = "idea.created",
+            ["x"] = "值"
+        };
+
+        var rendered = TemplateRenderer.RenderJson(template, values);
+
+        var expected = JsonNode.Parse(SubstitutePlaceholders(template, values))!
+            .ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+
+        Assert.Equal(expected, rendered);
+    }
+
+    /// <summary>
+    /// 把占位符换成值，作为参照物的输入：转义用 BCL 自己的口径 ——
+    /// <c>JsonSerializer.Serialize</c> 给出的是带引号的 JSON 字符串字面量，
+    /// 去掉两侧的引号就是它的内容。
+    /// </summary>
+    private static string SubstitutePlaceholders(string template, IReadOnlyDictionary<string, string?> values)
+    {
+        var result = template;
+
+        foreach (var (name, value) in values)
+        {
+            var literal = JsonSerializer.Serialize(value ?? string.Empty);
+            result = result.Replace("{{" + name + "}}", literal[1..^1]);
+        }
+
+        return result;
     }
 
     [Fact]

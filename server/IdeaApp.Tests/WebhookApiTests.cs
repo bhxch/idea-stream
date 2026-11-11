@@ -328,6 +328,38 @@ public sealed class WebhookApiTests
     }
 
     /// <summary>
+    /// 同一个对象里出现重复的键要拒掉（400 <c>invalid_body_template</c>），
+    /// 而且 <c>detail</c> 是**中文**的：内部实现抛的是英文消息，不能直接透给 API 用户。
+    /// </summary>
+    [Fact]
+    public async Task Create_webhook_with_duplicate_keys_in_body_template_returns_400_code_invalid_body_template()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "钩子",
+            url = "https://example.com/hook",
+            method = "POST",
+            headers = new Dictionary<string, string>(),
+            bodyTemplate = """{"text":"a","text":"b"}""",
+            events = new[] { "idea.created" },
+            scope = "global",
+            projectId = (string?)null
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("invalid_body_template", problem.GetProperty("code").GetString());
+
+        var detail = problem.GetProperty("detail").GetString()!;
+        Assert.Contains("重复", detail);
+        Assert.DoesNotContain("same key", detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// 作用域与 projectId 必须一致：项目级必须给一个存在的项目，全局级必须不给。
     /// </summary>
     [Fact]
