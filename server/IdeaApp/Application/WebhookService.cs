@@ -172,10 +172,19 @@ public sealed class WebhookService(WebhookRepository repo, ProjectRepository pro
         return trimmed;
     }
 
-    /// <summary>URL 去掉首尾空白；空 URL 不是合法配置。</summary>
+    /// <summary>URL 去掉首尾空白；必须是 http(s) 绝对地址。</summary>
     /// <remarks>
-    /// 不校验 URI 形状：Telegram 模板的 URL 里带 <c>&lt;BOT_TOKEN&gt;</c> 占位符，
-    /// 本身就不是合法的 URI。
+    /// 相对地址、别的协议都投不出去（投递是 HTTP 请求），这类配置在保存时就该拒掉 ——
+    /// 留到投递时才炸的话，炸的是「投递」而不是「配置」。
+    /// <para>
+    /// Telegram 预设的 URL 带 <c>&lt;BOT_TOKEN&gt;</c> 占位符：占位符不是合法的 URI 字符，
+    /// 但整体仍是 http(s) 绝对地址（<c>Uri</c> 解析时把它转义成 <c>%3CBOT_TOKEN%3E</c>），
+    /// 所以页面给的预设自己照样能用。
+    /// </para>
+    /// <para>
+    /// 错误信息里**不回显 URL**：Telegram 的 bot token 就在 URL 路径里，
+    /// 回显出去等于把它写进了日志与 skill 的 stderr。
+    /// </para>
     /// </remarks>
     private static string NormalizeUrl(string? url)
     {
@@ -184,6 +193,13 @@ public sealed class WebhookService(WebhookRepository repo, ProjectRepository pro
         if (trimmed.Length == 0)
         {
             throw new ApiException(400, "invalid_webhook_url", "webhook 的 URL 不能为空");
+        }
+
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new ApiException(400, "invalid_webhook_url",
+                "webhook 的 URL 必须是 http(s) 绝对地址");
         }
 
         return trimmed;
