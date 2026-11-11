@@ -31,8 +31,10 @@ public sealed class ProjectService(ProjectRepository repo)
     public ProjectDto Create(string name)
     {
         var trimmed = NormalizeName(name);
-        var active = repo.ListActive();
-        var sortOrder = active.Count == 0 ? 0 : active.Max(p => p.SortOrder) + 1;
+
+        // sort_order 的作用域是全表（含回收站里的项目），不能只看活跃项目：
+        // 否则删掉一个项目再新建，会和回收站里那个项目撞 sort_order。
+        var sortOrder = repo.MaxSortOrder() + 1;
 
         return ToDto(repo.Insert(trimmed, sortOrder));
     }
@@ -66,9 +68,21 @@ public sealed class ProjectService(ProjectRepository repo)
         return ToDto(repo.Get(id)!);
     }
 
-    /// <summary>手动排序，返回排好序之后的项目列表。</summary>
-    public IReadOnlyList<ProjectDto> Reorder(IReadOnlyList<string> ids)
+    /// <summary>
+    /// 手动排序，返回排好序之后的项目列表。
+    /// </summary>
+    /// <remarks>
+    /// 请求体里缺 <c>ids</c> 或显式给 <c>null</c> 时，反序列化出来是 null
+    /// （.NET 10 默认不校验非空 ctor 参数）。这里收敛成 400，
+    /// 不能让它一路走到仓储里变成 NullReferenceException → 500。
+    /// </remarks>
+    public IReadOnlyList<ProjectDto> Reorder(IReadOnlyList<string>? ids)
     {
+        if (ids is null || ids.Count == 0)
+        {
+            throw new ApiException(400, "invalid_reorder_ids", "重排请求必须给出至少一个项目 id");
+        }
+
         repo.Reorder(ids);
 
         return List();

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
@@ -158,6 +159,123 @@ public sealed class ProjectApiTests
         Assert.Equal(new[] { third, first, "inbox", second }, reordered.Select(p => p.Id).ToArray());
     }
 
+    /// <summary>
+    /// 重排请求没给 ids（缺字段、显式 null、空数组）时必须是 400，不能是 500。
+    /// 反序列化出来的 <c>Ids</c> 是 null 时，仓储里的 foreach 会抛 NRE。
+    /// </summary>
+    [Fact]
+    public async Task Reorder_without_ids_returns_400_with_code_invalid_reorder_ids()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        foreach (var payload in new[] { "{}", """{"ids":null}""", """{"ids":[]}""" })
+        {
+            var response = await PostJsonAsync(client, "/api/projects/reorder", payload);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            var problem = await ReadProblemAsync(response);
+            Assert.Equal("invalid_reorder_ids", problem.GetProperty("code").GetString());
+        }
+    }
+
+    /// <summary>
+    /// 重排请求里的未知 id 被忽略，而且不占用 sort_order 索引 ——
+    /// 已知 id 拿到的索引不能因为前面那个未知 id 而往后挪。
+    /// </summary>
+    [Fact]
+    public async Task Reorder_ignores_unknown_ids_without_consuming_an_index()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var first = await CreateProjectAsync(client, "项目A");
+        var second = await CreateProjectAsync(client, "项目B");
+        const string unknown = "0198f0a1b2c3d4e5f60718293a4b5c6d";
+
+        var response = await client.PostAsJsonAsync("/api/projects/reorder",
+            new { ids = new[] { unknown, second } });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var reordered = await ReadProjectsAsync(response);
+
+        Assert.DoesNotContain(reordered, p => p.Id == unknown);
+
+        // 未知 id 没占索引：第二个项目拿到 sort_order 0。
+        Assert.Equal(second, reordered[0].Id);
+        Assert.Equal(0, reordered[0].SortOrder);
+
+        // 其余项目保持原来的相对顺序接在后面。
+        Assert.Equal(new[] { second, "inbox", first }, reordered.Select(p => p.Id).ToArray());
+    }
+
+    /// <summary>
+    /// 项目名去掉首尾空白后为空时必须 400（空名字的项目在界面上没法用）。
+    /// </summary>
+    [Fact]
+    public async Task Create_project_with_blank_name_returns_400_with_code_invalid_project_name()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        foreach (var name in new[] { "", "   ", (string?)null })
+        {
+            var response = await client.PostAsJsonAsync("/api/projects", new { name });
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            var problem = await ReadProblemAsync(response);
+            Assert.Equal("invalid_project_name", problem.GetProperty("code").GetString());
+        }
+    }
+
+    /// <summary>
+    /// 没有想法的项目，最近活动时间回落到项目自身的 updated_at，不返回 null ——
+    /// DTO 展示与 Task 13 的 recent 排序要用同一个值。
+    /// </summary>
+    [Fact]
+    public async Task List_projects_returns_last_activity_at_for_project_without_ideas()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var id = await CreateProjectAsync(client, "空项目");
+
+        var projects = await ReadProjectsAsync(await client.GetAsync("/api/projects"));
+        var project = Assert.Single(projects, p => p.Id == id);
+
+        Assert.NotNull(project.LastActivityAt);
+        Assert.Equal(project.UpdatedAt, project.LastActivityAt);
+    }
+
+    /// <summary>软删之后 restore，项目回到活跃列表，deleted_at 被置空。</summary>
+    [Fact]
+    public async Task Restore_project_brings_it_back_to_the_active_list()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var id = await CreateProjectAsync(client, "待恢复");
+
+        var deleted = await client.DeleteAsync($"/api/projects/{id}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        var hidden = await ReadProjectsAsync(await client.GetAsync("/api/projects"));
+        Assert.DoesNotContain(hidden, p => p.Id == id);
+
+        var response = await client.PostAsync($"/api/projects/{id}/restore", null);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var restored = await ReadProjectsAsync(await client.GetAsync("/api/projects"));
+        Assert.Contains(restored, p => p.Id == id);
+
+        // deleted_at 被清空了。
+        Assert.Null(QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM project WHERE id = $id;", id));
+    }
+
     [Fact]
     public async Task Rename_unknown_project_returns_404_with_code_project_not_found()
     {
@@ -199,9 +317,15 @@ public sealed class ProjectApiTests
             .Select(element => new ProjectSummary(
                 Id: element.GetProperty("id").GetString()!,
                 Name: element.GetProperty("name").GetString()!,
-                SortOrder: element.GetProperty("sortOrder").GetInt32()))
+                SortOrder: element.GetProperty("sortOrder").GetInt32(),
+                LastActivityAt: element.GetProperty("lastActivityAt").GetString(),
+                UpdatedAt: element.GetProperty("updatedAt").GetString()))
             .ToList();
     }
+
+    /// <summary>按原始 JSON 文本发 POST（用来构造缺字段 / 显式 null 的请求体）。</summary>
+    private static async Task<HttpResponseMessage> PostJsonAsync(HttpClient client, string url, string json) =>
+        await client.PostAsync(url, new StringContent(json, Encoding.UTF8, "application/json"));
 
     /// <summary>读 ProblemDetails 响应体。</summary>
     private static async Task<JsonElement> ReadProblemAsync(HttpResponseMessage response)
@@ -243,5 +367,6 @@ public sealed class ProjectApiTests
         return connection;
     }
 
-    private sealed record ProjectSummary(string Id, string Name, int SortOrder);
+    private sealed record ProjectSummary(string Id, string Name, int SortOrder,
+                                          string? LastActivityAt, string? UpdatedAt);
 }

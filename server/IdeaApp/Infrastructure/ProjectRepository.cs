@@ -176,7 +176,10 @@ public sealed class ProjectRepository(SqliteDatabase db)
             command.Parameters.AddWithValue($"$p{i}", assignments[i].Id);
         }
 
-        sql.Append(" ELSE sort_order END, updated_at = $now WHERE id IN (");
+        // 只写 sort_order，不动 updated_at：updated_at 是「这个项目最近有变化」的时间，
+        // 也是没有想法时 recent 排序的回落值，被排序动作刷新的话，用户手动调一次
+        // 顺序排序结果就变了。
+        sql.Append(" ELSE sort_order END WHERE id IN (");
         for (var i = 0; i < assignments.Count; i++)
         {
             sql.Append(i == 0 ? "$p0" : $",$p{i}");
@@ -184,23 +187,45 @@ public sealed class ProjectRepository(SqliteDatabase db)
 
         sql.Append(");");
         command.CommandText = sql.ToString();
-        command.Parameters.AddWithValue("$now", SqliteDatabase.FormatTimestamp(DateTimeOffset.UtcNow));
         command.ExecuteNonQuery();
     }
 
     /// <summary>
-    /// 项目下未删想法里最近一次更新的时间；没有未删想法时返回 <c>null</c>。
+    /// 全表（含回收站里的项目）里最大的 <c>sort_order</c>；表为空时返回 -1。
+    /// 新建项目拿它 +1 当作自己的 <c>sort_order</c>。
     /// </summary>
-    public DateTimeOffset? LastActivityAt(string projectId)
+    public int MaxSortOrder()
+    {
+        using var connection = db.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COALESCE(MAX(sort_order), -1) FROM project;";
+
+        var value = command.ExecuteScalar();
+        return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// 项目的最近活动时间：项目下**未删**想法里最大的 <c>updated_at</c>；
+    /// 没有未删想法时回落到项目自身的 <c>updated_at</c>。
+    /// </summary>
+    /// <remarks>
+    /// 不返回 null：DTO 展示与 Task 13 的 recent 排序必须用同一个值，
+    /// 两边口径分叉的话，前端显示的「最近活动」和排序会对不上。
+    /// </remarks>
+    public DateTimeOffset LastActivityAt(string projectId)
     {
         using var connection = db.Open();
         using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT MAX(updated_at) FROM idea WHERE project_id = $projectId AND deleted_at IS NULL;";
+            "SELECT COALESCE(" +
+            "(SELECT MAX(updated_at) FROM idea WHERE project_id = $projectId AND deleted_at IS NULL), " +
+            "(SELECT updated_at FROM project WHERE id = $projectId));";
         command.Parameters.AddWithValue("$projectId", projectId);
 
-        var value = command.ExecuteScalar() as string;
-        return value is null ? null : SqliteDatabase.ParseTimestamp(value);
+        var value = command.ExecuteScalar() as string
+            ?? throw new InvalidOperationException($"项目不存在，无法取最近活动时间：{projectId}");
+
+        return SqliteDatabase.ParseTimestamp(value);
     }
 
     /// <summary>项目下未删想法的数量。</summary>
