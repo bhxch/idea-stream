@@ -69,21 +69,34 @@ public sealed record MergeIdeasRequest(string[]? Ids, string? Content, string? T
 /// 创建 webhook 的请求体。
 /// </summary>
 /// <remarks>
+/// <b>字段一律可空</b>：JSON 里缺字段时反序列化出来就是 null，
+/// 服务层据此返回 400（<c>invalid_webhook_name</c> / <c>invalid_webhook_url</c> /
+/// <c>invalid_webhook_scope</c> / <c>invalid_body_template</c>），而不是让模型绑定抛异常。
+/// <para>
+/// 签名要如实描述契约：照着非空签名写代码（比如 <c>req.Name.Trim()</c>）的人，
+/// 会在「客户端漏传字段」这一种输入上踩到 NRE。
+/// </para>
+/// <para>
 /// 没有 <c>Enabled</c> 字段：启用与否由作用域决定（全局默认禁用、项目级默认启用），
 /// 创建完再改由 PATCH 负责。
+/// </para>
 /// <para>
 /// <c>Secret</c> 给空串或不给都表示「不设密钥」。
 /// </para>
 /// </remarks>
-public sealed record WebhookCreateRequest(string Name, string Url, string Method,
-    Dictionary<string, string>? Headers, string BodyTemplate, string[]? Events,
-    string Scope, string? ProjectId, string? Secret);
+public sealed record WebhookCreateRequest(string? Name, string? Url, string? Method,
+    Dictionary<string, string>? Headers, string? BodyTemplate, string[]? Events,
+    string? Scope, string? ProjectId, string? Secret);
 
 /// <summary>
-/// 修改 webhook 的请求体。字段一律是「null = 不改」。
+/// 修改 webhook 的请求体。字段一律可空：<c>null</c> = 不改。
 /// </summary>
 /// <remarks>
+/// 全字段可空不只是为了「不改」这一种语义：JSON 里缺字段时反序列化出来同样是 null，
+/// 签名写成非空就是在骗调用方（见 <see cref="WebhookCreateRequest"/> 的说明）。
+/// <para>
 /// <c>Secret</c> 的三态：<c>null</c> = 不改、<c>""</c> = 清空密钥、非空 = 替换成新密钥。
+/// </para>
 /// <para>
 /// 作用域与所属项目不能改（改了就等于换了一个 webhook）。
 /// </para>
