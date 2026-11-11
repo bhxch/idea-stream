@@ -227,25 +227,45 @@ git commit -m "feat(server): 搭建解决方案骨架与健康检查端点"
 - Create: `server/IdeaApp/Infrastructure/schema.sql`
 - Create: `server/IdeaApp.Tests/DatabaseInitTests.cs`
 - Modify: `server/IdeaApp/Program.cs`
+- Modify: `server/IdeaApp/appsettings.json`
 
 **Interfaces:**
 - Consumes: Task 1 的 `Program`。
 - Produces:
-  - `public sealed class AppOptions`（用 `builder.Services.Configure<AppOptions>(builder.Configuration)` 绑定整个配置根）：
+  - `public sealed class AppOptions` —— **按配置键的层级用嵌套类**（.NET 的配置绑定器无法把 `Database:Path` 绑到扁平属性 `DatabasePath`）：
 
-    | 属性 | 配置键 | 默认 |
-    |---|---|---|
-    | `DatabasePath` | `Database:Path` | `data/idea.db` |
-    | `TrashRetentionDays` | `Trash:RetentionDays` | `30` |
-    | `PublicBaseUrl` | `PublicBaseUrl` | `null` |
-    | `MaxIdeasPerResponse` | `Api:MaxIdeasPerResponse` | `2000` |
-    | `WebhookTimeoutSeconds` | `Webhook:TimeoutSeconds` | `10` |
-    | `WebhookMaxAttempts` | `Webhook:MaxAttempts` | `3` |
-    | `WebhookMaxDeliveryRecords` | `Webhook:MaxDeliveryRecords` | `500` |
-    | `SseBufferSize` | `Sse:BufferSize` | `500` |
+    ```csharp
+    public sealed class AppOptions
+    {
+        public DatabaseOptions Database { get; set; } = new();
+        public TrashOptions Trash { get; set; } = new();
+        public ApiOptions Api { get; set; } = new();
+        public WebhookOptions Webhook { get; set; } = new();
+        public SseOptions Sse { get; set; } = new();
+        public string? PublicBaseUrl { get; set; }
+    }
+    public sealed class DatabaseOptions { public string Path { get; set; } = "data/idea.db"; }
+    public sealed class TrashOptions { public int RetentionDays { get; set; } = 30; }
+    public sealed class ApiOptions { public int MaxIdeasPerResponse { get; set; } = 2000; }
+    public sealed class WebhookOptions
+    {
+        public int TimeoutSeconds { get; set; } = 10;
+        public int MaxAttempts { get; set; } = 3;
+        public int MaxDeliveryRecords { get; set; } = 500;
+    }
+    public sealed class SseOptions { public int BufferSize { get; set; } = 500; }
+    ```
+
+    绑定方式：`builder.Services.Configure<AppOptions>(builder.Configuration)`。
+    引用处一律写 `options.Value.Database.Path`、`options.Value.Trash.RetentionDays`、`options.Value.Sse.BufferSize` 这种嵌套形式，**不要写扁平属性名**。
 
   - `public sealed class SqliteDatabase(string databasePath)`，方法：`SqliteConnection Open()`、`void Initialize()`、`string DatabasePath { get; }`
   - `Open()` 返回的连接已执行 `PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`
+  - DI 注册（Task 15 接线时用，**不能**写 `AddSingleton<SqliteDatabase>()` —— 构造函数要 string，DI 解析不了）：
+    ```csharp
+    builder.Services.AddSingleton(sp =>
+        new SqliteDatabase(sp.GetRequiredService<IOptions<AppOptions>>().Value.Database.Path));
+    ```
 
 - [ ] **Step 1: 写失败测试**
 
@@ -278,6 +298,23 @@ git commit -m "feat(server): 搭建解决方案骨架与健康检查端点"
 INSERT OR IGNORE INTO project(id, name, sort_order, deleted_at, created_at, updated_at)
 VALUES ('inbox', '收件箱', 0, NULL, :now, :now);
 ```
+
+`server/IdeaApp/appsettings.json` 内容固定为：
+
+```json
+{
+  "Urls": "http://127.0.0.1:5080",
+  "Database": { "Path": "data/idea.db" },
+  "Trash": { "RetentionDays": 30 },
+  "Api": { "MaxIdeasPerResponse": 2000 },
+  "Webhook": { "TimeoutSeconds": 10, "MaxAttempts": 3, "MaxDeliveryRecords": 500 },
+  "Sse": { "BufferSize": 500 },
+  "PublicBaseUrl": "",
+  "Logging": { "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning" } }
+}
+```
+
+`SqliteDatabase` 构造时若 `databasePath` 是相对路径，按**当前工作目录**解析；目录不存在要自动创建（`Path.GetDirectoryName` → `Directory.CreateDirectory`）。
 
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS
 
@@ -560,7 +597,7 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
 - [ ] **Step 3: 实现**
   - `IdeaFilter.Matches` 是纯函数，先判 project，再判 status，再判标签。标签比较用 `StringComparer.OrdinalIgnoreCase`。
   - `IdeaRepository.List(query)` 一次 SQL 取候选集（project + deleted_at IS NULL + status），再在内存里用 `IdeaFilter.Matches` 判标签，最后按 `updated_at ASC, id ASC` 排序。
-  - `GET /api/ideas` 的结果条数超过 `AppOptions.MaxIdeasPerResponse` 时返回 **400**，ProblemDetails 的 `code` 为 `too_many_ideas`，`detail` 说明命中了多少条、建议收窄条件。**不静默截断。**
+  - `GET /api/ideas` 的结果条数超过 `AppOptions.Api.MaxIdeasPerResponse` 时返回 **400**，ProblemDetails 的 `code` 为 `too_many_ideas`，`detail` 说明命中了多少条、建议收窄条件。**不静默截断。**
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS
 - [ ] **Step 5: 提交** → `git commit -m "feat(server): 实现标签字典与列表过滤"`
 
@@ -737,7 +774,7 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
     - `IReadOnlyList<TrashEntryDto> List()`
     - `IdeaDto RestoreIdea(string id)`
     - `ProjectDto RestoreProject(string id)`
-  - `public sealed class TrashCleanupWorker(SqliteDatabase db, AppOptions options, ILogger<TrashCleanupWorker> logger) : BackgroundService`
+  - `public sealed class TrashCleanupWorker(SqliteDatabase db, IOptions<AppOptions> options, ILogger<TrashCleanupWorker> logger) : BackgroundService` —— 保留期读 `options.Value.Trash.RetentionDays`。
   - 端点：`GET /api/trash`、`POST /api/ideas/{id}/restore`（Task 5 已有，改为走 TrashService）、`POST /api/projects/{id}/restore`（Task 4 已有，改为走 TrashService）
 
 - [ ] **Step 1: 写失败测试**
@@ -988,8 +1025,9 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
     - `void Trim(string webhookId, int keep)`
   - `public sealed record DeliveryRecord(string Id, string WebhookId, string EventId, string EventType, string Payload, string Status, int Attempts, string? LastError, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);`（放 `Domain/Delivery.cs`）
   - `public sealed class WebhookDeliveryWorker(WebhookRepository webhooks, DeliveryRepository deliveries, EventBus bus, ILogger<...>) : BackgroundService`
+    - `bool Enqueue(WebhookDeliveryJob job)` —— 投进内部 `Channel<WebhookDeliveryJob>`（容量 1000，`BoundedChannelFullMode.Wait`）；`TryWrite` 返回 false（队列满）时记日志并返回 false，**不阻塞调用方**。
     - 公开方法 `ValueTask DeliverAsync(WebhookDeliveryJob job, CancellationToken ct)`（便于测试直接调用）
-  - `public sealed class DeliveryService(DeliveryRepository deliveries, WebhookDeliveryWorker worker)`
+  - `public sealed class DeliveryService(DeliveryRepository deliveries, WebhookRepository webhooks, WebhookDeliveryWorker worker)` —— 手动重投时要重新取 webhook 配置（签名要用当前 secret 重算），所以依赖 `WebhookRepository`。
     - `IReadOnlyList<DeliveryDto> ListForWebhook(string webhookId)`
     - `DeliveryDto Retry(string webhookId, string deliveryId)`
   - 端点：`GET /api/webhooks/{id}/deliveries`、`POST /api/webhooks/{id}/deliveries/{deliveryId}/retry`
@@ -1059,8 +1097,10 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
 
 ```csharp
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.Configure<AppOptions>(builder.Configuration.GetSection(""));
-builder.Services.AddSingleton<SqliteDatabase>();
+builder.Configuration.AddEnvironmentVariables("IDEA_");   // IDEA_ 前缀；双下划线表示层级
+builder.Services.Configure<AppOptions>(builder.Configuration);
+builder.Services.AddSingleton(sp =>
+    new SqliteDatabase(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AppOptions>>().Value.Database.Path));
 builder.Services.AddSingleton<ProjectRepository>();
 builder.Services.AddSingleton<IdeaRepository>();
 builder.Services.AddSingleton<TagRepository>();
@@ -1073,11 +1113,14 @@ builder.Services.AddSingleton<TagService>();
 builder.Services.AddSingleton<WebhookService>();
 builder.Services.AddSingleton<DeliveryService>();
 builder.Services.AddSingleton<TrashService>();
-builder.Services.AddSingleton<SseBroadcaster>(sp =>
-    new SseBroadcaster(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AppOptions>>().Value.SseBufferSize));
+builder.Services.AddSingleton(sp =>
+    new SseBroadcaster(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AppOptions>>().Value.Sse.BufferSize));
 builder.Services.AddSingleton<IEventHandler, SseEventHandler>();
 builder.Services.AddSingleton<IEventHandler, WebhookEventHandler>();
-builder.Services.AddSingleton<EventBus>();
+// EventBus 必须用工厂：它要在所有 IEventHandler 注册完成后再构造
+builder.Services.AddSingleton(sp => new EventBus(
+    sp.GetServices<IEventHandler>(),
+    sp.GetRequiredService<ILogger<EventBus>>()));
 builder.Services.AddSingleton<WebhookDeliveryWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<WebhookDeliveryWorker>());
 builder.Services.AddHostedService<TrashCleanupWorker>();
@@ -1086,6 +1129,7 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 app.UseForwardedHeaders();
+app.UseStaticFiles();                 // Vite 产物在 wwwroot/assets/，没有它静态资源 404
 app.MapOpenApi("/openapi/{documentName}.json");
 app.MapHealthEndpoints();
 app.MapProjectEndpoints();
@@ -1100,8 +1144,6 @@ app.MapFallbackToFile("index.html");
 app.Run();
 public partial class Program;
 ```
-
-> `EventBus` 需要在所有 `IEventHandler` 注册之后构造 —— 用工厂：`AddSingleton<EventBus>(sp => new EventBus(sp.GetServices<IEventHandler>(), sp.GetRequiredService<ILogger<EventBus>>()))`。
 
 - [ ] **Step 2: 写导出工具**
 
