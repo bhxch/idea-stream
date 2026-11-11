@@ -75,7 +75,7 @@ public sealed class SseBroadcaster
 
             foreach (var subscription in _subscriptions)
             {
-                if (!subscription.Channel.Writer.TryWrite(evt))
+                if (!subscription.Channel.Writer.TryWrite(SseMessage.Of(evt)))
                 {
                     _logger?.LogWarning(
                         "SSE 订阅 {SubscriptionId} 的通道已满，丢弃事件 {EventId}（类型 {EventType}）",
@@ -120,7 +120,7 @@ public sealed class SseBroadcaster
     /// <summary>开一个新订阅：它有自己的通道，事件只推给它自己。</summary>
     public SseSubscription Subscribe()
     {
-        var channel = Channel.CreateBounded<IdeaEvent>(new BoundedChannelOptions(SubscriberChannelCapacity)
+        var channel = Channel.CreateBounded<SseMessage>(new BoundedChannelOptions(SubscriberChannelCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
@@ -135,6 +135,25 @@ public sealed class SseBroadcaster
         }
 
         return subscription;
+    }
+
+    /// <summary>
+    /// 当前的订阅数。
+    /// </summary>
+    /// <remarks>
+    /// 诊断用的只读视图：客户端断开后订阅必须回到 0 ——
+    /// 订阅表要是无界增长，每个写请求都要在锁内遍历它（写接口被拖慢），
+    /// 而且完全无声。
+    /// </remarks>
+    public int SubscriptionCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _subscriptions.Count;
+            }
+        }
     }
 
     /// <summary>
@@ -159,4 +178,24 @@ public sealed class SseBroadcaster
 }
 
 /// <summary>一个 SSE 订阅：自己的通道 + 一个 id。</summary>
-public sealed record SseSubscription(Guid Id, Channel<IdeaEvent> Channel);
+public sealed record SseSubscription(Guid Id, Channel<SseMessage> Channel);
+
+/// <summary>
+/// 推给订阅者的一条消息：业务事件，或者「你漏了事件，重新拉列表」的控制帧。
+/// </summary>
+/// <remarks>
+/// 控制帧也要走**同一条**通道：顺序不能乱 ——
+/// 客户端在 resync 之后收到的事件必须是比 resync 更新的那些，
+/// 乱序会让它把已经删掉的东西又显示出来。
+/// </remarks>
+public sealed record SseMessage(IdeaEvent? Event)
+{
+    /// <summary>业务事件。</summary>
+    public static SseMessage Of(IdeaEvent evt) => new(evt);
+
+    /// <summary>控制帧：订阅者漏了事件，要重新拉完整列表。</summary>
+    public static SseMessage Resync { get; } = new((IdeaEvent?)null);
+
+    /// <summary>这是不是控制帧（resync）。</summary>
+    public bool IsResync => Event is null;
+}

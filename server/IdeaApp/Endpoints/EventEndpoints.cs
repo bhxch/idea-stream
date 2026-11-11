@@ -138,7 +138,7 @@ public static class EventEndpoints
             // 补不了，只能让客户端重新拉完整列表。
             //
             // resync 是**控制帧**，不是业务事件：它没有 id，客户端不能拿它继续补发。
-            await WriteRawAsync(context, "event: resync\ndata: {}\n\n", ct);
+            await WriteResyncAsync(context, ct);
             return null;
         }
 
@@ -205,8 +205,17 @@ public static class EventEndpoints
                 break;
             }
 
-            while (channel.Reader.TryRead(out var evt))
+            while (channel.Reader.TryRead(out var message))
             {
+                if (message.IsResync)
+                {
+                    // 控制帧：这个订阅者漏了事件（它太慢，通道被挤掉了东西）。
+                    await WriteResyncAsync(context, ct);
+                    continue;
+                }
+
+                var evt = message.Event!;
+
                 // 补发与实时推送之间有一个重叠窗口（订阅之后、补发之前到达的事件
                 // 既在补发列表里、也在通道里）。事件 id 单调递增，
                 // 按 id 去重即可 —— 客户端本来也要按 id 去重。
@@ -221,6 +230,18 @@ public static class EventEndpoints
 
             readable = channel.Reader.WaitToReadAsync(ct).AsTask();
         }
+    }
+
+    /// <summary>
+    /// 写一帧 resync 控制帧：告诉客户端「你漏了事件，重新拉完整列表」。
+    /// </summary>
+    /// <remarks>
+    /// 这帧**不带 id 行**：客户端不能拿它当 <c>Last-Event-ID</c> 继续补发。
+    /// 载荷是空对象 <c>{}</c> —— 它是控制帧，不是业务事件。
+    /// </remarks>
+    private static Task WriteResyncAsync(HttpContext context, CancellationToken ct)
+    {
+        return WriteRawAsync(context, "event: resync\ndata: {}\n\n", ct);
     }
 
     /// <summary>写一帧事件。</summary>
