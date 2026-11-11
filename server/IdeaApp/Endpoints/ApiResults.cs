@@ -63,7 +63,12 @@ public static class ApiResults
     }
 
     /// <summary>造一个带 <c>code</c> 扩展字段的 ProblemDetails 响应。</summary>
-    private static IResult ProblemResponse(int status, string title, string detail, string code)
+    /// <remarks>
+    /// 流式端点（如 SSE）没法把逻辑包进 <see cref="Run"/>：
+    /// 响应一旦开始就没法再改成 ProblemDetails，
+    /// 所以那里要在响应开始之前自己造一份。
+    /// </remarks>
+    public static IResult ProblemResponse(int status, string title, string detail, string code)
     {
         var problem = new ProblemDetails
         {

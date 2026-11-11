@@ -43,5 +43,14 @@ public sealed class WebhookOptions
 /// <summary>服务端事件（SSE）缓冲参数。</summary>
 public sealed class SseOptions
 {
+    /// <summary>补发缓冲的条数（<c>Last-Event-ID</c> 补发时最多回放多少条）。</summary>
     public int BufferSize { get; set; } = 500;
+
+    /// <summary>
+    /// 心跳间隔（秒）：空闲连接上每隔这么久发一行 <c>: ping</c> 注释。
+    /// </summary>
+    /// <remarks>
+    /// 做成配置项是为了能测：默认的 25 秒没法写测试。
+    /// </remarks>
+    public int HeartbeatSeconds { get; set; } = 25;
 }

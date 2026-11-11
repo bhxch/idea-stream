@@ -33,6 +33,19 @@ builder.Services.AddSingleton<IEventPublisher>(sp => new EventBus(
     sp.GetServices<IEventHandler>(),
     sp.GetRequiredService<ILogger<EventBus>>()));
 
+// SSE 广播器：内存缓冲（断线补发用）+ 订阅列表。
+// 缓冲条数与心跳间隔读配置（默认 500 条 / 25 秒）。
+builder.Services.AddSingleton(sp => new SseBroadcaster(
+    sp.GetRequiredService<IOptions<AppOptions>>().Value.Sse.BufferSize,
+    sp.GetRequiredService<IOptions<AppOptions>>().Value.Sse.HeartbeatSeconds,
+    sp.GetRequiredService<ILogger<SseBroadcaster>>()));
+
+// SSE 订阅者：把总线上的事件推进广播器。
+// 必须注册成 Singleton —— 事件总线在**根** provider 里解析所有 IEventHandler，
+// 注册成 Scoped 会在开发期（ValidateScopes）抛 InvalidOperationException、
+// 在生产期泄漏作用域。
+builder.Services.AddSingleton<IEventHandler, SseEventHandler>();
+
 var app = builder.Build();
 
 // 端点共用的异常包装需要日志器：未预期的异常只进日志，不进响应体。
@@ -46,6 +59,7 @@ app.MapProjectEndpoints();
 app.MapIdeaEndpoints();
 app.MapBulkIdeaEndpoints();
 app.MapTagEndpoints();
+app.MapEventEndpoints();
 
 app.Run();
 
