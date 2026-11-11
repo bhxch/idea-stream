@@ -886,6 +886,18 @@ bash server/scripts/aot-smoke.sh
 
   **DI**：组合根加 `builder.Services.AddSingleton<IEventPublisher>(sp => new EventBus(sp.GetServices<IEventHandler>(), sp.GetRequiredService<ILogger<EventBus>>()));`（`IEventHandler` 的实现 Task 9/14 才注册，此时通道数为 0，publish 是空操作 —— 这是对的）。
 
+- [ ] **Step 3d: 补 `ApiResults.Run` 的兜底 catch（顺带修掉全项目缺口）**
+
+  `Endpoints/ApiResults.cs` 现在只 catch `ApiException` —— DB 层异常（`SqliteException`）会直接逃成**裸 500**：没有 `application/problem+json`、没有 `code`。这对 agent 消费方很不友好（拿不到稳定的机器可读错误码）。
+
+  改成 catch 住其余异常 → 500 + `ProblemDetails` + `Extensions["code"] = "internal_error"`。
+
+  **注意两点**：
+  - `OperationCanceledException`（客户端断开导致的取消）要**原样抛出**，不要转成 500 —— 否则客户端断开会刷一屏错误日志；
+  - **不要把 `ApiException` 的 `Detail` 原文泄露给外部**：`internal_error` 的 `Detail` 用一句通用说明（「内部错误，请查看服务端日志」），真实异常信息只进日志。
+
+  并同步改 `server/IdeaApp.Tests/BulkAndMergeTests.cs` 里那条原子性探针测试 —— 它现在断言 `Assert.ThrowsAnyAsync<SqliteException>`（即把「裸异常逃到客户端」固化成了期望行为）。Task 7 用 SQLite 触发器制造中途失败来验证合并的原子性，那条测试要改成断言 **500 + ProblemDetails + `code == "internal_error"`**，同时仍然断言「第一条源的删除被撤销、没有留下合并结果」（原子性的核心断言不能丢）。
+
 - [ ] **Step 3c: 写发布接线的测试（`EventPublishingTests.cs`）**
 
   集成测试里把 `IEventPublisher` 换成**记录型的 fake**（在 `TestAppFactory` 里覆盖注册），然后：
