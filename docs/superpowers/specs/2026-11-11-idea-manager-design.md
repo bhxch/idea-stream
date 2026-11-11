@@ -370,6 +370,10 @@ CREATE TABLE setting (
 
 未识别的占位符原样保留。占位符值按 JSON 字符串转义后注入（正文含引号/换行不会破坏 JSON）。
 
+> **bot token 会经 `url` 字段回显 —— 这是 Telegram Bot API 的形态决定的**（token 就在 URL 路径里：`/bot<TOKEN>/sendMessage`），换不掉。`WebhookDto` 的 `url` 会随列表/单查/创建/更新四个响应**原样返回**，所以填了真 token 就能从 API 响应里读到它。
+>
+> 两条推论：**①** `secret` 字段（HMAC 签名密钥）与 bot token 是**两回事**，前者的「不回传」保护不覆盖后者；**②** 整个 API 必须**始终在访问控制之后**（本项目靠 nginx 的 basic auth），否则 token 等于公开。消费方（agent skill）**不要把 webhook 的 url 打进日志或错误信息**。
+
 ### 12.3 Telegram 模板
 
 页面上提供「添加 Telegram webhook」按钮，填好以下内容：
