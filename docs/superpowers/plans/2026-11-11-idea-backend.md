@@ -1283,7 +1283,7 @@ bash server/scripts/aot-smoke.sh
     - `IReadOnlyList<DeliveryRecord> ListForWebhook(string webhookId, int limit)`
     - `void Trim(string webhookId, int keep)`
   - `public sealed record DeliveryRecord(string Id, string WebhookId, string EventId, string EventType, string Payload, string Status, int Attempts, string? LastError, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);`（放 `Domain/Delivery.cs`）
-  - `public sealed class WebhookDeliveryWorker(WebhookRepository webhooks, DeliveryRepository deliveries, EventBus bus, ILogger<...>) : BackgroundService`
+  - `public sealed class WebhookDeliveryWorker(WebhookRepository webhooks, DeliveryRepository deliveries, ILogger<...>) : BackgroundService` —— **不要注入 `EventBus`**：投递不产生事件，worker 不需要发布器；而注进去会构成 DI 循环（`EventBus → IEventHandler → WebhookEventHandler → WebhookDeliveryWorker → EventBus`），启动时即抛 `InvalidOperationException`。
     - `bool Enqueue(WebhookDeliveryJob job)` —— 投进内部 `Channel<WebhookDeliveryJob>`（容量 1000，`BoundedChannelFullMode.Wait`）；`TryWrite` 返回 false（队列满）时记日志并返回 false，**不阻塞调用方**。
     - 公开方法 `ValueTask DeliverAsync(WebhookDeliveryJob job, CancellationToken ct)`（便于测试直接调用）
   - `public sealed class DeliveryService(DeliveryRepository deliveries, WebhookRepository webhooks, WebhookDeliveryWorker worker)` —— 手动重投时要重新取 webhook 配置（签名要用当前 secret 重算），所以依赖 `WebhookRepository`。
