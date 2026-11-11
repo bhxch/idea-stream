@@ -461,7 +461,7 @@ public interface IEventHandler
 | PUT | `/api/settings/{key}` | 改 `setting` 表里的单个键。**只接受 `setting` 表已定义的键**，其它一律 400 |
 | GET/POST | `/api/webhooks` | 全局 webhook 列表 / 创建 |
 | PATCH/DELETE | `/api/webhooks/{id}` | 改 / 删 |
-| GET | `/api/projects/{id}/webhooks` | 该项目下的 webhook |
+| GET | `/api/webhooks?projectId=` | webhook 列表。**不带 `projectId` 时只列全局作用域的**（对齐「全局 webhook 列表」）；给了就列该项目的 |
 | GET | `/api/webhooks/{id}/deliveries` | 投递记录 |
 | POST | `/api/webhooks/{id}/deliveries/{deliveryId}/retry` | 手动重投 |
 

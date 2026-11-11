@@ -240,6 +240,12 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 | `merge_cross_project` | 合并的想法不属于同一项目 | 先把它们移到同一项目 |
 | `not_in_trash` | 要恢复的东西不在回收站里 | 先拉 `GET /api/trash` 确认 |
 | `too_many_ideas` | 命中数超过 `Api:MaxIdeasPerResponse`（默认 2000） | 收窄过滤条件（加 projectId / status / tags）|
+| `invalid_webhook_name` | webhook 名称为空 | 补上名称 |
+| `invalid_webhook_url` | webhook 的 URL 为空或不是合法绝对地址 | 换成 http(s) 绝对地址 |
+| `invalid_webhook_scope` | scope 不是 `global` / `project` | 用这两个值之一 |
+| `invalid_webhook_project` | scope=project 但没给 project_id，或该项目不存在 | 补一个存在的项目 id |
+| `invalid_body_template` | Body 模板不是合法 JSON | 模板本身必须是一个 JSON 文档 |
+| `webhook_not_found` | webhook 不存在 | 重新拉列表，可能是别的设备删了 |
 
 Task 11 会新增 webhook 相关的 `code`，届时补进这张表。
 
