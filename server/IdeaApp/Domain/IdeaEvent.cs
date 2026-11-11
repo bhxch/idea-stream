@@ -55,7 +55,7 @@ public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, st
 /// </list>
 /// </para>
 /// <para>
-/// 非空数组里的字段名有<b>三种口径</b>，订阅端不要假设「列出来的就一定变了」：
+/// 非空数组里的字段名有<b>四种口径</b>，订阅端不要假设「列出来的就一定变了」：
 /// <list type="bullet">
 /// <item><c>Update</c>（改正文/标题）在事务里跟改前的值比对，
 /// <b>只列真正变了</b>的字段（两个都没变 → 空数组）；</item>
@@ -64,6 +64,9 @@ public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, st
 /// 值是否变化不影响「这个字段被写过」的事实；</item>
 /// <item>项目改名（<c>project.updated</c>）也是<b>一律列 <c>["name"]</c></b>，
 /// 不跟旧名比对。</item>
+/// <item>项目<b>重排</b>（同样是 <c>project.updated</c>）是<b>有条件地</b>列
+/// <c>["sortOrder"]</c>：只有 <c>sort_order</c> 真变了的项目才发这条事件，
+/// 事件里的 <c>changed</c> 就带 <c>sortOrder</c> —— 没有它表示「这个项目的位置没变」。</item>
 /// </list>
 /// </para>
 /// <para>
@@ -76,7 +79,7 @@ public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, st
 /// 订阅端的列表顺序会错。每条事件的项目快照里带着该项目的**新** <c>sortOrder</c>。
 /// </para>
 /// <para>
-/// 事件只覆盖<b>回收站之外</b>的项目：前后对比只看活跃项目，
+/// <b>重排</b>的事件只覆盖<b>回收站之外</b>的项目：前后对比只看活跃项目，
 /// 回收站里项目的 <c>sort_order</c> 变了也不会有事件（回收站的视图归 Task 10）。
 /// </para>
 /// </summary>
