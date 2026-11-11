@@ -926,6 +926,10 @@ bash server/scripts/aot-smoke.sh
 ### Task 9: SSE 端点（心跳、Last-Event-ID 补发、resync）
 
 > **注册要求（Task 8 评审带出来的）**：`IEventHandler` 的实现**必须注册为 Singleton**。`EventBus` 在**根** provider 里用 `sp.GetServices<IEventHandler>()` 解析 handler —— 若注册成 Scoped，Development 下 `ValidateScopes` 会让根解析抛 `InvalidOperationException`，Production 下则会泄漏作用域。Task 14 的 webhook handler 同样遵守这一条。
+>
+> **收工信号（Task 8 实施者带出来的）**：`EventBus` 在 `DisposeAsync` 时会先 `_shutdown.Cancel()` 再排空。所以 **handler 收到的 token 在排空期间已经是取消状态** —— SSE handler（长连接）在收工时会放弃剩余事件，这是正确行为，不要把它当异常。
+>
+> **测试文件已经偏大**：`EventBusTests.cs` 约 450 行、`EventPublishingTests.cs` 约 600 行。你往里加 handler 相关测试前**先拆文件**（例如 `EventBusTests.cs` 拆成总线机制与释放语义两个文件），不要继续往同一个文件里堆。
 
 **Files:**
 - Create: `server/IdeaApp/Infrastructure/SseBroadcaster.cs`
