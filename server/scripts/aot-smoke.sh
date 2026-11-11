@@ -221,7 +221,11 @@ echo "==> GET /api/events (SSE)"
 # AOT 下少了 IdeaEvent 的元数据就推不出帧（普通 dotnet test 测不出来）。
 SSE_HEADERS="$WORK_DIR/sse-headers.txt"
 SSE_BODY="$WORK_DIR/sse-body.txt"
-curl -sS -N -D "$SSE_HEADERS" --max-time 8 "$BASE_URL/api/events" >"$SSE_BODY" 2>/dev/null &
+# curl 的存活期（--max-time）必须**长于**下面两段等待预算（各 10 秒）：
+# 否则「等不到 200 响应头」的失败分支只能在 curl 已经死了之后才触发
+# （报错文案与真实原因不符），而落在窗口里的 POST 会打向已断开的连接，
+# 随后事件帧的断言跟着失败。
+curl -sS -N -D "$SSE_HEADERS" --max-time 30 "$BASE_URL/api/events" >"$SSE_BODY" 2>/dev/null &
 SSE_PID=$!
 
 # 轮询等 SSE 连上（响应头里有 200 行）再 POST。
@@ -235,6 +239,7 @@ for _ in $(seq 1 100); do
 done
 
 if ! grep -qi '^HTTP/1.1 200' "$SSE_HEADERS" 2>/dev/null; then
+    kill "$SSE_PID" 2>/dev/null || true
     echo "--- 应用日志 ---" >&2
     cat "$WORK_DIR/app.log" >&2
     fail "/api/events 没有连上（等不到 200 响应头）"
@@ -246,6 +251,16 @@ check_endpoint "/api/ideas" "201" \
     POST \
     '{"content":"AOT 冒烟 SSE","title":"SSE"}'
 
+# 轮询等事件帧到达：curl 还活着（--max-time 30 > 这段预算），
+# 帧到了就收工 —— 不用干等到 max-time。
+for _ in $(seq 1 100); do
+    if grep -q '^event: idea.created' "$SSE_BODY" 2>/dev/null; then
+        break
+    fi
+    sleep 0.1
+done
+
+kill "$SSE_PID" 2>/dev/null || true
 wait "$SSE_PID" 2>/dev/null || true
 
 if ! grep -qi '^HTTP/1.1 200' "$SSE_HEADERS"; then
