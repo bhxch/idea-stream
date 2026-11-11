@@ -945,7 +945,15 @@ bash server/scripts/aot-smoke.sh
 - Consumes: Task 8 的 `EventBus`、`IEventHandler`、`IdeaEvent`。
 - Produces:
   - `public sealed class SseBroadcaster(int bufferSize, int heartbeatSeconds = 25)`：`int BufferSize`、`int HeartbeatSeconds`、`void Append(IdeaEvent evt)`、`IReadOnlyList<IdeaEvent>? Since(string? lastEventId)` —— **可空**：`null` 表示缓冲里找不到该 id（要发 `resync`），非空表示找到了、返回它之后的全部事件、`SseSubscription Subscribe()`、`bool TryCompleteSubscription(...)`
-  - `public sealed record SseSubscription(Guid Id, Channel<IdeaEvent> Channel);`
+  - `public sealed record SseSubscription(Guid Id, Channel<SseMessage> Channel);`
+  - **通道里跑的是 `SseMessage` 而不是 `IdeaEvent`** —— `resync` 是**控制帧**（没有业务事件、没有 `id:` 行），硬塞进事件通道只能靠「假事件」伪装，订阅端还得反向识别。`SseMessage` 把两种帧统一到一个可写的载体上：
+    ```csharp
+    public abstract record SseMessage;
+    public sealed record SseEventMessage(IdeaEvent Event) : SseMessage;
+    public sealed record SseResyncMessage : SseMessage;
+    ```
+    `SseEventMessage` 渲染成 `id:` / `event:` / `data:` 三行；`SseResyncMessage` 渲染成 `event: resync` + `data: {}`（**不带 `id:` 行**，客户端不能拿它当 `Last-Event-ID`）。
+  - **SSE 订阅通道用 `DropOldest`（挤掉最旧的），与 `EventBus` 的「丢最新」有意不同** —— SSE 场景下订阅者最关心最新事件，挤掉旧的比丢新的合理。
   - `public sealed class SseEventHandler(SseBroadcaster broadcaster) : IEventHandler` —— `HandleAsync` 把事件 `Append` 进 broadcaster。
   - 端点 `GET /api/events` → `text/event-stream`，帧格式：
     ```
@@ -980,6 +988,8 @@ bash server/scripts/aot-smoke.sh
 - [ ] **Step 2: 运行测试确认失败** → Expected: FAIL
 - [ ] **Step 3: 实现**
   - `SseBroadcaster` 持有一个 `List<IdeaEvent>` 环形缓冲（容量 = bufferSize）与订阅列表。
+  - **慢订阅者被丢事件时，给那个订阅者补发一帧 `resync`** —— 丢掉的这条仍在缓冲里，所以**重连**能补回来；但**保持连接**的订阅者会一直缺这条，而事件 id 是 UUIDv7 不是连续序号，订阅端**无法自行检出间隙**，于是出现**静默空洞**。补发 `resync` 让它重拉一次列表，语义与断线补发越界完全一致。「通道已满」的判断可以保守（宁可多补一帧 `resync`，漏补才是静默空洞）。
+  - `SseBroadcaster` 提供只读的 `SubscriptionCount`，供测试断言「客户端断开 → 摘订阅」这条清理路径。
   - SSE 端点：`Last-Event-ID` 头存在且能在缓冲里找到 → 先补发其后的全部事件；找不到 → 发 `resync` 帧后只推新事件。
   - 响应头：`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`X-Accel-Buffering: no`。
   - 客户端断开时取消订阅。
