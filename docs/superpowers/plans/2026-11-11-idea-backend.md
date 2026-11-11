@@ -1159,6 +1159,9 @@ bash server/scripts/aot-smoke.sh
 - Consumes: Task 8 的 `IdeaEvent`。
 - Produces:
   - **模板校验要收紧（Task 11 复审带出来的）**：Task 11 只校验了「Body 模板是合法 JSON 文档」。Task 12 的渲染器只处理**字符串值节点**里的占位符 —— 所以保存时还要校验：**① 根节点必须是 JSON 对象**（`123`、`"x"`、`[1,2]` 都要拒绝）；**② 占位符只允许出现在字符串值节点里**（`{"{{x}}":1}` 这种把占位符写在 key 里的要拒绝）。否则炸点会推迟到渲染时才暴露。
+  - `public static class TemplateRenderer`
+    - `static void Validate(string jsonTemplate)` —— 模板形状校验：根必须是 JSON 对象 + 占位符只允许出现在字符串值节点内（key 里不许有）。**与 `RenderJson` 共用同一份解析逻辑**（`ParseTemplate`），不许两处各写一遍
+    - **输出路径固定走 `Utf8JsonWriter`，不要手写 JSON 文本。** 用 `Utf8JsonWriter(Indented = true)` 遍历 `JsonNode`：字符串按段写（`WriteStringValueSegment`，值用 `JsonEncodedText.Encode` 转义），数字/布尔/null 用 `GetValue<JsonElement>().WriteTo(writer)` —— 这样 `1.50`、`1e5` 这样的字面量原样保留，不会被改写成 `1.5`。输出与 `JsonNode.ToJsonString(WriteIndented)` **逐字节相同**，代码量约 45 行；手写 JSON 文本是这个 task 里最容易出细微错的部分（转义、缩进、数字字面量、空容器），不值得重造一遍 BCL。
     - `string RenderJson(string jsonTemplate, IReadOnlyDictionary<string, string?> values)` —— 解析 JSON 模板，对每个字符串值做占位符替换并按 JSON 字符串上下文转义，输出序列化后的 JSON（缩进 2 空格）
     - `string RenderPlain(string template, IReadOnlyDictionary<string, string?> values)` —— 纯文本替换，不转义
   - `public static class EventPlaceholders`：`IReadOnlyDictionary<string, string?> Build(IdeaEvent evt, string? publicBaseUrl)`
@@ -1197,7 +1200,9 @@ bash server/scripts/aot-smoke.sh
 - [ ] **Step 3: 实现**
   - `RenderJson` 用 `JsonNode.Parse` 解析模板，递归遍历：`JsonValue` 且底层是 string → 替换占位符（值用 `JsonEncodedText.Encode(value).ToString()` 转义）；对象/数组递归；其余原样。找不到的占位符保留原文本。
   - 占位符语法：`{{name}}`，name 允许含 `.`（如 `idea.title`）。用正则 `\{\{([a-zA-Z0-9_.]+)\}\}` 匹配。
+  - **转义用 `JsonEncodedText.Encode` 的默认编码器**（不换 `UnsafeRelaxedJsonEscaping`）：它会把非 ASCII 与 `<` `>` `&` 转成 `\uXXXX`，原始 body 里中文不可读、体积变大 —— 但**接收方解析后完全等价**（Telegram 显示正常），而默认编码器对「接收方把 body 嵌进 HTML」的场景更安全。这是个不需要的暴露面，不开。
   - `EventPlaceholders.Build` 的 `{{idea.done}}` 输出 `"true"` / `"false"` 字符串。
+  - **`Build` 永远给出全部 11 个键**（没有对应数据时给**空串**，不是 null、也不是把占位符原样留下）—— 原样留下会让用户看到一堆没替换的 `{{project}}`，比空串更糟。
   - `{{idea.url}}`：`publicBaseUrl` 为 **null 或空串**（`AppOptions.PublicBaseUrl` 从 appsettings 绑出来默认是空串，不是 null —— 判断要用 `string.IsNullOrEmpty`）时输出**空串**，不要输出 `/?idea=xxx` 这种半截链接。
   - `{{changed}}` 输出逗号分隔的字段名；`{{mergedFrom}}` 不在占位符清单里，不提供。
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS
