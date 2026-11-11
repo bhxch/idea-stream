@@ -17,7 +17,7 @@
 - **AOT 下端点返回 JSON 的硬性要求**（Task 1 实测踩出来的）：`Results.Ok(匿名对象)` 在 Native AOT 产物下返回 **500**（没有 `JsonTypeInfo` 元数据）。因此：
   - 所有端点返回**静态类型**的 DTO，不返回匿名对象；
   - **每个端点返回的静态类型（含集合包装类型，如 `List<IdeaDto>`、`WebhookDto[]`）必须在 `IdeaJsonContext` 里有对应的 `[JsonSerializable]`** —— 白名单没登记的类型在 AOT 下必然 500；
-  - `IdeaJsonContext` 必须在 `JsonOptions.SerializerOptions.TypeInfoResolverChain` 中注册（Task 3 负责），此后 `Results.Ok(dto)` 对已登记的 DTO 可用；
+  - `IdeaJsonContext` 必须注册为 `JsonOptions.SerializerOptions.TypeInfoResolver`（**直接赋值，不是插进 `TypeInfoResolverChain`** —— 链条里那个默认反射 resolver 会让未登记的类型在开发期照样序列化，测试因此测不出退化，形成「开发全绿、AOT 产物全挂」）；此后 `Results.Ok(dto)` 对已登记的 DTO 可用，未登记的类型在**开发期**就抛 `NoMetadataForType`；
   - 创建类响应（201）用 `Results.Json(dto, IdeaJsonContext.Default.XxxDto, statusCode: 201)` 显式带 `JsonTypeInfo`；
   - `Microsoft.AspNetCore.Mvc.ProblemDetails` 是 .NET 10 里唯一存在的 ProblemDetails 类型（**没有** `Microsoft.AspNetCore.Http.ProblemDetails`），只有它带 `Extensions` 字段，能放 `code`。`HttpValidationProblemDetails`（`Results.ValidationProblem` 的实际类型）也要单独登记 —— 子类元数据不会从基类自动继承。
   - **AOT 冒烟脚本** `server/scripts/aot-smoke.sh`：`dotnet publish -r linux-x64 -c Release` → 启动产物 → 打 `/api/health` 与至少一个返回 DTO 的端点，断言是 200/201 而**不是 500**。Task 3 建它，Task 15 复用。普通 `dotnet test` 宿主**测不出**「退回匿名对象」这一类退化（非 AOT 下默认反射 resolver 兜底，输出逐字节相同），只有真 AOT 产物能测出来。
@@ -421,18 +421,21 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
 // WebhookDto 只含 HasSecret 布尔，不含 secret 明文字段
 ```
 
-再加一个 **AOT 回归测试**（Task 1 踩出来的坑，必须钉住）：
+再加一个 **JSON 解析链回归测试**：
 
 ```csharp
-[Fact] public async Task Health_endpoint_returns_200_not_500_under_aot()
-// 复用 Task 1 的 /api/health，但断言的是：响应 200 + 用 JsonDocument.Parse 能解析出根对象的 status == "ok"
-// 目的：任何返回 DTO 的端点一旦退回匿名对象或漏注册 resolver chain，AOT 下会变成 500
+[Fact] public void Json_context_is_registered_in_the_resolver_chain()
+// 断言 IdeaJsonContext.Default 在 JsonOptions.SerializerOptions.TypeInfoResolverChain 里
+// 注释里必须写明：端点若退回匿名对象，普通测试宿主有反射 resolver 兜底，这里测不出来；
+// 那一半由 server/scripts/aot-smoke.sh 在真 AOT 产物上守
 ```
+
+`/api/health` 本身返回 200、`status == "ok"`、根对象有且仅有 `status` 一个属性的断言保留在 `HealthTests.cs` 里。
 
 - [ ] **Step 2: 运行测试确认失败** → Expected: FAIL
 - [ ] **Step 3: 实现** —— 按上面的签名逐字建类型，JsonContext 用 `JsonSerializerContext` 源生成。
 
-  另外三件必须做的事：
+  另外五件必须做的事：
 
   1. **把 Task 1 的 `HealthResponse` 挪进 `Contracts/Dtos.cs`，把 `HealthJsonContext` 并进 `IdeaJsonContext`**，删掉 Task 1 建的独立 `HealthJsonContext` 文件，`HealthEndpoints.cs` 改为用 `IdeaJsonContext.Default.HealthResponse`。全项目只留**一个**源生成上下文。
   2. **在组合根把 `IdeaJsonContext` 注册进 JSON 解析链**，否则 `Results.Ok(dto)` 在 AOT 下是 500：
@@ -475,6 +478,31 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
   - `public static class ProjectEndpoints { public static IEndpointRouteBuilder MapProjectEndpoints(this IEndpointRouteBuilder app); }`
   - 端点：`GET /api/projects`、`POST /api/projects`、`PATCH /api/projects/{id}`、`DELETE /api/projects/{id}`、`POST /api/projects/{id}/restore`、`POST /api/projects/reorder`
 
+**本 task 额外要做的两件事（Task 3 复审带出来的）**
+
+1. **把 `server/scripts/aot-smoke.sh` 扩展到检查一个返回 DTO 的业务端点。** Task 3 建的脚本目前只打 `/api/health`，而健康端点返回的是 `HealthResponse`（不是业务 DTO）。你这个 task 是第一个有业务 DTO 端点的 task，脚本要能守住「业务端点在 AOT 下不是 500」。脚本要改成可复用形式（一个 `check_endpoint <路径> <期望状态码>` 函数），并在末尾追加对 `GET /api/projects` 的检查 —— **该端点返回 `List<ProjectDto>`，正好验证集合包装类型的 JSON 元数据在 AOT 下可用**。
+2. **脚本的 publish 命令要显式带 `-p:PublishAot=true`**（不要只依赖 csproj 里的 `PublishAot=true`）。否则将来有人删掉 csproj 那一行，脚本会静默退化成非 AOT 发布，从此再也测不出退化，而且脚本仍然 PASS。
+
+**顺带裁定（来自 Task 3 复审的范围外观察）**：把组合根里的
+
+```csharp
+builder.Services.ConfigureHttpJsonOptions(o =>
+    o.SerializerOptions.TypeInfoResolverChain.Insert(0, IdeaJsonContext.Default));
+```
+
+改成
+
+```csharp
+builder.Services.ConfigureHttpJsonOptions(o =>
+    o.SerializerOptions.TypeInfoResolver = IdeaJsonContext.Default);
+```
+
+**理由**：链条里那个默认反射 resolver 是「开发全绿、AOT 产物全挂」的根源 —— 开发宿主下未登记的类型照样能序列化，测试因此测不出退化。直接把 `TypeInfoResolver` 设成源生成上下文，让**开发环境与 AOT 行为一致**：任何未登记的类型在开发期就抛 `NoMetadataForType`，问题在 `dotnet test` 阶段就暴露，不必等到发布。
+
+**代价**：`Results.Ok(匿名对象)` 这类写法在开发期也会失败 —— 这正是我们要的。未登记的根类型一律报错，而不是静默降级。
+
+改完后 `HealthTests.cs` 里那条 `Json_context_is_registered_in_the_resolver_chain` 断言要同步调整（它现在查的是 `TypeInfoResolverChain` 里是否含 `IdeaJsonContext.Default`）。
+
 - [ ] **Step 1: 写失败测试**
 
 `ProjectApiTests.cs`（用 `TestAppFactory`，每个测试独立临时库）：
@@ -485,12 +513,14 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
 
 [Fact] public async Task List_projects_includes_inbox_and_active_projects()
 // 新建两个项目后 GET /api/projects → 含 inbox + 2 个，inbox 排在最前（sortOrder 最小）
+// 这一条同时守住：List<ProjectDto> 的 JSON 元数据在开发期可解析（TypeInfoResolver 直接赋值后，
+// 未登记的类型会在这里抛 NoMetadataForType 而不是静默降级）
 
 [Fact] public async Task Rename_project_updates_name()
 // PATCH /api/projects/{id} {"name":"改名"} → 200，GET 列表里是新名
 
 [Fact] public async Task Delete_project_soft_deletes_and_hides_from_list()
-// DELETE → 204；GET /api/projects 不含它；GET /api/projects/{id}… （无单查端点，改为直接查库）
+// DELETE → 204；GET /api/projects 不含它；直接查库确认 deleted_at 非空、行还在（软删）
 
 [Fact] public async Task Delete_inbox_returns_400_with_code_inbox_not_deletable
 // DELETE /api/projects/inbox → 400，ProblemDetails.extensions["code"] == "inbox_not_deletable"
@@ -500,6 +530,13 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
 
 [Fact] public async Task Rename_unknown_project_returns_404_with_code_project_not_found
 ```
+
+再加一条 **AOT 冒烟**：
+
+```bash
+bash server/scripts/aot-smoke.sh
+```
+→ 脚本要检查 `GET /api/projects` 返回 200 且 body 能解析出数组（不是 500）。
 
 - [ ] **Step 2: 运行测试确认失败** → Expected: FAIL（404）
 - [ ] **Step 3: 实现**
