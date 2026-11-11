@@ -6,6 +6,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <TrimMode>full</TrimMode>
+    <!--
+      运行时包版本与上面钉死的 ILCompiler 保持一致（10.0.14），避免日后 AOT 下的 SQLite 互操作 /
+      SSE 问题因为版本错配而难以归因。
+      只在显式指定 RID 时生效（即发布场景：dotnet publish -r linux-x64）：SDK 内置的运行时包是 10.0.13，
+      而本机 SDK 使用的发行版专属 apphost 包（Microsoft.NETCore.App.Host.fedora.44-x64）只随 SDK 提供
+      10.0.13，nuget.org 上并不存在该包 —— 无 RID 的构建若强行用 10.0.14，restore 会直接 NU1101 失败。
+    -->
+    <RuntimeFrameworkVersion Condition="'$(RuntimeIdentifier)' != ''">10.0.14</RuntimeFrameworkVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,6 +30,10 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.15" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Infrastructure/schema.sql" />
   </ItemGroup>
 
 </Project>

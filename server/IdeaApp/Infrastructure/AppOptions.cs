@@ -1,0 +1,47 @@
+namespace IdeaApp.Infrastructure;
+
+/// <summary>
+/// 应用配置。配置键按层级映射到嵌套的选项类，
+/// 例如 <c>Database:Path</c> 绑定到 <see cref="DatabaseOptions.Path"/>。
+/// </summary>
+public sealed class AppOptions
+{
+    public DatabaseOptions Database { get; set; } = new();
+    public TrashOptions Trash { get; set; } = new();
+    public ApiOptions Api { get; set; } = new();
+    public WebhookOptions Webhook { get; set; } = new();
+    public SseOptions Sse { get; set; } = new();
+    public string? PublicBaseUrl { get; set; }
+}
+
+/// <summary>SQLite 数据库位置。</summary>
+public sealed class DatabaseOptions
+{
+    public string Path { get; set; } = "data/idea.db";
+}
+
+/// <summary>回收站保留策略。</summary>
+public sealed class TrashOptions
+{
+    public int RetentionDays { get; set; } = 30;
+}
+
+/// <summary>API 行为限制。</summary>
+public sealed class ApiOptions
+{
+    public int MaxIdeasPerResponse { get; set; } = 2000;
+}
+
+/// <summary>Webhook 投递参数。</summary>
+public sealed class WebhookOptions
+{
+    public int TimeoutSeconds { get; set; } = 10;
+    public int MaxAttempts { get; set; } = 3;
+    public int MaxDeliveryRecords { get; set; } = 500;
+}
+
+/// <summary>服务端事件（SSE）缓冲参数。</summary>
+public sealed class SseOptions
+{
+    public int BufferSize { get; set; } = 500;
+}
