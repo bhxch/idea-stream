@@ -988,6 +988,7 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
   - `RenderJson` 用 `JsonNode.Parse` 解析模板，递归遍历：`JsonValue` 且底层是 string → 替换占位符（值用 `JsonEncodedText.Encode(value).ToString()` 转义）；对象/数组递归；其余原样。找不到的占位符保留原文本。
   - 占位符语法：`{{name}}`，name 允许含 `.`（如 `idea.title`）。用正则 `\{\{([a-zA-Z0-9_.]+)\}\}` 匹配。
   - `EventPlaceholders.Build` 的 `{{idea.done}}` 输出 `"true"` / `"false"` 字符串。
+  - `{{idea.url}}`：`publicBaseUrl` 为 **null 或空串**（`AppOptions.PublicBaseUrl` 从 appsettings 绑出来默认是空串，不是 null —— 判断要用 `string.IsNullOrEmpty`）时输出**空串**，不要输出 `/?idea=xxx` 这种半截链接。
   - `{{changed}}` 输出逗号分隔的字段名；`{{mergedFrom}}` 不在占位符清单里，不提供。
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS
 - [ ] **Step 5: 提交** → `git commit -m "feat(server): 实现占位符渲染与 HMAC 签名"`
@@ -1035,6 +1036,8 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
 
 - [ ] **Step 2: 运行测试确认失败** → Expected: FAIL
 - [ ] **Step 3: 实现** —— `PUT` 只接受 `SettingKeys.ProjectSortMode`，值只接受 `recent`/`manual`。
+
+  **默认值不播种到库里**：`project.sort_mode` 这个键**不预置行**。`GET /api/settings` 组装响应时，对这个键做「读不到就回落默认值 `recent`」—— 即响应里一定有 `project.sort_mode: "recent"` 这一项，但 `setting` 表里可能没有对应的行。这样避免了「播种一次、以后改默认值要迁移」的问题。其它未知键不出现在响应里。
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS
 - [ ] **Step 5: 提交** → `git commit -m "feat(server): 实现设置 API 与项目排序方式"`
 
@@ -1131,7 +1134,7 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
 
 - [ ] **Step 1: 接线组合根**
 
-`Program.cs` 顺序固定：
+`Program.cs` **整体替换**为下面这份最终形态。**注意**：Task 2 已经加过 `builder.Services.Configure<AppOptions>(...)`、`builder.Services.AddSingleton(sp => new SqliteDatabase(...))` 和 `SqliteDatabase.Initialize()` 的调用 —— 替换时要保留它们，**不要重复注册**（重复注册 `Configure<AppOptions>` 会导致配置被绑定两次，重复注册 `SqliteDatabase` 会造出两个实例、指向两个不同的库文件）。
 
 ```csharp
 var builder = WebApplication.CreateBuilder(args);
@@ -1168,6 +1171,10 @@ builder.Services.AddOpenApi();
 var app = builder.Build();
 app.UseForwardedHeaders();
 app.UseStaticFiles();                 // Vite 产物在 wwwroot/assets/，没有它静态资源 404
+
+// 建库必须在 Run 之前，且不能被这段替换丢掉
+app.Services.GetRequiredService<SqliteDatabase>().Initialize();
+
 app.MapOpenApi("/openapi/{documentName}.json");
 app.MapHealthEndpoints();
 app.MapProjectEndpoints();
@@ -1182,6 +1189,8 @@ app.MapFallbackToFile("index.html");
 app.Run();
 public partial class Program;
 ```
+
+> **验收这一段**：`dotnet run` 后库文件必须存在且 7 张表齐全 —— 少一次 `Initialize()` 调用，spec §16.2 的「首次启动自动建库」就失效，后续所有仓储的集成测试会集体报 `no such table: project`。写完这一段后跑一次 `dotnet run` + `curl /api/health`，并确认数据文件已建出来。
 
 - [ ] **Step 2: 写导出工具**
 
