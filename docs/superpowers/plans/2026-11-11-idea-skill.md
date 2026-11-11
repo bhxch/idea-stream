@@ -224,7 +224,24 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 
 - [ ] **Step 1: 补齐 SKILL.md 的错误码对照表**
 
-必须包含这些 `code`：`idea_not_found`、`project_not_found`、`inbox_not_deletable`、`merge_cross_project`、`invalid_merge_selection`、`invalid_content`、`invalid_event_type`、`invalid_tag_mode`、`setting_key_not_writable`。
+必须包含这些 `code`（**这是后端代码里实际用到的全集**，`grep -rhoP 'ApiException\(\s*\d+,\s*"\K[a-z_]+' server/IdeaApp/ | sort -u` 可以核对）：
+
+| code | 含义 | agent 该怎么办 |
+|---|---|---|
+| `idea_not_found` | 想法不存在 | 重新拉列表，可能是别的设备删了 |
+| `project_not_found` | 项目不存在 | 同上 |
+| `inbox_not_deletable` | 内置收件箱不能删 | 换个项目 |
+| `invalid_content` | 正文为空或全空白 | 补上正文再提交 |
+| `invalid_project_name` | 项目名为空或全空白 | 补上名字 |
+| `invalid_reorder_ids` | 重排的 ids 为空 | 别发空的 reorder |
+| `invalid_status` | `status` 参数不是 all/open/done | 用这三个值之一 |
+| `invalid_tag_mode` | `tagMode` 不是 or/and | 用这两个值之一 |
+| `invalid_merge_selection` | 合并时少于两条 | 至少选两条 |
+| `merge_cross_project` | 合并的想法不属于同一项目 | 先把它们移到同一项目 |
+| `not_in_trash` | 要恢复的东西不在回收站里 | 先拉 `GET /api/trash` 确认 |
+| `too_many_ideas` | 命中数超过 `Api:MaxIdeasPerResponse`（默认 2000） | 收窄过滤条件（加 projectId / status / tags）|
+
+Task 11 会新增 webhook 相关的 `code`，届时补进这张表。
 
 每个 code 一行：`code` → 含义 → agent 该怎么办。
 
