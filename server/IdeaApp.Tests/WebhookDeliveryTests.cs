@@ -300,6 +300,153 @@ public sealed class WebhookDeliveryTests
     }
 
     /// <summary>
+    /// 项目被删除后，它自己的 webhook 收不到 <c>project.deleted</c>，
+    /// 也收不到连带的那批 <c>idea.deleted</c>。
+    /// </summary>
+    /// <remarks>
+    /// spec §12.1：项目级 webhook **随项目隐式失效** —— 所属项目在回收站期间不投递。
+    /// 删项目会连带删掉它下面的想法，于是这一次删除本来会往同一个 webhook 里灌
+    /// 「1 条 project.deleted + N 条 idea.deleted」，正是这条规则要挡掉的。
+    /// <para>
+    /// 对照组是**全局** webhook：项目删除不影响它（spec §12.1），
+    /// 它同时是「事件确实发出去了」的证据 ——
+    /// 没有那 N+1 条投递，就分不清是「规则挡住了」还是「事件根本没发」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Deleted_project_webhook_receives_neither_project_deleted_nor_cascading_idea_deleted()
+    {
+        using var projectEndpoint = new FakeEndpoint();
+        using var globalEndpoint = new FakeEndpoint();
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "项目A");
+
+        // 绑在项目A上的 webhook：订阅删除相关的事件。
+        var projectWebhookId = await CreateWebhookAsync(
+            client,
+            projectEndpoint.Url,
+            ["project.deleted", "idea.deleted"],
+            scope: "project",
+            projectId: projectId);
+
+        // 全局 webhook（对照组）：项目删除不影响它。
+        var globalWebhookId = await CreateWebhookAsync(
+            client, globalEndpoint.Url, ["project.deleted", "idea.deleted"]);
+
+        // 项目A下建三条想法：删项目时会被连带删掉，各发一条 idea.deleted。
+        foreach (var content in new[] { "想法1", "想法2", "想法3" })
+        {
+            var created = await client.PostAsJsonAsync("/api/ideas", new { content, projectId });
+            Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        }
+
+        var deleted = await client.DeleteAsync($"/api/projects/{projectId}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        // 对照组收到 1 条 project.deleted + 3 条 idea.deleted。
+        await WaitForDeliveryCountAsync(client, globalWebhookId, 4);
+
+        // 项目的 webhook 一条都没收到（投递记录也一条都没有）。
+        await Task.Delay(TimeSpan.FromSeconds(1));
+
+        Assert.Empty(projectEndpoint.Requests);
+        Assert.Empty(await ReadDeliveriesAsync(client, projectWebhookId));
+    }
+
+    /// <summary>
+    /// 项目从回收站恢复后，它自己的 webhook **重新开始收**这个项目的事件。
+    /// </summary>
+    /// <remarks>
+    /// spec §12.1：项目级 webhook 随项目隐式失效，**项目恢复后自动恢复投递**。
+    /// 上一条守的是「回收站期间不投递」，这条守的是「恢复后要能恢复投递」——
+    /// 两头都守住，这条规则才不是「把 webhook 永久关掉」。
+    /// </remarks>
+    [Fact]
+    public async Task Restored_project_webhook_receives_its_project_events_again()
+    {
+        using var endpoint = new FakeEndpoint();
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "项目A");
+
+        // 订阅两种事件：删除时该收到的是 project.deleted（**不该**收到），
+        // 恢复时该收到的是 project.updated（**应该**收到）。
+        var webhookId = await CreateWebhookAsync(
+            client, endpoint.Url, ["project.deleted", "project.updated"],
+            scope: "project", projectId: projectId);
+
+        var deleted = await client.DeleteAsync($"/api/projects/{projectId}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        // 先把删除那批事件处理完（它不该有任何投递），再恢复 ——
+        // 否则「恢复后收到 project.updated」可能只是投递还没排空。
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        Assert.Empty(await ReadDeliveriesAsync(client, webhookId));
+
+        // 恢复项目 → 发 project.updated（changed = ["deletedAt"]）。
+        var restored = await client.PostAsync($"/api/projects/{projectId}/restore", null);
+        Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
+
+        await WaitForDeliveryAsync(client, webhookId, IsDelivered);
+
+        // 只有 project.updated 那一条 —— project.deleted 那条在回收站期间就被挡掉了。
+        var request = Assert.Single(endpoint.Requests);
+        using var payload = JsonDocument.Parse(request.Body);
+        Assert.Equal("project.updated ", payload.RootElement.GetProperty("text").GetString());
+    }
+
+    /// <summary>
+    /// 项目还在回收站时，单独恢复它下面的某条想法 → 那条 <c>idea.restored</c>
+    /// 也不投给这个项目的 webhook。
+    /// </summary>
+    /// <remarks>
+    /// 这是「所属项目在回收站期间不投递」这条规则的**连带效果**，不是另一个规则：
+    /// 想法事件带的是所属项目，那个项目在回收站里，所以项目级 webhook 收不到。
+    /// 断言写在这里，是为了让这个效果是「有意为之」而不是「碰巧」。
+    /// </remarks>
+    [Fact]
+    public async Task Idea_restored_while_its_project_is_in_trash_reaches_only_global_webhooks()
+    {
+        using var projectEndpoint = new FakeEndpoint();
+        using var globalEndpoint = new FakeEndpoint();
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "项目A");
+
+        var projectWebhookId = await CreateWebhookAsync(
+            client, projectEndpoint.Url, ["idea.restored"], scope: "project", projectId: projectId);
+
+        var globalWebhookId = await CreateWebhookAsync(
+            client, globalEndpoint.Url, ["idea.restored"]);
+
+        var created = await client.PostAsJsonAsync(
+            "/api/ideas", new { content = "会被连带删掉的想法", projectId });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var ideaId = await ReadIdAsync(created);
+
+        // 删项目：想法被连带软删（同一个 deleted_at）。
+        var deleted = await client.DeleteAsync($"/api/projects/{projectId}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        // 单独恢复这条想法：项目仍在回收站里。
+        var restored = await client.PostAsync($"/api/ideas/{ideaId}/restore", null);
+        Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
+
+        // 全局 webhook 收得到（对照组）。
+        await WaitForDeliveryAsync(client, globalWebhookId, IsDelivered);
+
+        // 项目自己的 webhook 收不到：所属项目还在回收站里。
+        await Task.Delay(TimeSpan.FromSeconds(1));
+
+        Assert.Empty(projectEndpoint.Requests);
+        Assert.Empty(await ReadDeliveriesAsync(client, projectWebhookId));
+    }
+
+    /// <summary>
     /// 目标端点慢（5 秒）也不拖慢写接口：POST /api/ideas 照样 1 秒内返回 201。
     /// </summary>
     [Fact]
@@ -357,6 +504,13 @@ public sealed class WebhookDeliveryTests
         var response = await client.PostAsJsonAsync("/api/ideas", new { content });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.GetProperty("id").GetString()!;
+    }
+
+    /// <summary>从一个响应里读出资源的 id。</summary>
+    private static async Task<string> ReadIdAsync(HttpResponseMessage response)
+    {
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         return document.RootElement.GetProperty("id").GetString()!;
     }
@@ -455,6 +609,34 @@ public sealed class WebhookDeliveryTests
         }
 
         throw new TimeoutException($"等 webhook {webhookId} 的投递记录超时");
+    }
+
+    /// <summary>
+    /// 等到某个 webhook 的投递记录**至少**有指定条数为止。
+    /// </summary>
+    /// <remarks>
+    /// 用来当「事件确实走完了投递链路」的证据：
+    /// 等对照组（全局 webhook）收齐了 N 条，才轮到断言「项目级那条一条都没有」。
+    /// </remarks>
+    private static async Task WaitForDeliveryCountAsync(
+        HttpClient client,
+        string webhookId,
+        int count,
+        TimeSpan? timeout = null)
+    {
+        var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromSeconds(20));
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if ((await ReadDeliveriesAsync(client, webhookId)).Count >= count)
+            {
+                return;
+            }
+
+            await Task.Delay(100);
+        }
+
+        throw new TimeoutException($"等 webhook {webhookId} 的 {count} 条投递记录超时");
     }
 
     /// <summary>独立重算一遍 HMAC-SHA256 签名（不调用后端的实现）。</summary>
