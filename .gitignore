@@ -1,0 +1,18 @@
+# .NET
+bin/
+obj/
+artifacts/
+*.user
+
+# 前端
+node_modules/
+web/dist/
+
+# 运行时数据（SQLite 及 WAL）
+*.db
+*.db-shm
+*.db-wal
+
+# 临时目录
+.temp/
+.superpowers/
