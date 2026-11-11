@@ -27,6 +27,9 @@ builder.Services.AddSingleton<TagService>();
 
 var app = builder.Build();
 
+// 端点共用的异常包装需要日志器：未预期的异常只进日志，不进响应体。
+ApiResults.UseLogger(app.Logger);
+
 // 首次启动即建库建表并写入内置收件箱。
 app.Services.GetRequiredService<SqliteDatabase>().Initialize();
 

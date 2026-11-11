@@ -573,6 +573,11 @@ public sealed class BulkAndMergeTests
     /// 这几步若不在同一个事务里，已经插进去的新想法会留在库里，
     /// 第一条源想法也会被删掉 —— 源没了、结果也没建成的中间态。
     /// <para>
+    /// 失败时的响应是 500 + ProblemDetails + <c>code=internal_error</c>：
+    /// DB 层异常不能裸着逃到客户端（那样 agent 消费方拿不到稳定的错误码），
+    /// 但真实异常信息只进日志，不进响应体。
+    /// </para>
+    /// <para>
     /// 补充测试：简报把「合并必须原子」列为硬要求，但列出的 10 条测试没有覆盖它。
     /// </para>
     /// </remarks>
@@ -593,8 +598,16 @@ public sealed class BulkAndMergeTests
             "BEGIN SELECT RAISE(ABORT, 'blocked'); END;");
 
         // 合并在硬删第二条源想法时失败。
-        await Assert.ThrowsAnyAsync<SqliteException>(
-            () => client.PostAsJsonAsync("/api/ideas/merge", new { ids = new[] { first, second } }));
+        var response = await client.PostAsJsonAsync("/api/ideas/merge",
+            new { ids = new[] { first, second } });
+
+        // 失败也要有稳定的机器可读错误码。
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("internal_error", problem.GetProperty("code").GetString());
+
+        // 真实异常信息不泄露给外部。
+        Assert.DoesNotContain("blocked", problem.GetProperty("detail").GetString() ?? string.Empty);
 
         // 整件事回滚：两条源想法都还在（第一条的删除也被撤销），也没有留下合并结果。
         var ideas = await ReadIdeasAsync(await client.GetAsync("/api/ideas"));
