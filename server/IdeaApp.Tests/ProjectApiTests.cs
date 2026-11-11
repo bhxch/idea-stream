@@ -113,6 +113,9 @@ public sealed class ProjectApiTests
         Assert.Equal("inbox_not_deletable", problem.GetProperty("code").GetString());
     }
 
+    /// <summary>
+    /// 重排后的顺序要落库：响应体与重新 GET 到的顺序都等于请求里的 ids。
+    /// </summary>
     [Fact]
     public async Task Reorder_persists_sort_order()
     {
@@ -120,6 +123,12 @@ public sealed class ProjectApiTests
         using var client = factory.CreateClient();
 
         var first = await CreateProjectAsync(client, "项目A");
+
+        // 先切到手动排序再建第二个项目：这样「重排前的显示顺序」与「请求重排的顺序」
+        // 必然不同（手动排序下新项目排在最后：第一、收件箱、第二）。
+        // 顺序一致的话，重排没落库也照样是这个结果，断言就成了恒真。
+        await SwitchToManualAsync(client);
+
         var second = await CreateProjectAsync(client, "项目B");
 
         var response = await client.PostAsJsonAsync("/api/projects/reorder",
@@ -132,6 +141,8 @@ public sealed class ProjectApiTests
         Assert.Equal(expected, reordered.Select(p => p.Id).ToArray());
 
         // 顺序落库了：重新拉一次还是这个顺序。
+        // 手动排序下顺序由 sort_order 决定（默认的 recent 模式按最近活动时间排，
+        // 重排写没写 sort_order 都看不出来）。
         var reloaded = await ReadProjectsAsync(await client.GetAsync("/api/projects"));
         Assert.Equal(expected, reloaded.Select(p => p.Id).ToArray());
     }
