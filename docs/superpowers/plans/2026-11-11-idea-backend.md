@@ -474,7 +474,8 @@ public sealed partial class IdeaJsonContext : JsonSerializerContext;
     - `void Reorder(IReadOnlyList<string> ids)`
     - `DateTimeOffset LastActivityAt(string projectId)` —— **不返回 null**：未删想法的最大 `updated_at`，无未删想法时回落项目自身的 `updated_at`
     - `int CountActiveIdeas(string projectId)`
-  - `public sealed class ProjectService(ProjectRepository repo)`：`IReadOnlyList<ProjectDto> List()`、`ProjectDto Create(string name)`、`ProjectDto Rename(string id, string name)`、`void Delete(string id)`、`ProjectDto Restore(string id)`、`IReadOnlyList<ProjectDto> Reorder(IReadOnlyList<string> ids)`
+  - `public sealed class ProjectService(ProjectRepository repo)`：`IReadOnlyList<ProjectDto> List()`、`ProjectDto Create(string name)`、`ProjectDto Rename(string id, string name)`、`void Delete(string id)`、`ProjectDto Restore(string id)`、`IReadOnlyList<ProjectDto> Reorder(IReadOnlyList<string>? ids)` —— `ids` 为 null 或空数组时抛 `ApiException(400, "invalid_reorder_ids", ...)`
+  - `public sealed class ProjectRepository(SqliteDatabase db)` 另加 `int MaxSortOrder()` —— 全表（含回收站）最大 `sort_order`，无行时返回 -1。**Create 的新项目 `sort_order` 用它 +1**，与 Reorder 的全表口径一致，删项目后新建不撞号。
   - `public static class ProjectEndpoints { public static IEndpointRouteBuilder MapProjectEndpoints(this IEndpointRouteBuilder app); }`
   - 端点：`GET /api/projects`、`POST /api/projects`、`PATCH /api/projects/{id}`、`DELETE /api/projects/{id}`、`POST /api/projects/{id}/restore`、`POST /api/projects/reorder`
 
@@ -559,6 +560,7 @@ bash server/scripts/aot-smoke.sh
 **Interfaces:**
 - Consumes: Task 3 的 `Idea`/`IdeaDto`。
 - Produces:
+  - **时间戳必须走 `SqliteDatabase.FormatTimestamp` / `ParseTimestamp`** —— `idea.updated_at` 要能被 SQL 的 `MAX()` 正确比较（定宽 `yyyy-MM-ddTHH:mm:ss.fffffffZ`，字典序 == 时间序）并被 `ParseExact` 正确解析。**不要在 `IdeaRepository` 里自己写时间戳格式**，否则 `ProjectRepository.LastActivityAt` 的 `MAX(idea.updated_at)` 排序会错、`ParseExact` 会抛 `FormatException` 变成 500。
   - `public sealed class IdeaRepository(SqliteDatabase db)`
     - `Idea? Get(string id)`
     - `Idea Insert(Idea idea)`
@@ -923,7 +925,7 @@ bash server/scripts/aot-smoke.sh
     ```csharp
     public sealed record CreateProjectRequest(string Name);
     public sealed record RenameProjectRequest(string Name);
-    public sealed record ReorderProjectsRequest(string[] Ids);
+    public sealed record ReorderProjectsRequest(string[]? Ids);
     public sealed record CreateIdeaRequest(string ProjectId, string Content, string? Title, string[]? Tags);
     public sealed record UpdateIdeaRequest(string? Title, string? Content);
     public sealed record SetTagsRequest(string[] Tags);
@@ -941,6 +943,7 @@ bash server/scripts/aot-smoke.sh
         bool? Enabled, string? Secret);
     ```
     这些 record 要加进 `IdeaJsonContext` 的 `[JsonSerializable]` 列表。
+  > **注意**：`Contracts/Requests.cs` 已由 Task 4 建好，里面已有 `CreateProjectRequest` / `RenameProjectRequest` / `ReorderProjectsRequest`（其 `Ids` 是 `string[]?` 可空）。**只往里加 webhook 的记录，不要整段重写这个文件** —— 照抄本段示例会把 Task 4 的可空标注改回非空。
   - `public static class WebhookEndpoints { public static IEndpointRouteBuilder MapWebhookEndpoints(this IEndpointRouteBuilder app); }`
   - 端点：`GET /api/webhooks?projectId=`、`POST /api/webhooks`、`GET /api/webhooks/{id}`、`PATCH /api/webhooks/{id}`、`DELETE /api/webhooks/{id}`、`GET /api/webhooks/templates/telegram`
 
