@@ -944,7 +944,7 @@ bash server/scripts/aot-smoke.sh
 **Interfaces:**
 - Consumes: Task 8 的 `EventBus`、`IEventHandler`、`IdeaEvent`。
 - Produces:
-  - `public sealed class SseBroadcaster(int bufferSize, int heartbeatSeconds = 25)`：`int BufferSize`、`int HeartbeatSeconds`、`void Append(IdeaEvent evt)`、`IReadOnlyList<IdeaEvent> Since(string? lastEventId)`、`SseSubscription Subscribe()`、`bool TryCompleteSubscription(...)`
+  - `public sealed class SseBroadcaster(int bufferSize, int heartbeatSeconds = 25)`：`int BufferSize`、`int HeartbeatSeconds`、`void Append(IdeaEvent evt)`、`IReadOnlyList<IdeaEvent>? Since(string? lastEventId)` —— **可空**：`null` 表示缓冲里找不到该 id（要发 `resync`），非空表示找到了、返回它之后的全部事件、`SseSubscription Subscribe()`、`bool TryCompleteSubscription(...)`
   - `public sealed record SseSubscription(Guid Id, Channel<IdeaEvent> Channel);`
   - `public sealed class SseEventHandler(SseBroadcaster broadcaster) : IEventHandler` —— `HandleAsync` 把事件 `Append` 进 broadcaster。
   - 端点 `GET /api/events` → `text/event-stream`，帧格式：

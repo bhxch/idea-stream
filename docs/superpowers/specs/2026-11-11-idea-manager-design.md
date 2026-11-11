@@ -307,7 +307,7 @@ CREATE TABLE setting (
   ```
   `id` 即事件 id，浏览器重连时带 `Last-Event-ID`，服务端据此补发。
 - **心跳**：每 25 秒发一行 `: ping` 注释，防止中间代理掐断空闲连接。
-- **服务端事件缓冲**：保留最近 500 条事件用于 `Last-Event-ID` 补发。缓冲**只在内存**，进程重启后必然补发不到 —— 此时服务端发一帧 `event: resync`（无 data），客户端收到后重新拉取当前列表。
+- **服务端事件缓冲**：保留最近 500 条事件用于 `Last-Event-ID` 补发。缓冲**只在内存**，进程重启后必然补发不到 —— 此时服务端发一帧 `event: resync`（**data 是一个空的 JSON 对象 `{}`**，客户端只需触发重新拉取，不必解析内容），客户端收到后重新拉取当前列表。
 - **`resync` 是控制帧**，不是业务事件，不出现在 §11.1 的事件类型表里，也不可被 webhook 订阅。
 - **扇出而非竞争消费**：每个 `IEventHandler` 有自己独立的通道，事件总线把同一条事件写进所有通道。
 - **幂等**：客户端按事件 id 去重；自己发起的操作已乐观更新，收到自己的广播时不再插入第二次。
@@ -526,6 +526,7 @@ public interface IEventHandler
 | `Webhook:MaxAttempts` | `3` | 失败重试次数（**含首次尝试**） |
 | `Webhook:MaxDeliveryRecords` | `500` | 每个 webhook 保留的投递记录条数 |
 | `Sse:BufferSize` | `500` | 服务端事件缓冲条数（供 `Last-Event-ID` 补发） |
+| `Sse:HeartbeatSeconds` | `25` | SSE 心跳间隔（发 `: ping` 注释帧，防中间代理掐断空闲连接） |
 | `Cors:Origins` | 空 | 预留：仅当前端独立部署时才需要；同源部署留空 |
 
 ## 16. 部署
