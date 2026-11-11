@@ -96,6 +96,34 @@ CS
     fi
 }
 
+# json_first_string <响应体文件> <属性名>
+#
+# 打印响应体**第一个数组元素**里（根是数组时）或根对象里的某个字符串属性。
+# 用真的 System.Text.Json 解析，不依赖 jq —— 脚本要能在没装 jq 的机器上跑。
+json_first_string() {
+    local file="$1"
+    local prop="$2"
+    local dir="$WORK_DIR/json-first-string"
+    mkdir -p "$dir"
+    cat >"$dir/first.cs" <<'CS'
+using System.Text.Json;
+
+var body = Console.In.ReadToEnd();
+using var document = JsonDocument.Parse(body);
+
+var root = document.RootElement;
+var element = root.ValueKind == JsonValueKind.Array ? root[0] : root;
+
+var name = Environment.GetEnvironmentVariable("JSON_PROP")!;
+Console.WriteLine(element.GetProperty(name).GetString()!);
+CS
+
+    (
+        export JSON_PROP="$prop"
+        cd "$dir" && dotnet run first.cs <"$file"
+    )
+}
+
 echo "==> 发布 Native AOT 产物（-r linux-x64 -c Release）"
 # PublishAot=true 显式写在这里：只依赖 csproj 的话，那一行被删掉时脚本会静默
 # 退化成非 AOT 发布，从此再也测不出退化，而且脚本仍然 PASS。
@@ -241,6 +269,61 @@ check_endpoint "/api/webhooks" "201" \
     'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("enabled", out var enabled) && !enabled.GetBoolean() && root.TryGetProperty("hasSecret", out var hasSecret) && !hasSecret.GetBoolean()' \
     POST \
     '{"name":"AOT 冒烟","url":"https://example.com/hook","method":"POST","headers":{},"bodyTemplate":"{\"text\":\"{{idea.content}}\"}","events":["idea.created"],"scope":"global"}'
+
+# 记下这个 webhook 的 id：下面两个投递端点要用它。
+WEBHOOK_ID="$(json_first_string "$WORK_DIR/body-_api_webhooks.json" id)"
+[[ -n "$WEBHOOK_ID" ]] || fail "取不到刚创建的 webhook 的 id"
+
+echo "==> GET /api/webhooks/{id}/deliveries"
+# 投递记录列表：返回静态类型 List<DeliveryDto>（裸数组）。
+# 白名单里少登记这个集合包装类型时，这个端点在 AOT 产物下就是 500。
+check_endpoint "/api/webhooks/$WEBHOOK_ID/deliveries" "200" \
+    'root.ValueKind == JsonValueKind.Array'
+
+echo "==> POST /api/webhooks（开一个会真的去投递的 webhook）"
+# 指向一个没人监听的端口：投递会失败（连接被拒），但**投递记录会落库** ——
+# 手动重投端点要的就是一条真实的投递记录。
+check_endpoint "/api/webhooks" "201" \
+    'root.ValueKind == JsonValueKind.Object' \
+    POST \
+    '{"name":"AOT 冒烟 投递","url":"http://127.0.0.1:1/hook","method":"POST","headers":{},"bodyTemplate":"{\"text\":\"{{idea.content}}\"}","events":["idea.created"],"scope":"global"}'
+
+DELIVERY_WEBHOOK_ID="$(json_first_string "$WORK_DIR/body-_api_webhooks.json" id)"
+[[ -n "$DELIVERY_WEBHOOK_ID" ]] || fail "取不到第二个 webhook 的 id"
+
+echo "==> PATCH /api/webhooks/{id}（打开投递开关）"
+# 全局 webhook 默认禁用；不打开的话事件不会投递，也就没有投递记录。
+check_endpoint "/api/webhooks/$DELIVERY_WEBHOOK_ID" "200" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("enabled", out var enabled) && enabled.GetBoolean()' \
+    PATCH \
+    '{"enabled":true}'
+
+echo "==> POST /api/ideas（触发一次投递）"
+check_endpoint "/api/ideas" "201" \
+    'root.ValueKind == JsonValueKind.Object' \
+    POST \
+    '{"content":"AOT 冒烟 投递","title":"投递"}'
+
+echo "==> GET /api/webhooks/{id}/deliveries（等第一条投递记录落库）"
+# 投递是异步的：事件发布之后 worker 才去投递，记录也就才落库。轮询等它出现。
+DELIVERY_ID=""
+for _ in $(seq 1 100); do
+    curl -sS -o "$WORK_DIR/deliveries.json" "$BASE_URL/api/webhooks/$DELIVERY_WEBHOOK_ID/deliveries"
+    DELIVERY_ID="$(json_first_string "$WORK_DIR/deliveries.json" id 2>/dev/null || true)"
+    if [[ -n "$DELIVERY_ID" ]]; then
+        break
+    fi
+    sleep 0.1
+done
+[[ -n "$DELIVERY_ID" ]] || fail "投递记录一直没落库"
+
+echo "==> POST /api/webhooks/{id}/deliveries/{deliveryId}/retry"
+# 手动重投：返回静态类型 DeliveryDto。白名单里少登记它，AOT 产物下就是 500。
+# 这个端点没有请求体，所以最后一个参数给空串（给了就变成带 Content-Type 的 POST）。
+check_endpoint "/api/webhooks/$DELIVERY_WEBHOOK_ID/deliveries/$DELIVERY_ID/retry" "200" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("status", out var status) && status.GetString() is not null' \
+    POST \
+    ''
 
 echo "==> GET /api/events (SSE)"
 # SSE 是长连接：不能像别的端点那样把响应体读完（读完会一直等到超时）。
