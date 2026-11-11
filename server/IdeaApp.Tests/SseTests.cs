@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using IdeaApp.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace IdeaApp.Tests;
 
@@ -129,8 +131,102 @@ public sealed class SseTests
 
         Assert.Equal("resync", frame.Event);
 
+        // 载荷是空对象：resync 是控制帧，不是业务事件。
+        Assert.Equal("{}", frame.Data);
+
         // resync 是控制帧，不是业务事件：它没有自己的 id，客户端不能拿它当 Last-Event-ID。
         Assert.Null(frame.Id);
+    }
+
+    /// <summary>
+    /// 客户端断开后，服务端要摘掉订阅。
+    /// </summary>
+    /// <remarks>
+    /// 这条路径一旦被改坏，症状是订阅表无界增长 ——
+    /// 每个写请求都要在锁内遍历那张越来越长的列表（写接口被拖慢），而且完全无声。
+    /// </remarks>
+    [Fact]
+    public async Task Sse_subscription_is_released_when_the_client_disconnects()
+    {
+        // 心跳 1 秒：客户端断开后，服务端很快就会写帧失败 → 收工摘订阅。
+        using var factory = new TestAppFactory(sseHeartbeatSeconds: 1);
+        using var client = factory.CreateClient();
+
+        var broadcaster = factory.Services.GetRequiredService<SseBroadcaster>();
+        Assert.Equal(0, broadcaster.SubscriptionCount);
+
+        var connection = await ConnectAsync(client);
+        Assert.Equal(1, broadcaster.SubscriptionCount);
+
+        // 主动断开。
+        connection.Dispose();
+
+        await WaitUntilAsync(
+            () => broadcaster.SubscriptionCount == 0,
+            "客户端断开后订阅应当被摘掉");
+    }
+
+    /// <summary>
+    /// 多端扇出：每个连着的客户端都要收到**同一个**事件（不是各拿一半），
+    /// 而且断开一个不影响另一个。
+    /// </summary>
+    /// <remarks>
+    /// Task 14 的 webhook handler 复用同一套扇出语义，这条测试一并兜住它。
+    /// </remarks>
+    [Fact]
+    public async Task Sse_every_connected_client_receives_the_event()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        using var first = await ConnectAsync(client);
+        using var second = await ConnectAsync(client);
+
+        var ideaId = await CreateIdeaAsync(client, "两个客户端都要收到");
+
+        var firstFrame = SseFrame.Parse(await ReadFrameAsync(first));
+        var secondFrame = SseFrame.Parse(await ReadFrameAsync(second));
+
+        // 扇出：两条连接收到的是**同一个事件**（同一个 id）。
+        Assert.Equal("idea.created", firstFrame.Event);
+        Assert.Equal("idea.created", secondFrame.Event);
+        Assert.Equal(firstFrame.Id, secondFrame.Id);
+        Assert.Contains(ideaId, firstFrame.Data!);
+        Assert.Contains(ideaId, secondFrame.Data!);
+
+        // 断开一个：另一个不受影响，还能继续收。
+        first.Dispose();
+
+        var secondIdeaId = await CreateIdeaAsync(client, "另一个还活着");
+        var afterDisconnect = SseFrame.Parse(await ReadFrameAsync(second));
+
+        Assert.Equal("idea.created", afterDisconnect.Event);
+        Assert.Contains(secondIdeaId, afterDisconnect.Data!);
+    }
+
+    /// <summary>
+    /// 响应头：不缓存、并且让 nginx 也别缓冲（否则事件会被攒着不发）。
+    /// </summary>
+    [Fact]
+    public async Task Sse_response_disables_caching_and_proxy_buffering()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        // ResponseHeadersRead：SSE 是长连接，把响应体读完会一直等到超时。
+        using var response = await client.GetAsync("/api/events", HttpCompletionOption.ResponseHeadersRead);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+
+        // 不缓存：事件流是实时的，缓存住就等于没有推送。
+        Assert.Equal("no-cache", response.Headers.CacheControl?.ToString());
+
+        // nginx 侧也要关缓冲（应用侧设了这个头，双保险）。
+        Assert.True(
+            response.Headers.TryGetValues("X-Accel-Buffering", out var buffering),
+            "缺少 X-Accel-Buffering 响应头");
+        Assert.Equal("no", buffering!.Single());
     }
 
     /// <summary>
@@ -168,6 +264,24 @@ public sealed class SseTests
         var stream = await response.Content.ReadAsStreamAsync();
 
         return new SseConnection(response, new StreamReader(stream, Encoding.UTF8));
+    }
+
+    /// <summary>等某个条件成立（超时即测试失败）。</summary>
+    private static async Task WaitUntilAsync(Func<bool> condition, string what)
+    {
+        var deadline = DateTime.UtcNow.Add(FrameTimeout);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(20);
+        }
+
+        Assert.True(condition(), $"等待超时：{what}");
     }
 
     /// <summary>读一帧（帧内若干行，空行结尾）。</summary>
