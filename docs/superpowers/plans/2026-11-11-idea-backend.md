@@ -929,7 +929,11 @@ bash server/scripts/aot-smoke.sh
 >
 > **收工信号（Task 8 实施者带出来的）**：`EventBus` 在 `DisposeAsync` 时会先 `_shutdown.Cancel()` 再排空。所以 **handler 收到的 token 在排空期间已经是取消状态** —— SSE handler（长连接）在收工时会放弃剩余事件，这是正确行为，不要把它当异常。
 >
-> **测试文件已经偏大**：`EventBusTests.cs` 约 450 行、`EventPublishingTests.cs` 约 600 行。你往里加 handler 相关测试前**先拆文件**（例如 `EventBusTests.cs` 拆成总线机制与释放语义两个文件），不要继续往同一个文件里堆。
+> **测试文件已经偏大**：`EventBusTests.cs` 约 550 行（9 个测试替身类）、`EventPublishingTests.cs` 约 600 行。你往里加 handler 相关测试前**先拆文件**（例如 `EventBusTests.cs` 拆成总线机制与释放语义两个文件），不要继续往同一个文件里堆。
+>
+> **顺手修两处 `Domain/IdeaEvent.cs` 的注释措辞**（Task 8 复审的 Minor，契约文档，下游照着读）：
+> 1. 「事件只覆盖回收站之外的项目」这句总括**过宽** —— 只扫首句会误解成「所有事件都不涉及回收站」，但 `idea.deleted` / `idea.restored` / `project.deleted` 本来就是回收站相关的事件。改成「**重排**的事件只覆盖回收站之外的项目」。
+> 2. 「三种口径」清单里**漏了重排** —— 清单第三条以 `project.updated` 为锚（「项目改名也是一律列 `["name"]`」），读者容易推成「`project.updated` 的 `changed` 一律无条件列字段」，而重排的 `["sortOrder"]` 是**有条件**列的（只在 `sort_order` 真变时发）。把重排并进清单。
 
 **Files:**
 - Create: `server/IdeaApp/Infrastructure/SseBroadcaster.cs`
