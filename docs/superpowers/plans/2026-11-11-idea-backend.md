@@ -1098,9 +1098,11 @@ bash server/scripts/aot-smoke.sh
     public sealed record BulkIdsRequest(string[] Ids);
     public sealed record MergeIdeasRequest(string[] Ids, string? Content, string? Title);
     public sealed record UpdateSettingRequest(string Value);
-    public sealed record WebhookCreateRequest(string Name, string Url, string Method,
-        Dictionary<string,string>? Headers, string BodyTemplate, string[]? Events,
-        string Scope, string? ProjectId, string? Secret);
+    public sealed record WebhookCreateRequest(string? Name, string? Url, string? Method,
+        Dictionary<string,string>? Headers, string? BodyTemplate, string[]? Events,
+        string? Scope, string? ProjectId, string? Secret);
+    // 字段一律可空：缺字段要在服务层返回 400（invalid_webhook_name 等），
+    // 而不是被模型绑定当成 null 或抛绑定异常。
     public sealed record WebhookUpdateRequest(string? Name, string? Url, string? Method,
         Dictionary<string,string>? Headers, string? BodyTemplate, string[]? Events,
         bool? Enabled, string? Secret);
@@ -1156,7 +1158,7 @@ bash server/scripts/aot-smoke.sh
 **Interfaces:**
 - Consumes: Task 8 的 `IdeaEvent`。
 - Produces:
-  - `public static class TemplateRenderer`
+  - **模板校验要收紧（Task 11 复审带出来的）**：Task 11 只校验了「Body 模板是合法 JSON 文档」。Task 12 的渲染器只处理**字符串值节点**里的占位符 —— 所以保存时还要校验：**① 根节点必须是 JSON 对象**（`123`、`"x"`、`[1,2]` 都要拒绝）；**② 占位符只允许出现在字符串值节点里**（`{"{{x}}":1}` 这种把占位符写在 key 里的要拒绝）。否则炸点会推迟到渲染时才暴露。
     - `string RenderJson(string jsonTemplate, IReadOnlyDictionary<string, string?> values)` —— 解析 JSON 模板，对每个字符串值做占位符替换并按 JSON 字符串上下文转义，输出序列化后的 JSON（缩进 2 空格）
     - `string RenderPlain(string template, IReadOnlyDictionary<string, string?> values)` —— 纯文本替换，不转义
   - `public static class EventPlaceholders`：`IReadOnlyDictionary<string, string?> Build(IdeaEvent evt, string? publicBaseUrl)`

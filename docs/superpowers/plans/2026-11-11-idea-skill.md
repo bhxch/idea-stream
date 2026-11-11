@@ -18,6 +18,7 @@
 - 脚本必须可直接执行：`chmod +x`，shebang `#!/usr/bin/env python3`。
 - 连接配置只从环境变量读，**不读命令行明文密码**：`IDEA_BASE_URL`、`IDEA_USER`、`IDEA_PASS`、`IDEA_TOKEN`。
 - 默认输出 JSON（`--format json`，可省略）；`--format text` 给人类看。
+- **⚠️ 不要泄露 webhook 的 url**：Telegram 的 bot token 就在 URL 路径里（`/bot<TOKEN>/sendMessage`），而 API 会把 `url` 原样返回。**不要把 webhook 的 url 打进日志、错误信息或异常消息里** —— 需要引用时只显示 host 与路径形状（例如 `api.telegram.org/bot***/sendMessage`）。
 - 错误处理：非 2xx 解析 ProblemDetails，stderr 打印 `code: detail`，退出码 1；网络错误 stderr 打印 `network_error: ...`，退出码 2。
 - **skill 目录不得包含任何真实凭据**（bot token、密码）。
 - 每个 task 结束提交一次，commit message 用 Conventional Commits（中文正文）。
