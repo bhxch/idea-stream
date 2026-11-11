@@ -199,7 +199,7 @@ public sealed class EventBus : IEventPublisher, IAsyncDisposable
                 {
                     await handler.HandleAsync(evt, _shutdown.Token);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
                 {
                     // 订阅者响应了收工信号：不记错误，继续把队列里剩下的交给它。
                     _logger.LogDebug(
