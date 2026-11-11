@@ -19,8 +19,15 @@ public interface IEventHandler
     ValueTask HandleAsync(IdeaEvent evt, CancellationToken ct);
 }
 
-/// <summary>项目的对外快照：事件里只需要 id 与名字。</summary>
-public sealed record ProjectSnapshot(string Id, string Name);
+/// <summary>
+/// 项目的对外快照：id、名字与排序位置。
+/// </summary>
+/// <remarks>
+/// <c>SortOrder</c> 必须在快照里：<c>project.updated</c> 的 <c>changed</c> 含
+/// <c>sortOrder</c> 时，订阅端要拿到**新值**才能更新本地顺序，
+/// 缺了它就只能整表重拉。
+/// </remarks>
+public sealed record ProjectSnapshot(string Id, string Name, int SortOrder);
 
 /// <summary>
 /// 想法的对外快照：想法去掉 <c>DeletedAt</c>、标签转成字符串数组。
@@ -37,11 +44,24 @@ public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, st
 /// 客户端拿它当 <c>Last-Event-ID</c>，「我漏了哪些事件」靠字典序比较就能算出来。
 /// </para>
 /// <para>
-/// <see cref="Changed"/> 只列**真正改了**的字段名（如 <c>title</c>、<c>done</c>）；
-/// 该事件类型没有「改了什么」的概念时为 null；写了但值没变时是空数组。
+/// <see cref="Changed"/> 是**三态**，订阅端必须分别处理：
+/// <list type="bullet">
+/// <item><c>null</c>：该事件类型没有「改了什么」这个概念（如 <c>idea.created</c>），
+/// 订阅端按「整条对象是新数据」处理；</item>
+/// <item>空数组：写了但值没变（如 <c>Update</c> 传了同样的正文），
+/// 数据本身仍然是最新的，别把这次更新跳过；</item>
+/// <item>非空数组：真正改了的字段名（如 <c>title</c>、<c>done</c>），
+/// 订阅端可以只更新这些字段。</item>
+/// </list>
 /// </para>
 /// <para>
 /// <see cref="MergedFrom"/> 只在合并事件里有值：被硬删的源想法 id 列表。
+/// </para>
+/// <para>
+/// 重排（<c>project.updated</c>）的事件条数：<b>N = <c>sort_order</c> 值真的变了的项目数</b>，
+/// 不是请求里的 id 数。排序会重写全表的 <c>sort_order</c>（没被列出的接在后面），
+/// 只按请求里的 id 发事件的话，被挤到后面的项目位置变了却没人知道，
+/// 订阅端的列表顺序会错。每条事件的项目快照里带着该项目的**新** <c>sortOrder</c>。
 /// </para>
 /// </summary>
 public sealed record IdeaEvent(string Id, string Type, DateTimeOffset Timestamp,

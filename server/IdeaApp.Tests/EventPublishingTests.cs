@@ -246,6 +246,9 @@ public sealed class EventPublishingTests
         Assert.Equal(createdId, project.Id);
         Assert.Equal("新项目", project.Name);
 
+        // 快照里带着排序位置：订阅端据此摆项目，不用整表重拉。
+        Assert.Equal(1, project.SortOrder);
+
         Assert.Null(evt.Idea);
     }
 
@@ -271,6 +274,9 @@ public sealed class EventPublishingTests
         Assert.Equal(id, project.Id);
         Assert.Equal("新名字", project.Name);
 
+        // 改名不动排序位置。
+        Assert.Equal(1, project.SortOrder);
+
         Assert.Equal(new[] { "name" }, evt.Changed);
     }
 
@@ -295,6 +301,7 @@ public sealed class EventPublishingTests
         var project = Assert.IsType<ProjectSnapshot>(evt.Project);
         Assert.Equal(id, project.Id);
         Assert.Equal("要删的项目", project.Name);
+        Assert.Equal(1, project.SortOrder);
     }
 
     /// <summary>
@@ -408,6 +415,15 @@ public sealed class EventPublishingTests
         Assert.Contains(second, changed);
         Assert.Contains("inbox", changed);
         Assert.DoesNotContain(first, changed);
+
+        // 载荷里必须带**新的**位置：changed 说「顺序变了」，订阅端要靠这个值
+        // 更新本地顺序，缺了它就只能整表重拉。
+        var positions = publisher.Events.ToDictionary(
+            evt => Assert.IsType<ProjectSnapshot>(evt.Project).Id,
+            evt => Assert.IsType<ProjectSnapshot>(evt.Project).SortOrder);
+
+        Assert.Equal(0, positions[second]);
+        Assert.Equal(2, positions["inbox"]);
     }
 
     /// <summary>

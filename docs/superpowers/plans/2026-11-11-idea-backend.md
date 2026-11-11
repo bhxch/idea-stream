@@ -883,7 +883,7 @@ bash server/scripts/aot-smoke.sh
 
   > `ProjectService.Restore` 属于 Task 10（回收站），它的事件也在 Task 10 接。
 
-  **事件载荷**：`IdeaEvent.Idea` 是 `IdeaSnapshot`（`Idea` 去掉 `DeletedAt`、标签转 `string[]`），`Project` 是 `ProjectSnapshot`（只有 Id 与 Name）。
+  **事件载荷**：`IdeaEvent.Idea` 是 `IdeaSnapshot`（`Idea` 去掉 `DeletedAt`、标签转 `string[]`），`Project` 是 `ProjectSnapshot`（Id、Name 与 `SortOrder` —— 重排后订阅端要靠它更新本地顺序）。
 
   **DI**：组合根加 `builder.Services.AddSingleton<IEventPublisher>(sp => new EventBus(sp.GetServices<IEventHandler>(), sp.GetRequiredService<ILogger<EventBus>>()));`（`IEventHandler` 的实现 Task 9/14 才注册，此时通道数为 0，publish 是空操作 —— 这是对的）。
 

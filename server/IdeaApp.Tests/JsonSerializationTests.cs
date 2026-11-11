@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using IdeaApp.Contracts;
+using IdeaApp.Domain;
 
 namespace IdeaApp.Tests;
 
@@ -92,6 +93,24 @@ public sealed class JsonSerializationTests
         Assert.Contains("hasSecret", names);
         Assert.DoesNotContain("secret", names, StringComparer.OrdinalIgnoreCase);
         Assert.True(root.GetProperty("hasSecret").GetBoolean());
+    }
+
+    /// <summary>
+    /// 项目快照必须带 <c>sortOrder</c>：<c>project.updated</c> 说「顺序变了」，
+    /// 载荷里就得有**新值**，否则订阅端没法更新本地顺序（只能整表重拉）。
+    /// </summary>
+    [Fact]
+    public void ProjectSnapshot_serializes_sort_order_as_camel_case()
+    {
+        var snapshot = new ProjectSnapshot("0198f0a1b2c3d4e5f60718293a4b5c6d", "工作", 3);
+
+        var json = JsonSerializer.Serialize(snapshot, IdeaJsonContext.Default.ProjectSnapshot);
+
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        Assert.Equal("工作", root.GetProperty("name").GetString());
+        Assert.Equal(3, root.GetProperty("sortOrder").GetInt32());
     }
 
     /// <summary>

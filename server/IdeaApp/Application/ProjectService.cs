@@ -161,8 +161,8 @@ public sealed class ProjectService(ProjectRepository repo, IEventPublisher publi
         UpdatedAt: project.UpdatedAt);
 
     /// <summary>DTO → 事件载荷里的项目快照。</summary>
-    private static ProjectSnapshot ToSnapshot(ProjectDto dto) => new(dto.Id, dto.Name);
+    private static ProjectSnapshot ToSnapshot(ProjectDto dto) => new(dto.Id, dto.Name, dto.SortOrder);
 
     /// <summary>项目 → 事件载荷里的项目快照。</summary>
-    private static ProjectSnapshot ToSnapshot(Project project) => new(project.Id, project.Name);
+    private static ProjectSnapshot ToSnapshot(Project project) => new(project.Id, project.Name, project.SortOrder);
 }
