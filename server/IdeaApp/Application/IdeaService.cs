@@ -35,7 +35,7 @@ public sealed class IdeaService(IdeaRepository repo, ProjectRepository projects)
 
         var now = DateTimeOffset.UtcNow;
         var idea = new Idea(
-            Id: Guid.CreateVersion7().ToString("N"),
+            Id: MonotonicGuid.NewUuid7().ToString("N"),
             ProjectId: targetProjectId,
             Title: NormalizeTitle(title),
             Content: body,

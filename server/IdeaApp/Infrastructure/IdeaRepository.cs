@@ -85,10 +85,9 @@ public sealed class IdeaRepository(SqliteDatabase db)
     /// 后续加带条件的重载时，本方法即无参的那个。
     /// <para>
     /// 排序是全序：<c>updated_at</c> 相同时按 <c>id ASC</c> 兜底，同一批数据的顺序永远一致。
-    /// 注意 <c>id</c> 是 UUIDv7，而 .NET 的 <c>Guid.CreateVersion7()</c> 在**同一毫秒内**
-    /// 的随机位并不单调递增 —— 同毫秒内创建的多个想法，<c>id ASC</c> 与创建先后不完全一致。
-    /// 正常路径不受影响：<c>updated_at</c> 用 100ns 精度存储，两次独立写入几乎不可能打平，
-    /// 排序先由 <c>updated_at</c> 定；只有真正同一时刻的写入才会落到 <c>id</c> 兜底。
+    /// <c>id</c> 是自实现的**单调** UUIDv7（见 <see cref="Domain.MonotonicGuid"/>）——
+    /// 同一毫秒内生成的 id 严格递增，所以 <c>id ASC</c> 就是插入先后，
+    /// <c>updated_at</c> 打平时也不会出现顺序随机跳动。
     /// </para>
     /// </remarks>
     public IReadOnlyList<Idea> List()

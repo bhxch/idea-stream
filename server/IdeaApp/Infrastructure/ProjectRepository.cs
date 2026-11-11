@@ -43,10 +43,10 @@ public sealed class ProjectRepository(SqliteDatabase db)
         return reader.Read() ? Read(reader) : null;
     }
 
-    /// <summary>新建项目。id 用 UUIDv7（32 位无连字符小写 hex）。</summary>
+    /// <summary>新建项目。id 用单调 UUIDv7（32 位无连字符小写 hex）。</summary>
     public Project Insert(string name, int sortOrder)
     {
-        var id = Guid.CreateVersion7().ToString("N");
+        var id = MonotonicGuid.NewUuid7().ToString("N");
         var now = SqliteDatabase.FormatTimestamp(DateTimeOffset.UtcNow);
 
         using var connection = db.Open();
