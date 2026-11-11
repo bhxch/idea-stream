@@ -1161,7 +1161,8 @@ bash server/scripts/aot-smoke.sh
   - **模板校验要收紧（Task 11 复审带出来的）**：Task 11 只校验了「Body 模板是合法 JSON 文档」。Task 12 的渲染器只处理**字符串值节点**里的占位符 —— 所以保存时还要校验：**① 根节点必须是 JSON 对象**（`123`、`"x"`、`[1,2]` 都要拒绝）；**② 占位符只允许出现在字符串值节点里**（`{"{{x}}":1}` 这种把占位符写在 key 里的要拒绝）。否则炸点会推迟到渲染时才暴露。
   - `public static class TemplateRenderer`
     - `static void Validate(string jsonTemplate)` —— 模板形状校验：根必须是 JSON 对象 + 占位符只允许出现在字符串值节点内（key 里不许有）。**与 `RenderJson` 共用同一份解析逻辑**（`ParseTemplate`），不许两处各写一遍
-    - **输出路径固定走 `Utf8JsonWriter`，不要手写 JSON 文本。** 用 `Utf8JsonWriter(Indented = true)` 遍历 `JsonNode`：字符串按段写（`WriteStringValueSegment`，值用 `JsonEncodedText.Encode` 转义），数字/布尔/null 用 `GetValue<JsonElement>().WriteTo(writer)` —— 这样 `1.50`、`1e5` 这样的字面量原样保留，不会被改写成 `1.5`。输出与 `JsonNode.ToJsonString(WriteIndented)` **逐字节相同**，代码量约 45 行；手写 JSON 文本是这个 task 里最容易出细微错的部分（转义、缩进、数字字面量、空容器），不值得重造一遍 BCL。
+    - **输出路径固定走 `Utf8JsonWriter`，不要手写 JSON 文本。** 用 `Utf8JsonWriter(Indented = true)` 遍历 `JsonNode`：字符串按段写（`WriteStringValueSegment`）、数字/布尔/null 用 `GetValue<JsonElement>().WriteTo(writer)` —— 这样 `1.50`、`1e5` 这样的字面量原样保留，不会被改写成 `1.5`。输出与 `JsonNode.ToJsonString(WriteIndented)` **逐字节相同**，代码量约 45 行；手写 JSON 文本是这个 task 里最容易出细微错的部分（转义、缩进、数字字面量、空容器），不值得重造一遍 BCL。
+    - **⚠️ `WriteStringValueSegment` 自己就会转义**（用的就是默认编码器，与 `JsonEncodedText.Encode` 同一套）—— **不要再预先 `JsonEncodedText.Encode`**，那会转义两次（引号变成 `\\"`）。这条是实测出来的，不是推断。
     - `string RenderJson(string jsonTemplate, IReadOnlyDictionary<string, string?> values)` —— 解析 JSON 模板，对每个字符串值做占位符替换并按 JSON 字符串上下文转义，输出序列化后的 JSON（缩进 2 空格）
     - `string RenderPlain(string template, IReadOnlyDictionary<string, string?> values)` —— 纯文本替换，不转义
   - `public static class EventPlaceholders`：`IReadOnlyDictionary<string, string?> Build(IdeaEvent evt, string? publicBaseUrl)`
