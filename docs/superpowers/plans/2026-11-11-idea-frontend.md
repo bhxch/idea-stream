@@ -424,6 +424,11 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ### Task 8 (F8): 项目管理页
 
+> **F7 已建、F8 要沿用/可能要改的**：
+> - 主页面的项目导航已由 `ProjectSidebar`（宽屏）/ `ProjectTabs`（窄屏）承担，**header 里的项目下拉框已被移除**（F7 实施时删的，6 条既有用例改成点侧栏）。F8 若要把项目下拉加回来，先想清楚与侧栏的分工。
+> - 侧栏的「排序方式」按钮与**拖拽重排已接线**（F7 做的），F8 改 `ProjectSidebar` 时形态可能要换 —— 但**别把这两个功能弄丢**。
+> - `new-project` / `open-menu` 在主页面上目前只是跳 `/projects`（管理动作归 F8）。
+
 **Files:**
 - Create: `web/src/pages/ProjectsPage.vue`
 - Modify: `web/src/components/ProjectSidebar.vue`（排序方式切换下拉）
