@@ -3,6 +3,7 @@ using IdeaApp.Contracts;
 using IdeaApp.Domain;
 using IdeaApp.Endpoints;
 using IdeaApp.Infrastructure;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -102,6 +103,27 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<WebhookDeliveryWor
 builder.Services.AddSingleton<IEventHandler, WebhookEventHandler>();
 
 var app = builder.Build();
+
+// 反向代理头：nginx 会转发 X-Forwarded-Proto / X-Forwarded-For / X-Forwarded-Host 等
+// （spec §16.3）。不接这个中间件，应用不知道自己被 HTTPS 代理着
+//（Request.Scheme 永远是 http），生成的绝对链接与重定向都会指向 http。
+//
+// **必须显式点名要处理哪些头**：.NET 10 的 ForwardedHeadersOptions 默认值是
+// ForwardedHeaders.None —— 一个头都不处理，中间件等于没挂。实测（临时探针端点）：
+// 不显式点名时，带着 X-Forwarded-Proto: https 进来的请求，Request.Scheme 仍然是 http。
+//
+// 信任范围用默认值：只信任回环代理（KnownProxies=::1、KnownIPNetworks=127.0.0.0/8），
+// nginx 与应用同机时够用；nginx 在别的机器上必须显式加 KnownProxies
+// （spec §16.3 的注意事项）。
+//
+// 位置：Build 之后、其它中间件之前 —— 它要赶在路由与端点执行之前改写请求。
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders =
+        ForwardedHeaders.XForwardedFor |
+        ForwardedHeaders.XForwardedProto |
+        ForwardedHeaders.XForwardedHost
+});
 
 // 端点共用的异常包装需要日志器：未预期的异常只进日志，不进响应体。
 ApiResults.UseLogger(app.Logger);
