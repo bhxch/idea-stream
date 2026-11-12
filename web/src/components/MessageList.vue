@@ -15,14 +15,18 @@ defineProps<{
   busyIds: Set<string>;
   /** 当前是否贴着列表底部（滚动跟随用，F11 消费）。 */
   atBottom: boolean;
+  /** 标签补全（页面层提供：请求在页面层发）。 */
+  suggest: (prefix: string) => string[];
+  /** 保存正文（页面层提供）。 */
+  onSaveContent: (id: string, content: string) => Promise<boolean>;
+  /** 保存标签（页面层提供）。 */
+  onSaveTags: (id: string, tags: string[]) => Promise<boolean>;
 }>();
 
 const emit = defineEmits<{
   'toggle-select': [id: string];
   'toggle-done': [id: string];
-  'edit': [id: string];
   'delete': [id: string];
-  'edit-tags': [id: string];
 }>();
 </script>
 
@@ -39,11 +43,12 @@ const emit = defineEmits<{
       :idea="idea"
       :selected="selectedIds.has(idea.id)"
       :busy="busyIds.has(idea.id)"
+      :suggest="suggest"
+      :on-save-content="onSaveContent"
+      :on-save-tags="onSaveTags"
       @toggle-select="emit('toggle-select', $event)"
       @toggle-done="emit('toggle-done', $event)"
-      @edit="emit('edit', $event)"
       @delete="emit('delete', $event)"
-      @edit-tags="emit('edit-tags', $event)"
     />
   </div>
 </template>

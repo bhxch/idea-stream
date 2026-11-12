@@ -53,6 +53,9 @@ const projects: Project[] = [
 const ideaA: Idea = { ...idea, id: 'idea-a', projectId: 'project-2', content: '甲' };
 const ideaB: Idea = { ...idea, id: 'idea-b', projectId: 'project-2', content: '乙' };
 
+/** 有标题的想法：正文原样显示，改完能直接看到改了哪。 */
+const titledIdea: Idea = { ...idea, title: '标题', content: '原正文' };
+
 /**
  * 「命中数超过单次返回上限」的错误。
  *
@@ -385,6 +388,80 @@ describe('HomePage', () => {
 
     expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(false);
     expect(wrapper.get('button.done').text()).toBe('已完成');
+    wrapper.unmount();
+  });
+
+  it('编辑正文会 PATCH，并用返回的想法刷新本地', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([titledIdea]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    apiSend.mockImplementation((method: string) =>
+      method === 'PATCH'
+        ? Promise.resolve({ ...titledIdea, content: '改过的正文' })
+        : Promise.resolve({ ...titledIdea, done: true }),
+    );
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('.body').trigger('click');
+    const editor = wrapper.get('textarea.editor');
+    await editor.setValue('改过的正文');
+    await editor.trigger('keydown', { key: 'Enter', ctrlKey: true });
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('PATCH', '/ideas/idea-1', { content: '改过的正文' });
+    // 用后端返回的想法刷新本地（updatedAt 由后端给，前端不猜）。
+    expect(wrapper.get('.body').text()).toBe('改过的正文');
+    wrapper.unmount();
+  });
+
+  it('编辑标签会 PUT 覆盖式设置标签', async () => {
+    apiSend.mockImplementation((method: string) =>
+      method === 'PUT' ? Promise.resolve({ ...idea, tags: ['新标签'] }) : Promise.resolve({ ...idea, done: true }),
+    );
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('新标签');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('PUT', '/ideas/idea-1/tags', { tags: ['新标签'] });
+    expect(wrapper.get('.chip').text()).toBe('新标签');
+    wrapper.unmount();
+  });
+
+  it('删除要点二次确认，确认后 DELETE 并把条目移出列表', async () => {
+    apiSend.mockImplementation((method: string) =>
+      method === 'DELETE' ? Promise.resolve(undefined) : Promise.resolve({ ...idea, done: true }),
+    );
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('button.action--delete').trigger('click');
+    // 还没确认，不该发请求。
+    expect(apiSend).not.toHaveBeenCalled();
+
+    await wrapper.get('button.confirm__delete').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('DELETE', '/ideas/idea-1');
+    expect(wrapper.findAll('.idea')).toHaveLength(0);
     wrapper.unmount();
   });
 });

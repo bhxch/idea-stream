@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { ApiError, apiGet, apiSend } from '../api/client';
 import type { Idea, Project, Tag } from '../api/types';
 import Composer from '../components/Composer.vue';
@@ -8,7 +8,7 @@ import MessageList from '../components/MessageList.vue';
 import { showToast } from '../components/ToastHost.vue';
 import { useTagMode } from '../composables/useTagMode';
 import { matchesFilter, sortIdeas, type IdeaFilter } from '../lib/filter';
-import { applyLocalUpsert, ideas, loadIdeas, loading } from '../stores/ideas';
+import { applyLocalUpsert, ideas, loadIdeas, loading, removeLocal } from '../stores/ideas';
 import {
   currentProjectId,
   loadProjects,
@@ -39,12 +39,19 @@ const allTags = ref<Tag[]>([]);
 const selectedIds = ref<Set<string>>(new Set());
 
 /**
- * 正在切换完成态的条目 id（请求在飞）。
+ * 有请求在飞的条目 id。
  *
- * 请求在飞时按钮禁用、重复点击忽略：连点两次会拿同一个旧状态去提交，
- * 等于没切换 —— 用户以为 toggled 了，实际什么也没变。
+ * 切换完成态、保存正文、保存标签、删除共用这一套保护：
+ * 在飞时按钮禁用、重复点击忽略 —— 连点两次会拿同一个旧状态去提交，
+ * 等于没切换 —— 用户以为生效了，实际什么也没变。
  */
-const togglingIds = ref<Set<string>>(new Set());
+const busyIds = ref<Set<string>>(new Set());
+
+/** 标签补全缓存：前缀（小写）→ 候选标签。 */
+const suggestionCache = reactive<Record<string, string[]>>({});
+
+/** 已经发过补全请求的前缀（同一个前缀不重复发）。 */
+const requestedPrefixes = new Set<string>();
 
 /** 是否贴着列表底部（滚动跟随在 F11 接上）。 */
 const atBottom = ref(true);
@@ -121,6 +128,8 @@ async function switchProject(next: string | null): Promise<SwitchResult> {
     await loadIdeas(next);
     // 拉到新范围的数据了，之前勾的条目不再属于当前范围，这时才清空。
     selectedIds.value = new Set();
+    // 标签补全是按项目给的：换了项目，缓存里的候选就不作数了。
+    clearSuggestions();
     return { ok: true };
   } catch (error) {
     setCurrentProject(previous);
@@ -266,6 +275,20 @@ async function onSubmit(content: string): Promise<boolean> {
 }
 
 /**
+ * 标记一个条目「有请求在飞」，返回释放它的函数。
+ *
+ * 释放要重新赋值整个 Set：Vue 的 ref 靠引用变化才知道内容变了。
+ */
+function markBusy(id: string): () => void {
+  busyIds.value = new Set(busyIds.value).add(id);
+  return () => {
+    const next = new Set(busyIds.value);
+    next.delete(id);
+    busyIds.value = next;
+  };
+}
+
+/**
  * 切换完成态。
  *
  * 先落库再更新本地：接口返回的想法才是最新的（`updatedAt` 由后端给），
@@ -275,24 +298,134 @@ async function onSubmit(content: string): Promise<boolean> {
  * 算出同一个 `done` 值 —— 那不是「切换」，是把第一次的结果又发了一遍。
  */
 async function onToggleDone(id: string): Promise<void> {
-  if (togglingIds.value.has(id)) {
+  if (busyIds.value.has(id)) {
     return;
   }
   const idea = ideas.value.find((item) => item.id === id);
   if (!idea) {
     return;
   }
-  togglingIds.value = new Set(togglingIds.value).add(id);
+  const release = markBusy(id);
   try {
     const updated = await apiSend<Idea>('POST', `/ideas/${id}/complete`, { done: !idea.done });
     applyLocalUpsert(updated);
   } catch (error) {
     reportError(error, '更新完成状态失败');
   } finally {
-    const next = new Set(togglingIds.value);
-    next.delete(id);
-    togglingIds.value = next;
+    release();
   }
+}
+
+/**
+ * 保存正文。
+ *
+ * 用返回的想法覆盖本地（`updatedAt` 由后端给，本地不猜）。
+ *
+ * @returns true 表示存好了（编辑框据此退出编辑态），false 表示失败
+ *   （失败已弹提示，编辑框留着用户的草稿）。
+ */
+async function onSaveContent(id: string, content: string): Promise<boolean> {
+  if (busyIds.value.has(id)) {
+    return false;
+  }
+  const release = markBusy(id);
+  try {
+    const updated = await apiSend<Idea>('PATCH', `/ideas/${id}`, { content });
+    applyLocalUpsert(updated);
+    return true;
+  } catch (error) {
+    reportError(error, '保存失败');
+    return false;
+  } finally {
+    release();
+  }
+}
+
+/**
+ * 保存标签（覆盖式：给的就是全部标签）。
+ *
+ * @returns true 表示存好了，false 表示失败（失败已弹提示，编辑器留着草稿）。
+ */
+async function onSaveTags(id: string, tags: string[]): Promise<boolean> {
+  if (busyIds.value.has(id)) {
+    return false;
+  }
+  const release = markBusy(id);
+  try {
+    const updated = await apiSend<Idea>('PUT', `/ideas/${id}/tags`, { tags });
+    applyLocalUpsert(updated);
+    return true;
+  } catch (error) {
+    reportError(error, '保存标签失败');
+    return false;
+  } finally {
+    release();
+  }
+}
+
+/**
+ * 删除一条想法（进回收站）。
+ *
+ * 删除成功才把它从本地列表里去掉：失败时条目还在，用户还能重试。
+ */
+async function onDelete(id: string): Promise<void> {
+  if (busyIds.value.has(id)) {
+    return;
+  }
+  const release = markBusy(id);
+  try {
+    await apiSend<void>('DELETE', `/ideas/${id}`);
+    removeLocal(id);
+  } catch (error) {
+    reportError(error, '删除失败');
+  } finally {
+    release();
+  }
+}
+
+/**
+ * 标签补全：同步给当前已知的候选，同时在后台补一次请求。
+ *
+ * 补全结果是异步的（要发请求），而组件要的是同步的候选列表：
+ * 结果写进 `suggestionCache`（响应式），组件那边会跟着重画。
+ */
+function suggestTags(prefix: string): string[] {
+  const key = prefix.trim().toLowerCase();
+  if (!key) {
+    return [];
+  }
+  const cached = suggestionCache[key];
+  if (cached) {
+    return cached;
+  }
+  if (!requestedPrefixes.has(key)) {
+    requestedPrefixes.add(key);
+    void fetchSuggestions(key, prefix.trim());
+  }
+  return [];
+}
+
+/** 拉一次标签补全，结果写进缓存。 */
+async function fetchSuggestions(key: string, prefix: string): Promise<void> {
+  try {
+    const list = await apiGet<string[]>('/tags/suggest', {
+      projectId: currentProjectId.value ?? undefined,
+      prefix,
+    });
+    suggestionCache[key] = list;
+  } catch (error) {
+    // 取不到就当没有建议，并且允许下次重试。
+    requestedPrefixes.delete(key);
+    reportError(error, '获取标签建议失败');
+  }
+}
+
+/** 清掉标签补全缓存（换项目时调用：候选是按项目给的）。 */
+function clearSuggestions(): void {
+  for (const key of Object.keys(suggestionCache)) {
+    delete suggestionCache[key];
+  }
+  requestedPrefixes.clear();
 }
 
 /** 勾选/取消勾选一条想法。 */
@@ -333,10 +466,14 @@ onMounted(() => {
     <MessageList
       :ideas="visibleIdeas"
       :selected-ids="selectedIds"
-      :busy-ids="togglingIds"
+      :busy-ids="busyIds"
       :at-bottom="atBottom"
+      :suggest="suggestTags"
+      :on-save-content="onSaveContent"
+      :on-save-tags="onSaveTags"
       @toggle-select="onToggleSelect"
       @toggle-done="onToggleDone"
+      @delete="onDelete"
     />
 
     <Composer :on-submit="onSubmit" />
