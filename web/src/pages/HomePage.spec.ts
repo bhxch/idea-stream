@@ -580,7 +580,8 @@ describe('HomePage', () => {
     wrapper.unmount();
   });
 
-  it('删除要点二次确认，确认后 DELETE 并把条目移出列表', async () => {    apiSend.mockImplementation((method: string) =>
+  it('删除要点二次确认，确认后 DELETE 并把条目移出列表', async () => {
+    apiSend.mockImplementation((method: string) =>
       method === 'DELETE' ? Promise.resolve(undefined) : Promise.resolve({ ...idea, done: true }),
     );
 
