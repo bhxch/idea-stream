@@ -465,4 +465,13 @@ describe('MessageItem', () => {
     expect(onSaveTags).toHaveBeenCalledTimes(2);
     expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲']);
   });
+
+  it('删除的二次确认条在请求在飞时禁用（点了会被在飞保护挡下，用户只看到「没反应」）', async () => {
+    const wrapper = mountItem();
+
+    await wrapper.get('button.action--delete').trigger('click');
+    await wrapper.setProps({ busy: true });
+
+    expect((wrapper.get('button.confirm__delete').element as HTMLButtonElement).disabled).toBe(true);
+  });
 });

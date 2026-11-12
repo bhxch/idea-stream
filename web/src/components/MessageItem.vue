@@ -584,7 +584,11 @@ function confirmDelete(): void {
 
     <div v-if="confirmingDelete" class="confirm">
       <span class="confirm__text">删除这条？它会进回收站。</span>
-      <button class="action confirm__delete" type="button" @click="confirmDelete">确认删除</button>
+      <!-- 在飞时禁用：删除请求被在飞保护挡下的话，用户点了会「没反应」
+           （父组件的守卫是静默返回的）。按钮禁用本身就是可见反馈。 -->
+      <button class="action confirm__delete" type="button" :disabled="busy" @click="confirmDelete">
+        确认删除
+      </button>
       <button class="action confirm__cancel" type="button" @click="cancelDelete">取消</button>
     </div>
   </article>
