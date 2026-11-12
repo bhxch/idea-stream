@@ -74,15 +74,44 @@ export interface TrashEntry {
   idea: Idea | null;
 }
 
-/** SSE 推来的一条业务事件。 */
+/**
+ * 项目在事件里的快照。
+ *
+ * 与 {@link Project} **不是一回事**：快照只有 id、名字与排序位置，
+ * 没有想法计数、创建时间这些列表端点的字段。
+ *
+ * `sortOrder` 必须在快照里：项目重排（`project.updated`）时订阅端要拿到
+ * **新值**才能更新本地顺序，缺了它就只能整表重拉。
+ */
+export interface ProjectSnapshot {
+  id: string;
+  name: string;
+  sortOrder: number;
+}
+
+/**
+ * SSE 推来的一条业务事件。
+ *
+ * `changed` 与 `mergedFrom` 后端**恒定写出**（`JsonSourceGenerationOptions`
+ * 没设 `DefaultIgnoreCondition`，null 不会被省略），所以线上报文里这两个键
+ * 总是存在，值可能是 `null`。
+ *
+ * `changed` 是**三态**，三种都要分别处理：
+ * - `null`：该事件类型没有「改了什么」的概念（如 `idea.created`）——
+ *   判定要用 `changed === null`，**不是** `changed === undefined`；
+ * - 空数组：写了但值没变，数据本身仍然是最新的，别把这次更新跳过；
+ * - 非空数组：这次操作写过的字段名（如 `title`、`done`、`sortOrder`）。
+ *
+ * `mergedFrom` 只在合并事件里有值（被硬删的源想法 id 列表），其余事件是 `null`。
+ */
 export interface IdeaEvent {
   id: string;
   type: string;
   timestamp: string;
-  project: { id: string; name: string } | null;
+  project: ProjectSnapshot | null;
   idea: Idea | null;
-  changed?: string[];
-  mergedFrom?: string[];
+  changed?: string[] | null;
+  mergedFrom?: string[] | null;
 }
 
 /**

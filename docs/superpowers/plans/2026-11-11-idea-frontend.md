@@ -35,7 +35,7 @@
 - **`timestamp` 是 `+00:00` 结尾**（STJ 默认 `DateTimeOffset` 格式），**不是 `Z`** —— `Z` 是后端存库用的格式，两者不同。
 - **`resync` 是控制帧**：没有 `id:` 行、`data` 是 `{}`。**两种场合服务端会发它**：① 重连时 `Last-Event-ID` 在缓冲里找不到；② 某个订阅者太慢、它的通道被挤掉了一条事件（保持连接的客户端无法自行检出间隙 → 会静默空洞）。**收到 `resync` 就重新拉取当前列表。**
 - **`Changed`（`changed` 字段）的语义**：后端**恒定写出这个键**（`JsonSourceGenerationOptions` 没设 `DefaultIgnoreCondition`，null 不会被省略），所以它的值是三态：`null` = 该事件类型没有「改了什么」的概念（如 `idea.created`）；空数组 = 写了但值没变；非空数组 = 该操作写过的字段名。**注意三种口径不同**：`idea.updated`（Update）只列真正变了的字段；`SetTags`/`SetDone`（含批量）**一律**列该字段；项目改名一律列 `name`；**重排的 `["sortOrder"]` 是有条件列的**（只在 `sort_order` 真变时发）。
-  → **不要按「`changed` 里有该字段 = 值真变了」写逻辑**；判定三态用 `changed === null` / `changed.length === 0` / 其它，**不是 `undefined`**（TS 类型是 `string[] | null`）。`mergedFrom` 同理（恒存在、可能为 null）。
+  → **不要按「`changed` 里有该字段 = 值真变了」写逻辑**；判定三态用 `changed === null` / `changed.length === 0` / 其它，**不是 `undefined`**（TS 类型是 `changed?: string[] | null` —— 属性标了 `?` 是为了本地造事件方便，线上永远是 `null` / 空数组 / 非空数组，**没有 `undefined`**）。`mergedFrom` 同理（恒存在、可能为 null）。事件里的项目快照是 `ProjectSnapshot { id, name, sortOrder }`，**带 `sortOrder`**（重排时靠它更新本地顺序，别去整表重拉）。
 - **重排的事件条数** = `sort_order` 值**真的变了**的项目数，**不是**请求里的 id 数（后端会重写全表 `sort_order`，但只有活跃项目的变化产生事件）。
 - **`project.updated` 的 `changed` 可能有第五种取值 `["deletedAt"]`** —— 项目从回收站恢复时发的，前端要认识它。
 - **切换排序方式（recent → manual）会发一批 `project.updated`（`changed=["sortOrder"]`）** —— 因为初始化把全表 `sort_order` 重写了一遍。客户端按 sortOrder 重排看到的顺序与切换前一致（不跳位），但这是一次设置操作引发 N 条业务事件，前端要能承受。
@@ -144,9 +144,10 @@ web/
       lastError: string | null; createdAt: string; updatedAt: string; }
     export interface TrashEntry { kind: 'project'|'idea'; project: Project | null;
       ideas: Idea[]; idea: Idea | null; }
+    export interface ProjectSnapshot { id: string; name: string; sortOrder: number; }
     export interface IdeaEvent { id: string; type: string; timestamp: string;
-      project: { id: string; name: string } | null;
-      idea: Idea | null; changed?: string[]; mergedFrom?: string[]; }
+      project: ProjectSnapshot | null;
+      idea: Idea | null; changed?: string[] | null; mergedFrom?: string[] | null; }
     export interface ApiProblem { title: string; status: number; detail?: string;
       code?: string; }
     ```
