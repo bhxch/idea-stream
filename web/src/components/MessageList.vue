@@ -16,6 +16,12 @@ defineProps<{
   busyIds: Set<string>;
   /** 当前是否贴着列表底部（滚动跟随用，F11 消费）。 */
   atBottom: boolean;
+  /**
+   * 要高亮的条目 id（深链定位或合并结果定位）。
+   *
+   * `null` = 不高亮任何条目。
+   */
+  highlightId?: string | null;
   /** 标签补全（页面层提供：请求在页面层发）。 */
   suggest: (prefix: string) => string[];
   /** 保存正文（页面层提供）。 */
@@ -44,6 +50,7 @@ const emit = defineEmits<{
       :idea="idea"
       :selected="selectedIds.has(idea.id)"
       :busy="busyIds.has(idea.id)"
+      :highlight="idea.id === highlightId"
       :suggest="suggest"
       :on-save-content="onSaveContent"
       :on-save-tags="onSaveTags"

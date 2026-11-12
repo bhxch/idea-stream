@@ -1,8 +1,38 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import App from './App.vue';
 import { router } from './router';
 import HomePage from './pages/HomePage.vue';
+
+/**
+ * 假的 `EventSource`。
+ *
+ * jsdom 不提供 `EventSource`，首页挂上后就会连事件流 —— 这里给个空壳，
+ * 让挂载不至于抛错（事件流本身在 `api/events.spec.ts` 里测）。
+ */
+class FakeEventSource {
+  readonly url: string;
+  onopen: ((ev: Event) => void) | null = null;
+  onerror: ((ev: Event) => void) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+  }
+
+  addEventListener(): void {}
+
+  removeEventListener(): void {}
+
+  close(): void {}
+}
+
+beforeEach(() => {
+  vi.stubGlobal('EventSource', FakeEventSource);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('应用骨架', () => {
   it('App 挂载后渲染出当前路由的页面', async () => {

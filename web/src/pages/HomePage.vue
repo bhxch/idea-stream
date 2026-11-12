@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { ApiError, apiGet, apiSend } from '../api/client';
-import type { Idea, Project, Tag } from '../api/types';
+import { connectEvents, type EventStream } from '../api/events';
+import type { Idea, IdeaEvent, Project, Tag } from '../api/types';
 import BatchBar from '../components/BatchBar.vue';
 import Composer from '../components/Composer.vue';
 import FilterBar from '../components/FilterBar.vue';
@@ -11,8 +12,10 @@ import MessageList from '../components/MessageList.vue';
 import ProjectSidebar from '../components/ProjectSidebar.vue';
 import ProjectTabs from '../components/ProjectTabs.vue';
 import { showToast } from '../components/ToastHost.vue';
+import { useScrollFollow } from '../composables/useScrollFollow';
 import { useTagMode } from '../composables/useTagMode';
 import { matchesFilter, sortIdeas, type IdeaFilter } from '../lib/filter';
+import { applyEvent, applyResync, findAnchorIndex } from '../lib/merge';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
 import {
   applyLocalUpsert,
@@ -40,8 +43,11 @@ import type { ProjectSortMode } from '../stores/projects';
  */
 const { tagMode, setTagMode } = useTagMode();
 
-/** 路由（项目管理的入口要用它跳转）。 */
+/** 路由（项目管理的入口要用它跳转，深链也从这儿读）。 */
 const router = useRouter();
+
+/** 当前路由（深链 `?idea=<id>` 从 query 里读）。 */
+const route = useRoute();
 
 /** 过滤条件。项目、状态、标签三者取交集。 */
 const filter = ref<IdeaFilter>({
@@ -69,6 +75,10 @@ const batchBusy = ref(false);
  * 切换完成态、保存正文、保存标签、删除共用这一套保护：
  * 在飞时按钮禁用、重复点击忽略 —— 连点两次会拿同一个旧状态去提交，
  * 等于没切换 —— 用户以为生效了，实际什么也没变。
+ *
+ * ⚠️ 每次增删都**必须造一个全新的 Set**（见 {@link markBusy}）：
+ * Vue 的响应式 Set 只追踪 `has`，不追踪 `add`/`delete` ——
+ * 原地改的话整条在飞保护会静默失效（按钮不禁用、补存不再重入队）。
  */
 const busyIds = ref<Set<string>>(new Set());
 
@@ -78,8 +88,27 @@ const suggestionCache = reactive<Record<string, string[]>>({});
 /** 已经发过补全请求的前缀（同一个前缀不重复发）。 */
 const requestedPrefixes = new Set<string>();
 
-/** 是否贴着列表底部（滚动跟随在 F11 接上）。 */
-const atBottom = ref(true);
+/** 消息流的滚动容器（滚动跟随与深链定位都指着它）。 */
+const scrollContainer = ref<HTMLElement | null>(null);
+
+/**
+ * 滚动跟随：贴底时新内容自动跟到底，用户往上翻看时不抢滚动。
+ */
+const { atBottom, onNewContent, scrollToBottom, pendingCount } = useScrollFollow(scrollContainer);
+
+/** 要高亮的条目 id（深链定位或合并结果）。 */
+const highlightedId = ref<string | null>(null);
+
+/** 高亮多久之后去掉（毫秒）。 */
+const HIGHLIGHT_MS = 1500;
+
+/**
+ * 已经定位过的条目 id：同一条不重复定位。
+ *
+ * `focusIdeaId` 不会自动复位（合并之后一直记着新条目的 id），
+ * 所以这里自己记一份「定位过了」，列表再变也不会反复滚过去。
+ */
+let locatedId: string | null = null;
 
 /** 真正生效的过滤条件：模式以 localStorage 里的为准。 */
 const activeFilter = computed<IdeaFilter>(() => ({ ...filter.value, tagMode: tagMode.value }));
@@ -127,6 +156,11 @@ async function init(): Promise<void> {
   if (!result.ok) {
     await handleIdeasError(result.error, currentProjectId.value);
   }
+
+  // 打开页面就看到最新的一条（列表是从上往下长的，底部才是当下）。
+  // 等一拍再滚：内容这时才刚进 DOM。
+  await nextTick();
+  scrollToBottom();
 }
 
 /** 拉取全部标签。 */
@@ -150,7 +184,7 @@ async function switchProject(next: string | null): Promise<SwitchResult> {
   setCurrentProject(next);
   filter.value = { ...filter.value, projectId: next };
   try {
-    await loadIdeas(next);
+    await reloadList(() => loadIdeas(next));
     // 拉到新范围的数据了，之前勾的条目不再属于当前范围，这时才清空。
     selectedIds.value = new Set();
     // 标签补全是按项目给的：换了项目，缓存里的候选就不作数了。
@@ -331,7 +365,12 @@ async function onSubmit(content: string): Promise<boolean> {
       title: null,
       tags: [],
     });
+    const before = visibleIdeas.value.length;
     applyLocalUpsert(created);
+    if (visibleIdeas.value.length > before) {
+      // 自己刚记的那条：贴底就跟着滚（不然它落在屏幕外），没贴底就只记一笔。
+      onNewContent();
+    }
     return true;
   } catch (error) {
     reportError(error, '保存失败');
@@ -631,8 +670,241 @@ function onClearSelection(): void {
   selectedIds.value = new Set();
 }
 
+/* ------------------------------------------------------------------ *
+ * SSE：别的设备改了东西，这里同步过来
+ * ------------------------------------------------------------------ */
+
+/** 事件流连接（页面活着的时候一直在）。 */
+let stream: EventStream | null = null;
+
+/**
+ * 列表正在被整表替换（首屏、切项目、resync）。
+ *
+ * 替换的这段时间里可能又来了事件 —— 整表替换会把它们抹掉
+ * （服务端给的是它读库那一刻的快照），所以先攒着，替换完再补回去。
+ */
+let reloading = false;
+
+/** 整表替换期间攒着的事件。 */
+const queuedEvents: IdeaEvent[] = [];
+
+/**
+ * 把一条事件合并进列表。
+ *
+ * 想法事件走 {@link applyEvent}（按当前过滤条件决定显不显示）；
+ * 项目事件归项目列表管（这里只更新项目，不动想法）。
+ */
+function applyEventToList(event: IdeaEvent): void {
+  if (event.type.startsWith('project.')) {
+    void onProjectEvent(event);
+    return;
+  }
+  // 想法变了，它所属项目的条数也跟着变：事件快照里没有条数，只能自己加减。
+  adjustProjectCount(event.project?.id, countDelta(event));
+  const before = visibleIdeas.value.length;
+  ideas.value = applyEvent(ideas.value, event, activeFilter.value);
+  if (visibleIdeas.value.length > before) {
+    // 有新条目进来了：贴底就跟着滚，没贴底就只记一笔（「↓ 有 N 条新内容」）。
+    onNewContent();
+  }
+}
+
+/**
+ * 一条想法事件让项目条数变了多少。
+ *
+ * 合并事件：源条目被**硬删**了（-N），合并出来的是新的一条（+1）。
+ */
+function countDelta(event: IdeaEvent): number {
+  switch (event.type) {
+    case 'idea.created':
+    case 'idea.restored':
+      return 1;
+    case 'idea.deleted':
+      return -1;
+    case 'idea.merged':
+      return 1 - (event.mergedFrom?.length ?? 0);
+    default:
+      return 0;
+  }
+}
+
+/**
+ * 把某个项目的条数调一调（想法增删时用）。
+ *
+ * 项目的条数与最近活动时间只有列表端点给，事件快照里没有 ——
+ * 只能按事件自己加减。
+ */
+function adjustProjectCount(projectId: string | undefined, delta: number): void {
+  if (!projectId || delta === 0) {
+    return;
+  }
+  const index = projects.value.findIndex((project) => project.id === projectId);
+  if (index < 0) {
+    return;
+  }
+  const next = [...projects.value];
+  const count = Math.max(0, next[index].ideaCount + delta);
+  next[index] = { ...next[index], ideaCount: count };
+  projects.value = next;
+}
+
+/** 收到一条业务事件。 */
+function onEvent(event: IdeaEvent): void {
+  if (reloading) {
+    // 列表马上要被整表换掉：先攒着，换完再补（不然这条变更就丢了）。
+    queuedEvents.push(event);
+    return;
+  }
+  applyEventToList(event);
+}
+
+/**
+ * 整表重拉列表。
+ *
+ * 重拉期间来的事件不能丢：整表替换会把它们抹掉，所以替换完再补回去。
+ *
+ * @param load 真正去拉列表的活（首屏、切项目、resync 各带自己的参数）
+ */
+async function reloadList(load: () => Promise<void>): Promise<void> {
+  reloading = true;
+  try {
+    await load();
+  } finally {
+    reloading = false;
+    // 补回刚才攒着的事件：一条都不丢。
+    const queued = queuedEvents.splice(0);
+    for (const event of queued) {
+      applyEventToList(event);
+    }
+  }
+}
+
+/**
+ * 项目事件：改名、重排、新建、删除。
+ *
+ * 快照里只有 id、名字与排序位置（没有想法计数与最近活动时间），
+ * 所以能就地更新的就地更新，剩下的重新拉一次项目列表。
+ */
+async function onProjectEvent(event: IdeaEvent): Promise<void> {
+  const snapshot = event.project;
+  if (!snapshot) {
+    return;
+  }
+  if (event.type === 'project.deleted') {
+    // 项目进回收站了：它下面的想法也进回收站（后端会另外发 idea.deleted）。
+    projects.value = projects.value.filter((project) => project.id !== snapshot.id);
+    if (currentProjectId.value === snapshot.id) {
+      // 当前就在这个项目里：切回「全部项目」，范围变了要重新拉列表。
+      await switchProject(null);
+    }
+    return;
+  }
+  const index = projects.value.findIndex((project) => project.id === snapshot.id);
+  if (index < 0) {
+    // 本地没有这个项目（新建的，或从回收站恢复的）：拉一次完整的列表。
+    await loadProjects();
+    return;
+  }
+  // 就地更新：名字与排序位置快照里都有。
+  const next = [...projects.value];
+  next[index] = { ...next[index], name: snapshot.name, sortOrder: snapshot.sortOrder };
+  projects.value =
+    projectSortMode.value === 'manual'
+      ? // 手动排序：顺序就是 sortOrder 排的。
+        [...next].sort((left, right) => left.sortOrder - right.sortOrder)
+      : // 最近活动排序：快照里没有最近活动时间，排不了，保持原位。
+        next;
+}
+
+/**
+ * 服务端说「你可能漏了事件」：整表重拉一次。
+ *
+ * 重拉之后**不动滚动位置** —— 用户翻到哪儿还是哪儿。
+ */
+async function onResync(): Promise<void> {
+  try {
+    await reloadList(async () => {
+      const fresh = await apiGet<Idea[]>('/ideas', { projectId: currentProjectId.value ?? undefined });
+      ideas.value = applyResync(ideas.value, fresh);
+    });
+    // 项目条数是按事件加减的，漏过事件就会漂：顺带拉一次项目列表校准。
+    await loadProjects();
+  } catch (error) {
+    reportError(error, '刷新列表失败');
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 深链定位：`?idea=<id>` 打开后滚到那条并高亮
+ * ------------------------------------------------------------------ */
+
+/** 深链参数里的条目 id。 */
+function deepLinkId(): string | null {
+  const value = route.query.idea;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/** 在滚动容器里找到那条想法的 DOM 元素。 */
+function findIdeaElement(id: string): HTMLElement | null {
+  const container = scrollContainer.value;
+  if (!container) {
+    return null;
+  }
+  // 不用选择器拼 id（深链里的 id 是用户可控的，拼进选择器可能抛异常）：
+  // 直接比属性值。
+  for (const element of container.querySelectorAll<HTMLElement>('[data-idea-id]')) {
+    if (element.dataset.ideaId === id) {
+      return element;
+    }
+  }
+  return null;
+}
+
+/** 滚到那条想法并高亮它。 */
+function scrollToIdea(id: string): void {
+  highlightedId.value = id;
+  findIdeaElement(id)?.scrollIntoView?.({ block: 'center' });
+  window.setTimeout(() => {
+    if (highlightedId.value === id) {
+      highlightedId.value = null;
+    }
+  }, HIGHLIGHT_MS);
+}
+
+/**
+ * 定位要滚动过去的那条：合并出来的新条目优先，其次是深链。
+ *
+ * 找不到就**静默忽略**：那条可能已经被删了，或者被当前过滤条件挡住了 ——
+ * 不报错、不白屏（深链是别人发过来的链接，不该因此把页面搞坏）。
+ */
+function locateAnchor(): void {
+  for (const id of [focusIdeaId.value, deepLinkId()]) {
+    if (!id || id === locatedId) {
+      continue;
+    }
+    if (findAnchorIndex(visibleIdeas.value, id) < 0) {
+      continue;
+    }
+    locatedId = id;
+    scrollToIdea(id);
+    return;
+  }
+}
+
+// 列表变了就重新看一眼要不要定位（深链要等列表加载完才知道那条在不在）。
+watch([focusIdeaId, visibleIdeas], () => {
+  locateAnchor();
+});
+
 onMounted(() => {
   void init();
+  stream = connectEvents({ onEvent, onResync });
+});
+
+onBeforeUnmount(() => {
+  // 离开页面就把连接关了：不然事件流会一直往一个没人看的页面上推。
+  stream?.close();
+  stream = null;
 });
 </script>
 
@@ -675,7 +947,7 @@ onMounted(() => {
       </div>
 
       <div class="home__body">
-        <div class="home__scroll">
+        <div ref="scrollContainer" class="home__scroll">
           <p v-if="loading" class="hint">加载中…</p>
 
           <MessageList
@@ -683,6 +955,7 @@ onMounted(() => {
             :selected-ids="selectedIds"
             :busy-ids="busyIds"
             :at-bottom="atBottom"
+            :highlight-id="highlightedId"
             :suggest="suggestTags"
             :on-save-content="onSaveContent"
             :on-save-tags="onSaveTags"
@@ -691,6 +964,18 @@ onMounted(() => {
             @delete="onDelete"
           />
         </div>
+
+        <!--
+          用户往上翻看时来了新内容：不能抢滚动，但要告诉他有几条新的。
+        -->
+        <button
+          v-if="pendingCount > 0"
+          class="new-content"
+          type="button"
+          @click="scrollToBottom"
+        >
+          ↓ 有 {{ pendingCount }} 条新内容
+        </button>
 
         <!--
           批量操作条**随内容流**排（不 fixed）：固定在底部会盖住下面的输入框，
@@ -780,6 +1065,7 @@ onMounted(() => {
 
 .home__body {
   order: 3;
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -792,6 +1078,21 @@ onMounted(() => {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* 「↓ 有 N 条新内容」：浮在消息流底部，不抢滚动。 */
+.new-content {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  z-index: 6;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-color: var(--accent);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 /* 输入框永远在最下面（宽屏也在下面，与窄屏一致）。 */
@@ -809,6 +1110,8 @@ onMounted(() => {
   .home {
     flex-direction: column;
     gap: 10px;
+    /* 竖着排的时候 justify-content 管的是竖直方向：内容要从上往下排。 */
+    justify-content: flex-start;
     padding: 12px;
   }
 

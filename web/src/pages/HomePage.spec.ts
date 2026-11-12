@@ -1,13 +1,63 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { config, flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import { ApiError } from '../api/client';
-import type { Idea, Project } from '../api/types';
+import type { Idea, IdeaEvent, Project } from '../api/types';
 import MessageList from '../components/MessageList.vue';
 import ToastHost from '../components/ToastHost.vue';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
 import { focusIdeaId } from '../stores/ideas';
 import { currentProjectId } from '../stores/projects';
+
+/**
+ * 假的 `EventSource`。
+ *
+ * jsdom 不提供 `EventSource`（只有真实浏览器有），所以这里造一个替身：
+ * 记下每个实例、记下注册的监听器，并让测试手动送事件帧。
+ */
+class FakeEventSource {
+  /** 按创建顺序记录所有实例。 */
+  static instances: FakeEventSource[] = [];
+
+  readonly url: string;
+  readonly withCredentials: boolean;
+
+  readyState = 0;
+  closed = false;
+  onopen: ((ev: Event) => void) | null = null;
+  onerror: ((ev: Event) => void) | null = null;
+
+  private readonly listeners = new Map<string, Set<(ev: Event) => void>>();
+
+  constructor(url: string, init?: EventSourceInit) {
+    this.url = url;
+    this.withCredentials = init?.withCredentials ?? false;
+    FakeEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: (ev: Event) => void): void {
+    const set = this.listeners.get(type) ?? new Set<(ev: Event) => void>();
+    set.add(listener);
+    this.listeners.set(type, set);
+  }
+
+  removeEventListener(type: string, listener: (ev: Event) => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  close(): void {
+    this.closed = true;
+    this.readyState = 2;
+  }
+
+  /** 手动送一帧事件。 */
+  emit(type: string, data: unknown, lastEventId = ''): void {
+    const ev = new MessageEvent(type, { data: JSON.stringify(data), lastEventId });
+    for (const listener of [...(this.listeners.get(type) ?? [])]) {
+      listener(ev);
+    }
+  }
+}
 
 const { apiGet, apiSend } = vi.hoisted(() => ({ apiGet: vi.fn(), apiSend: vi.fn() }));
 
@@ -81,6 +131,8 @@ let router: Router;
 beforeEach(async () => {
   apiGet.mockReset();
   apiSend.mockReset();
+  FakeEventSource.instances = [];
+  vi.stubGlobal('EventSource', FakeEventSource);
   currentProjectId.value = null;
   focusIdeaId.value = null;
   apiGet.mockImplementation((path: string) => {
@@ -109,6 +161,10 @@ beforeEach(async () => {
   config.global.plugins = [router];
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 /**
  * 点侧栏里的某个项目（`null` 表示「全部项目」）。
  *
@@ -125,6 +181,32 @@ function activeProject(wrapper: VueWrapper): string | null {
   expect(active).toHaveLength(1);
   const id = active[0].attributes('data-project-id');
   return id === 'all' ? null : (id ?? null);
+}
+
+/** 造一条合法的事件载荷。 */
+function makeEvent(type: string, overrides: Partial<IdeaEvent> = {}): IdeaEvent {
+  return {
+    id: 'event-1',
+    type,
+    timestamp: '2026-11-12T00:00:00Z',
+    project: null,
+    idea: null,
+    changed: null,
+    mergedFrom: null,
+    ...overrides,
+  };
+}
+
+/**
+ * 把消息流容器伪造成「能滚动」的样子。
+ *
+ * jsdom 不做布局：scrollHeight/clientHeight 永远是 0，
+ * 滚动跟随会以为一直贴着底部。这里自己钉上这几个属性。
+ */
+function makeScrollable(element: HTMLElement, scrollTop: number): void {
+  Object.defineProperty(element, 'scrollHeight', { value: 1000, configurable: true });
+  Object.defineProperty(element, 'clientHeight', { value: 400, configurable: true });
+  Object.defineProperty(element, 'scrollTop', { value: scrollTop, writable: true, configurable: true });
 }
 
 describe('HomePage', () => {
@@ -945,5 +1027,187 @@ describe('HomePage', () => {
       content: '甲\n\n乙',
     });
     wrapper.unmount();
+  });
+
+  it('收到 idea.created 事件会把新条目插进列表', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    const created: Idea = {
+      ...idea,
+      id: 'idea-new',
+      content: '别处记的',
+      updatedAt: '2026-11-12T10:00:00Z',
+    };
+    FakeEventSource.instances[0].emit('idea.created', makeEvent('idea.created', { idea: created }), 'e1');
+    await flushPromises();
+
+    expect(wrapper.findAll('.idea')).toHaveLength(2);
+    expect(wrapper.get('.list').text()).toContain('别处记的');
+    wrapper.unmount();
+  });
+
+  it('收到 idea.updated 事件会就地改写列表里的那条', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // 这条没有标题，正文首行当视觉标题 —— 所以断言标题那一行。
+    const updated: Idea = { ...idea, content: '改过的正文' };
+    FakeEventSource.instances[0].emit('idea.updated', makeEvent('idea.updated', { idea: updated }), 'e1');
+    await flushPromises();
+
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+    expect(wrapper.get('.title').text()).toBe('改过的正文');
+    wrapper.unmount();
+  });
+
+  it('收到 idea.created 事件会把项目的条数加上（侧栏里的条数不能是旧的）', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // 「老项目」条数是 1。
+    expect(wrapper.get('.project-sidebar [data-project-id="project-1"] .project-sidebar__count').text()).toBe(
+      '1',
+    );
+
+    const created: Idea = {
+      ...idea,
+      id: 'idea-new',
+      content: '别处记的',
+      updatedAt: '2026-11-12T10:00:00Z',
+    };
+    FakeEventSource.instances[0].emit(
+      'idea.created',
+      makeEvent('idea.created', {
+        idea: created,
+        project: { id: 'project-1', name: '老项目', sortOrder: 0 },
+      }),
+      'e1',
+    );
+    await flushPromises();
+
+    expect(wrapper.get('.project-sidebar [data-project-id="project-1"] .project-sidebar__count').text()).toBe(
+      '2',
+    );
+    wrapper.unmount();
+  });
+
+  it('收到 resync 会重新拉一次列表（整表替换）', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+    const before = apiGet.mock.calls.filter((call) => call[0] === '/ideas').length;
+
+    FakeEventSource.instances[0].emit('resync', {});
+    await flushPromises();
+
+    expect(apiGet.mock.calls.filter((call) => call[0] === '/ideas').length).toBe(before + 1);
+    wrapper.unmount();
+  });
+
+  it('用户往上翻看时来了新内容：不抢滚动，只加计数', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // 用户翻到了上面（不是贴着底部）。
+    const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+    makeScrollable(scroller, 0);
+    scroller.dispatchEvent(new Event('scroll'));
+
+    const created: Idea = {
+      ...idea,
+      id: 'idea-new',
+      content: '别处记的',
+      updatedAt: '2026-11-12T10:00:00Z',
+    };
+    FakeEventSource.instances[0].emit('idea.created', makeEvent('idea.created', { idea: created }), 'e1');
+    await flushPromises();
+
+    // 滚动位置没被动。
+    expect(scroller.scrollTop).toBe(0);
+    // 但告诉用户有几条新的。
+    expect(wrapper.get('.new-content').text()).toContain('有 1 条新内容');
+    wrapper.unmount();
+  });
+
+  it('整表重拉列表期间来的事件不会丢（替换完补回去）', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // 让下一次拉列表卡住，好在它卡着的时候送一条事件。
+    let release: ((value: Idea[]) => void) | undefined;
+    apiGet.mockImplementation((path: string) => {
+      if (path === '/ideas') {
+        return new Promise<Idea[]>((resolve) => {
+          release = resolve;
+        });
+      }
+      if (path === '/projects') {
+        return Promise.resolve(projects);
+      }
+      if (path === '/settings') {
+        return Promise.resolve({});
+      }
+      return Promise.resolve([]);
+    });
+
+    // 切项目 → 触发一次整表重拉。
+    await selectProject(wrapper, 'project-1');
+
+    // 重拉还没回来，这时来了一条新想法。
+    const created: Idea = {
+      ...idea,
+      id: 'idea-new',
+      content: '别处记的',
+      updatedAt: '2026-11-12T10:00:00Z',
+    };
+    FakeEventSource.instances[0].emit('idea.created', makeEvent('idea.created', { idea: created }), 'e1');
+
+    // 重拉的响应回来了（只有原来那条）。
+    release?.([idea]);
+    await flushPromises();
+
+    // 整表替换把事件抹掉了，但它被补回去了 —— 新条目还在列表里。
+    expect(wrapper.findAll('.idea')).toHaveLength(2);
+    expect(wrapper.get('.list').text()).toContain('别处记的');
+    wrapper.unmount();
+  });
+
+  it('深链 ?idea=<id> 打开后定位到那条并高亮', async () => {
+    await router.push('/?idea=idea-1');
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    expect(wrapper.get('.idea').classes()).toContain('highlight');
+    wrapper.unmount();
+  });
+
+  it('深链里的 id 不在列表里时静默忽略（不报错、不白屏）', async () => {
+    await router.push('/?idea=idea-nope');
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+    expect(wrapper.find('.idea.highlight').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('高亮 1.5 秒后自己撤掉', async () => {
+    vi.useFakeTimers();
+    try {
+      await router.push('/?idea=idea-1');
+      const wrapper = mount(HomePage);
+      await flushPromises();
+      expect(wrapper.get('.idea').classes()).toContain('highlight');
+
+      vi.advanceTimersByTime(1500);
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.get('.idea').classes()).not.toContain('highlight');
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

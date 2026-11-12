@@ -16,6 +16,12 @@ const props = defineProps<{
    * 在飞时禁用按钮：连点两次会拿同一个旧状态去提交，等于没切换。
    */
   busy?: boolean;
+  /**
+   * 这一条要不要高亮（深链定位、合并结果定位）。
+   *
+   * 高亮由页面层控制时长：定位完 1.5 秒就把这个标志撤掉。
+   */
+  highlight?: boolean;
   /** 标签补全：父组件提供（请求在页面层发，组件不碰网络）。 */
   suggest: (prefix: string) => string[];
   /**
@@ -532,7 +538,11 @@ function confirmDelete(): void {
 </script>
 
 <template>
-  <article class="idea" :class="{ 'idea--done': idea.done, 'idea--selected': selected }">
+  <article
+    class="idea"
+    :class="{ 'idea--done': idea.done, 'idea--selected': selected, highlight }"
+    :data-idea-id="idea.id"
+  >
     <div class="head">
       <input
         class="select"
@@ -620,6 +630,25 @@ function confirmDelete(): void {
 
 .idea--selected {
   border-color: var(--accent);
+}
+
+/*
+ * 深链定位后的高亮：闪一下，告诉用户「找的就是这条」。
+ * 页面层 1.5 秒后把这个类撤掉。
+ */
+.idea.highlight {
+  border-color: var(--accent);
+  animation: idea-highlight 1.5s ease-out;
+}
+
+@keyframes idea-highlight {
+  from {
+    background: var(--chip-bg);
+  }
+
+  to {
+    background: var(--panel);
+  }
 }
 
 .idea--done .title,
