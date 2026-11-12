@@ -2,7 +2,7 @@
 import { ref } from 'vue';
 import TagEditor from './TagEditor.vue';
 
-defineProps<{
+const props = defineProps<{
   /** 勾选中的条数。 */
   count: number;
   /** 标签补全（页面层提供：请求在页面层发）。 */
@@ -20,8 +20,14 @@ const emit = defineEmits<{
   'merge': [];
   /** 删除选中的条目。 */
   'delete': [];
-  /** 给选中的条目加标签（带要加的标签）。 */
-  'add-tags': [tags: string[]];
+  /**
+   * 给选中的条目加标签（带要加的标签）。
+   *
+   * 第二个参数是**回执**：父组件发完请求后调用它，告诉我成没成
+   * （`true` 成功、`false` 失败）。清草稿要等回执 ——
+   * 父组件那边是异步发请求的，先清了就等于「失败时用户敲的标签没了」。
+   */
+  'add-tags': [tags: string[], ack: (ok: boolean) => void];
   /** 取消勾选。 */
   'clear': [];
 }>();
@@ -40,14 +46,29 @@ function onTagsChange(next: string[]): void {
   tagDraft.value = next;
 }
 
-/** 把草稿里的标签应用到选中的条目上。 */
+/** 两个标签列表是不是一样的（顺序也要一样）。 */
+function sameTags(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((tag, index) => tag === right[index]);
+}
+
+/**
+ * 把草稿里的标签应用到选中的条目上。
+ *
+ * 草稿与面板**等父组件回执**再清：请求失败时用户敲的标签还在，
+ * 面板还开着，能直接重试 —— 先清了就等于白敲一遍。
+ */
 function applyTags(): void {
-  if (tagDraft.value.length === 0) {
+  if (tagDraft.value.length === 0 || props.busy) {
     return;
   }
-  emit('add-tags', tagDraft.value);
-  tagDraft.value = [];
-  tagEditing.value = false;
+  const tags = [...tagDraft.value];
+  emit('add-tags', tags, (ok: boolean) => {
+    // 回执回来时用户可能又改了草稿 —— 那就留着新的那份，别覆盖掉。
+    if (ok && sameTags(tagDraft.value, tags)) {
+      tagDraft.value = [];
+      tagEditing.value = false;
+    }
+  });
 }
 
 /** 点「删除」先问一句，别真删。 */
@@ -116,7 +137,7 @@ function confirmDelete(): void {
       <button
         class="action action--apply-tags"
         type="button"
-        :disabled="tagDraft.length === 0"
+        :disabled="tagDraft.length === 0 || busy"
         @click="applyTags"
       >
         加到 {{ count }} 条

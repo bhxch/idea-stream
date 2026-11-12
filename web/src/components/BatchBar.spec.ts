@@ -36,7 +36,7 @@ describe('BatchBar', () => {
     expect((wrapper.get('button.action--merge').element as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('加标签：选好标签后 emit add-tags 带标签', async () => {
+  it('加标签：选好标签后 emit add-tags 带标签（还带一个回执）', async () => {
     const wrapper = mountBar();
 
     await wrapper.get('button.action--add-tags').trigger('click');
@@ -44,7 +44,48 @@ describe('BatchBar', () => {
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await wrapper.get('button.action--apply-tags').trigger('click');
 
-    expect(wrapper.emitted('add-tags')).toEqual([[['新标签']]]);
+    const emitted = wrapper.emitted('add-tags');
+    expect(emitted).toHaveLength(1);
+    expect(emitted?.[0]?.[0]).toEqual(['新标签']);
+    // 第二个参数是回执：父组件发完请求后调用它，操作条才知道成没成。
+    expect(typeof emitted?.[0]?.[1]).toBe('function');
+  });
+
+  it('父组件回执成功后才清草稿、收起面板', async () => {
+    const wrapper = mountBar();
+
+    await wrapper.get('button.action--add-tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('新标签');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    await wrapper.get('button.action--apply-tags').trigger('click');
+
+    // 回执还没来：草稿还在，面板还开着。
+    expect(wrapper.findAll('.tag-editor')).toHaveLength(1);
+    expect(wrapper.get('.chip__name').text()).toBe('新标签');
+
+    const ack = wrapper.emitted('add-tags')?.[0]?.[1] as (ok: boolean) => void;
+    ack(true);
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.findAll('.tag-editor')).toHaveLength(0);
+    expect(wrapper.findAll('.chip__name')).toHaveLength(0);
+  });
+
+  it('父组件回执失败时草稿不丢（用户能直接重试）', async () => {
+    const wrapper = mountBar();
+
+    await wrapper.get('button.action--add-tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('新标签');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    await wrapper.get('button.action--apply-tags').trigger('click');
+
+    const ack = wrapper.emitted('add-tags')?.[0]?.[1] as (ok: boolean) => void;
+    ack(false);
+    await wrapper.vm.$nextTick();
+
+    // 面板还开着，标签还在：用户敲的没白敲。
+    expect(wrapper.findAll('.tag-editor')).toHaveLength(1);
+    expect(wrapper.get('.chip__name').text()).toBe('新标签');
   });
 
   it('删除要二次确认，确认后才发出 delete', async () => {
@@ -61,5 +102,33 @@ describe('BatchBar', () => {
     const wrapper = mountBar({ busy: true });
 
     expect((wrapper.get('button.action--complete').element as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('请求在飞时每个按钮都禁用（不能只禁一个）', () => {
+    const wrapper = mountBar({ busy: true });
+
+    const selectors = [
+      'button.action--complete',
+      'button.action--undo-complete',
+      'button.action--merge',
+      'button.action--add-tags',
+      'button.action--delete',
+      'button.action--clear',
+    ];
+    for (const selector of selectors) {
+      expect((wrapper.get(selector).element as HTMLButtonElement).disabled, selector).toBe(true);
+    }
+  });
+
+  it('请求在飞时「加到 N 条」也禁用（别发第二个批量请求）', async () => {
+    const wrapper = mountBar();
+
+    await wrapper.get('button.action--add-tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('新标签');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+
+    await wrapper.setProps({ busy: true });
+
+    expect((wrapper.get('button.action--apply-tags').element as HTMLButtonElement).disabled).toBe(true);
   });
 });

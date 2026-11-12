@@ -485,13 +485,19 @@ async function onBulkComplete(done: boolean): Promise<void> {
  * 批量加标签。
  *
  * 并集式追加（`replace: false`）：原有的标签留着，不是覆盖。
+ *
+ * @param tags 要加的标签。
+ * @param ack 回执：告诉操作条成没成（操作条等回执才清草稿 ——
+ *   失败时用户敲的标签得留着，能直接重试）。
  */
-async function onBulkAddTags(tags: string[]): Promise<void> {
+async function onBulkAddTags(tags: string[], ack: (ok: boolean) => void): Promise<void> {
   const ids = [...selectedIds.value];
   if (ids.length === 0 || tags.length === 0 || batchBusy.value) {
+    ack(false);
     return;
   }
   batchBusy.value = true;
+  let ok = false;
   try {
     const updated = await apiSend<Idea[]>('POST', '/ideas/bulk/tags', {
       ids,
@@ -499,11 +505,13 @@ async function onBulkAddTags(tags: string[]): Promise<void> {
       replace: false,
     });
     updated.forEach((idea) => applyLocalUpsert(idea));
+    ok = true;
   } catch (error) {
     reportError(error, '批量加标签失败');
   } finally {
     batchBusy.value = false;
   }
+  ack(ok);
 }
 
 /**

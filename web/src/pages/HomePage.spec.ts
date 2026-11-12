@@ -538,6 +538,46 @@ describe('HomePage', () => {
     wrapper.unmount();
   });
 
+  it('批量加标签失败时操作条上的草稿不丢（能直接重试）', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([ideaA, ideaB]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    apiSend.mockImplementation((_method: string, path: string) =>
+      path === '/ideas/bulk/tags'
+        ? Promise.reject(new Error('boom'))
+        : Promise.resolve([ideaA, ideaB]),
+    );
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    const checkboxes = wrapper.findAll('input.select');
+    await checkboxes[0].setValue(true);
+    await checkboxes[1].setValue(true);
+
+    await wrapper.get('.batch-bar button.action--add-tags').trigger('click');
+    await wrapper.get('.batch-bar .tag-editor input').setValue('新标签');
+    await wrapper.get('.batch-bar .tag-editor input').trigger('keydown', { key: 'Enter' });
+    await wrapper.get('.batch-bar button.action--apply-tags').trigger('click');
+    await flushPromises();
+
+    // 失败时面板还开着、标签还在：用户敲的没白敲。
+    expect(wrapper.findAll('.batch-bar .tag-editor')).toHaveLength(1);
+    expect(wrapper.get('.batch-bar .chip__name').text()).toBe('新标签');
+    wrapper.unmount();
+  });
+
   it('批量删除会调 bulk/delete 并把条目移出列表', async () => {
     apiGet.mockImplementation((path: string) => {
       switch (path) {
