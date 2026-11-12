@@ -349,6 +349,9 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ### Task 5 (F5): 条目交互（编辑、标签、完成、删除）
 
+> **既有契约（F3+F4 已建，F5 在此之上改，不要推翻）**：`MessageItem` 已有的 `busy?: boolean` prop（在飞时禁用按钮）与 `MessageList` 已有的**必填** `busyIds: Set<string>` prop —— F5 新加的交互（编辑/标签/删除）也要走同一套「在飞保护」，并把在飞条目的 id 加进 `busyIds`。
+> `Composer` 的提交契约是 **prop `onSubmit: (content) => Promise<boolean>`**（不是 emit），清空输入框发生在**成功之后**。
+
 **Files:**
 - Create: `web/src/components/TagEditor.vue`
 - Modify: `web/src/components/MessageItem.vue`、`web/src/pages/HomePage.vue`
