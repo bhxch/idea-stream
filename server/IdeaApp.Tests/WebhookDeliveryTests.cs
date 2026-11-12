@@ -300,40 +300,31 @@ public sealed class WebhookDeliveryTests
     }
 
     /// <summary>
-    /// 项目被删除后，它自己的 webhook 收不到 <c>project.deleted</c>，
-    /// 也收不到连带的那批 <c>idea.deleted</c>。
+    /// 删项目 → <b>全局</b> webhook 只收到 <b>1 条</b> <c>project.deleted</c>，
+    /// 连带的那 N 条 <c>idea.deleted</c> 一条都收不到。
     /// </summary>
     /// <remarks>
-    /// spec §12.1：项目级 webhook **随项目隐式失效** —— 所属项目在回收站期间不投递。
-    /// 删项目会连带删掉它下面的想法，于是这一次删除本来会往同一个 webhook 里灌
-    /// 「1 条 project.deleted + N 条 idea.deleted」，正是这条规则要挡掉的。
+    /// 规则：<b>事件所属项目在回收站里 → 跳过该事件</b>，全局与项目级一视同仁；
+    /// 唯一例外是 <c>project.deleted</c>（「项目被删了」这件事本身要通知一次）。
     /// <para>
-    /// 对照组是**全局** webhook：项目删除不影响它（spec §12.1），
-    /// 它同时是「事件确实发出去了」的证据 ——
-    /// 没有那 N+1 条投递，就分不清是「规则挡住了」还是「事件根本没发」。
+    /// 没有这条规则时，一次删项目会往全局 webhook 里灌
+    /// 「1 条 project.deleted + N 条 idea.deleted」：
+    /// 对 Telegram 这类目标会撞发送频率限制（约 30 条/秒），
+    /// 剩下的一批变成失败与死信。
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task Deleted_project_webhook_receives_neither_project_deleted_nor_cascading_idea_deleted()
+    public async Task Deleted_project_global_webhook_receives_only_project_deleted()
     {
-        using var projectEndpoint = new FakeEndpoint();
-        using var globalEndpoint = new FakeEndpoint();
+        using var endpoint = new FakeEndpoint();
         using var factory = new TestAppFactory();
         using var client = factory.CreateClient();
 
         var projectId = await CreateProjectAsync(client, "项目A");
 
-        // 绑在项目A上的 webhook：订阅删除相关的事件。
-        var projectWebhookId = await CreateWebhookAsync(
-            client,
-            projectEndpoint.Url,
-            ["project.deleted", "idea.deleted"],
-            scope: "project",
-            projectId: projectId);
-
-        // 全局 webhook（对照组）：项目删除不影响它。
+        // 全局 webhook：订阅删除相关的事件。
         var globalWebhookId = await CreateWebhookAsync(
-            client, globalEndpoint.Url, ["project.deleted", "idea.deleted"]);
+            client, endpoint.Url, ["project.deleted", "idea.deleted"]);
 
         // 项目A下建三条想法：删项目时会被连带删掉，各发一条 idea.deleted。
         foreach (var content in new[] { "想法1", "想法2", "想法3" })
@@ -345,23 +336,123 @@ public sealed class WebhookDeliveryTests
         var deleted = await client.DeleteAsync($"/api/projects/{projectId}");
         Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
 
-        // 对照组收到 1 条 project.deleted + 3 条 idea.deleted。
-        await WaitForDeliveryCountAsync(client, globalWebhookId, 4);
+        // 只有 project.deleted 那 1 条：等它落地，再等它稳定下来确认没有后来者。
+        var deliveries = await WaitForSettledDeliveriesAsync(client, globalWebhookId, 1);
 
-        // 项目的 webhook 一条都没收到（投递记录也一条都没有）。
-        await Task.Delay(TimeSpan.FromSeconds(1));
+        Assert.Single(deliveries);
+        Assert.Equal("project.deleted", deliveries[0].GetProperty("eventType").GetString());
 
-        Assert.Empty(projectEndpoint.Requests);
-        Assert.Empty(await ReadDeliveriesAsync(client, projectWebhookId));
+        var request = Assert.Single(endpoint.Requests);
+        using var payload = JsonDocument.Parse(request.Body);
+        Assert.Equal("project.deleted ", payload.RootElement.GetProperty("text").GetString());
+    }
+
+    /// <summary>
+    /// 删项目 → <b>项目级</b> webhook 也只收到 <b>1 条</b> <c>project.deleted</c>，
+    /// 连带的那 N 条 <c>idea.deleted</c> 一条都收不到。
+    /// </summary>
+    ///
+    /// <remarks>
+    /// <c>project.deleted</c> 是规则里的<b>唯一例外</b>：照投。
+    /// 项目级 webhook 与全局 webhook 受<b>同一条</b>规则约束，
+    /// 不做「全局的是例外」这种特例：
+    /// 删项目时它收到 1 条，而不是 0 条（项目没了用户得知道），也不是 N+1 条。
+    /// </remarks>
+    [Fact]
+    public async Task Deleted_project_project_webhook_receives_only_project_deleted()
+    {
+        using var endpoint = new FakeEndpoint();
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "项目A");
+
+        // 绑在项目A上的 webhook：订阅删除相关的事件。
+        var projectWebhookId = await CreateWebhookAsync(
+            client,
+            endpoint.Url,
+            ["project.deleted", "idea.deleted"],
+            scope: "project",
+            projectId: projectId);
+
+        // 项目A下建三条想法：删项目时会被连带删掉，各发一条 idea.deleted。
+        foreach (var content in new[] { "想法1", "想法2", "想法3" })
+        {
+            var created = await client.PostAsJsonAsync("/api/ideas", new { content, projectId });
+            Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        }
+
+        var deleted = await client.DeleteAsync($"/api/projects/{projectId}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        var deliveries = await WaitForSettledDeliveriesAsync(client, projectWebhookId, 1);
+
+        Assert.Single(deliveries);
+        Assert.Equal("project.deleted", deliveries[0].GetProperty("eventType").GetString());
+
+        var request = Assert.Single(endpoint.Requests);
+        using var payload = JsonDocument.Parse(request.Body);
+        Assert.Equal("project.deleted ", payload.RootElement.GetProperty("text").GetString());
+    }
+
+    /// <summary>
+    /// 单独删一条想法（<b>项目还活着</b>）→ 全局与项目级 webhook <b>都</b>照收
+    /// 那条 <c>idea.deleted</c>。
+    /// </summary>
+    ///
+    /// <remarks>
+    /// 这条守「别把规则写过头」：触发条件是「所属项目在回收站里」，
+    /// 不是「事件是删除类事件」。项目还活着的时候，删想法就该照常通知。
+    /// </remarks>
+    [Fact]
+    public async Task Deleting_one_idea_while_its_project_is_alive_reaches_global_and_project_webhooks()
+    {
+        using var globalEndpoint = new FakeEndpoint();
+        using var projectEndpoint = new FakeEndpoint();
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "项目A");
+
+        var globalWebhookId = await CreateWebhookAsync(
+            client, globalEndpoint.Url, ["idea.deleted"]);
+
+        var projectWebhookId = await CreateWebhookAsync(
+            client, projectEndpoint.Url, ["idea.deleted"], scope: "project", projectId: projectId);
+
+        var created = await client.PostAsJsonAsync(
+            "/api/ideas", new { content = "单独删的想法", projectId });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var ideaId = await ReadIdAsync(created);
+
+        var deleted = await client.DeleteAsync($"/api/ideas/{ideaId}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        // 两条都照收。
+        var globalDeliveries = await WaitForSettledDeliveriesAsync(client, globalWebhookId, 1);
+        var projectDeliveries = await WaitForSettledDeliveriesAsync(client, projectWebhookId, 1);
+
+        Assert.Single(globalDeliveries);
+        Assert.Equal("idea.deleted", globalDeliveries[0].GetProperty("eventType").GetString());
+
+        Assert.Single(projectDeliveries);
+        Assert.Equal("idea.deleted", projectDeliveries[0].GetProperty("eventType").GetString());
+
+        Assert.Single(globalEndpoint.Requests);
+        Assert.Single(projectEndpoint.Requests);
     }
 
     /// <summary>
     /// 项目从回收站恢复后，它自己的 webhook **重新开始收**这个项目的事件。
     /// </summary>
     /// <remarks>
-    /// spec §12.1：项目级 webhook 随项目隐式失效，**项目恢复后自动恢复投递**。
-    /// 上一条守的是「回收站期间不投递」，这条守的是「恢复后要能恢复投递」——
+    /// 项目级 webhook 随项目隐式失效，<b>项目恢复后自动恢复投递</b>。
+    /// 上一条守的是「回收站期间不投递」，这条守的是「恢复后要能恢复投递」：
     /// 两头都守住，这条规则才不是「把 webhook 永久关掉」。
+    /// <para>
+    /// 删除阶段收到的那 1 条 <c>project.deleted</c> 是规则里的例外（照投），
+    /// 所以这里断言的是「一共 2 条：project.deleted + project.updated」。
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task Restored_project_webhook_receives_its_project_events_again()
@@ -372,8 +463,8 @@ public sealed class WebhookDeliveryTests
 
         var projectId = await CreateProjectAsync(client, "项目A");
 
-        // 订阅两种事件：删除时该收到的是 project.deleted（**不该**收到），
-        // 恢复时该收到的是 project.updated（**应该**收到）。
+        // 订阅两种事件：删除时收到 project.deleted（规则的例外，照投），
+        // 恢复时收到 project.updated（恢复后自动恢复投递）。
         var webhookId = await CreateWebhookAsync(
             client, endpoint.Url, ["project.deleted", "project.updated"],
             scope: "project", projectId: projectId);
@@ -381,10 +472,10 @@ public sealed class WebhookDeliveryTests
         var deleted = await client.DeleteAsync($"/api/projects/{projectId}");
         Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
 
-        // 先把删除那批事件处理完（它不该有任何投递），再恢复 ——
-        // 否则「恢复后收到 project.updated」可能只是投递还没排空。
-        await Task.Delay(TimeSpan.FromSeconds(1));
-        Assert.Empty(await ReadDeliveriesAsync(client, webhookId));
+        // 删除阶段：只有 project.deleted 那 1 条（连带的 idea.deleted 被规则挡掉）。
+        var afterDelete = await WaitForSettledDeliveriesAsync(client, webhookId, 1);
+        Assert.Single(afterDelete);
+        Assert.Equal("project.deleted", afterDelete[0].GetProperty("eventType").GetString());
 
         // 恢复项目 → 发 project.updated（changed = ["deletedAt"]）。
         var restored = await client.PostAsync($"/api/projects/{projectId}/restore", null);
@@ -392,23 +483,33 @@ public sealed class WebhookDeliveryTests
 
         await WaitForDeliveryAsync(client, webhookId, IsDelivered);
 
-        // 只有 project.updated 那一条 —— project.deleted 那条在回收站期间就被挡掉了。
-        var request = Assert.Single(endpoint.Requests);
-        using var payload = JsonDocument.Parse(request.Body);
+        var afterRestore = await WaitForSettledDeliveriesAsync(client, webhookId, 2);
+        Assert.Equal(2, afterRestore.Count);
+
+        var types = afterRestore
+            .Select(delivery => delivery.GetProperty("eventType").GetString())
+            .ToArray();
+        Assert.Contains("project.deleted", types);
+        Assert.Contains("project.updated", types);
+
+        // 恢复后那条是 project.updated。
+        var last = endpoint.Requests[^1];
+        using var payload = JsonDocument.Parse(last.Body);
         Assert.Equal("project.updated ", payload.RootElement.GetProperty("text").GetString());
     }
 
     /// <summary>
     /// 项目还在回收站时，单独恢复它下面的某条想法 → 那条 <c>idea.restored</c>
-    /// 也不投给这个项目的 webhook。
+    /// <b>哪个 webhook 都收不到</b>。
     /// </summary>
     /// <remarks>
     /// 这是「所属项目在回收站期间不投递」这条规则的**连带效果**，不是另一个规则：
-    /// 想法事件带的是所属项目，那个项目在回收站里，所以项目级 webhook 收不到。
+    /// 想法事件带的是所属项目，那个项目在回收站里，所以整条事件被跳过：
+    /// 全局与项目级一视同仁。
     /// 断言写在这里，是为了让这个效果是「有意为之」而不是「碰巧」。
     /// </remarks>
     [Fact]
-    public async Task Idea_restored_while_its_project_is_in_trash_reaches_only_global_webhooks()
+    public async Task Idea_restored_while_its_project_is_in_trash_reaches_no_webhook()
     {
         using var projectEndpoint = new FakeEndpoint();
         using var globalEndpoint = new FakeEndpoint();
@@ -436,14 +537,23 @@ public sealed class WebhookDeliveryTests
         var restored = await client.PostAsync($"/api/ideas/{ideaId}/restore", null);
         Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
 
-        // 全局 webhook 收得到（对照组）。
-        await WaitForDeliveryAsync(client, globalWebhookId, IsDelivered);
+        // 恢复确实生效了（想法回到活跃列表）：免得断言「没收到」是因为根本没恢复。
+        var active = await client.GetAsync($"/api/ideas?projectId={projectId}");
+        Assert.Equal(HttpStatusCode.OK, active.StatusCode);
+        using (var activeDocument = JsonDocument.Parse(await active.Content.ReadAsStringAsync()))
+        {
+            Assert.Contains(
+                activeDocument.RootElement.EnumerateArray(),
+                element => element.GetProperty("id").GetString() == ideaId);
+        }
 
-        // 项目自己的 webhook 收不到：所属项目还在回收站里。
-        await Task.Delay(TimeSpan.FromSeconds(1));
+        // 所属项目还在回收站里 → 整条事件被跳过，两个作用域都收不到。
+        await Task.Delay(TimeSpan.FromSeconds(2));
 
         Assert.Empty(projectEndpoint.Requests);
+        Assert.Empty(globalEndpoint.Requests);
         Assert.Empty(await ReadDeliveriesAsync(client, projectWebhookId));
+        Assert.Empty(await ReadDeliveriesAsync(client, globalWebhookId));
     }
 
     /// <summary>
@@ -637,6 +747,29 @@ public sealed class WebhookDeliveryTests
         }
 
         throw new TimeoutException($"等 webhook {webhookId} 的 {count} 条投递记录超时");
+    }
+
+    /// <summary>
+    /// 等到某个 webhook 的投递记录**至少**有指定条数，再等一小段时间让它稳定下来，
+    /// 然后把当前的投递记录返回。
+    /// </summary>
+    /// <remarks>
+    /// 「等稳定」这一步是断言「**只有** N 条」的前提：
+    /// 投递是异步的，刚看到第 1 条时后面几条可能还在路上，
+    /// 只等「第 1 条出现」就断言「只有 1 条」会把还没到的投递算漏。
+    /// </remarks>
+    private static async Task<List<JsonElement>> WaitForSettledDeliveriesAsync(
+        HttpClient client,
+        string webhookId,
+        int count,
+        TimeSpan? timeout = null,
+        TimeSpan? settle = null)
+    {
+        await WaitForDeliveryCountAsync(client, webhookId, count, timeout);
+
+        await Task.Delay(settle ?? TimeSpan.FromSeconds(2));
+
+        return await ReadDeliveriesAsync(client, webhookId);
     }
 
     /// <summary>独立重算一遍 HMAC-SHA256 签名（不调用后端的实现）。</summary>

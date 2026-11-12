@@ -19,9 +19,18 @@ namespace IdeaApp.Infrastructure;
 /// <item>webhook 必须**启用**；</item>
 /// <item><c>global</c> 作用域收全部事件；<c>project</c> 作用域只收事件所属项目就是它的项目的事件；</item>
 /// <item>再叠加：订阅的事件类型里要有这个事件（订阅列表为空 = 不订阅任何）；</item>
-/// <item>再叠加：<c>project</c> 作用域的 webhook，**它绑定的项目当前不能在回收站里** ——
-/// 项目级 webhook 随项目隐式失效，项目恢复后自动恢复投递。</item>
+/// <item>再叠加：<b>事件所属项目在回收站里 → 整个事件不投递</b>，
+/// 全局与项目级 webhook 一视同仁。</item>
 /// </list>
+/// </para>
+///
+/// <para>
+/// 第 4 条的<b>唯一例外</b>是 <c>project.deleted</c>：照投。
+/// 删项目会连带软删它下面的 N 条想法，产生 N 条 <c>idea.deleted</c>；
+/// 照投的话一次删除会往同一个 webhook 里灌「1 条 project.deleted + N 条 idea.deleted」，
+/// 对 Telegram 这类目标会撞发送频率限制，剩下的一批变成失败与死信。
+/// 而「项目没了（连带它的所有想法）」这件事本身值得通知一次 ——
+/// 否则用户永远不知道自己的项目没了。
 /// </para>
 ///
 /// <para>
@@ -53,19 +62,24 @@ public sealed class WebhookEventHandler(
         // （spec §11.2：想法事件的结构里也有 project），所以直接读它。
         var projectId = evt.Project?.Id;
 
-        // 项目级 webhook 的所属项目是不是在回收站里（spec §12.1）：
-        // 在回收站期间**不投递**。同一个项目可能被多个 webhook 绑着，
-        // 查一次库就够 —— 结果按项目 id 缓存下来复用。
-        var inTrash = new Dictionary<string, bool>(StringComparer.Ordinal);
+        var candidates = webhooks.ListEnabledFor(projectId);
+        if (candidates.Count == 0)
+        {
+            // 没人要收这个事件：不投递，也就不必再查库。
+            return ValueTask.CompletedTask;
+        }
 
-        foreach (var webhook in webhooks.ListEnabledFor(projectId))
+        // 事件所属的项目在回收站里 → 这个事件**整条不投**，
+        // 全局与项目级 webhook 一视同仁。
+        // 例外：project.deleted（「项目被删了」这件事本身要通知一次）。
+        if (projectId is not null && evt.Type != EventTypes.ProjectDeleted && IsProjectInTrash(projectId))
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        foreach (var webhook in candidates)
         {
             if (!Matches(webhook, evt, projectId))
-            {
-                continue;
-            }
-
-            if (webhook.Scope == ProjectScope && IsProjectInTrash(webhook.ProjectId, inTrash))
             {
                 continue;
             }
@@ -83,40 +97,21 @@ public sealed class WebhookEventHandler(
     }
 
     /// <summary>
-    /// 这个 webhook 绑定的项目当前是不是在回收站里。
+    /// 这个项目当前是不是在回收站里。
     /// </summary>
-    /// <param name="projectId">webhook 绑定的项目 id。</param>
-    /// <param name="cache">按项目 id 缓存的查询结果（同一个项目只查一次库）。</param>
+    /// <param name="projectId">项目 id。</param>
     /// <remarks>
-    /// 项目级 webhook **随项目隐式失效**（spec §12.1）：
-    /// 所属项目在回收站期间不投递，项目恢复后自动恢复投递，项目到期清理时随项目一并删除。
+    /// 判的是**当前**状态：事件是在事务提交之后才 publish 的，
+    /// 所以匹配到 <c>project.deleted</c> 时项目已经在回收站里了 ——
+    /// 不需要给事件加字段，也不需要改 publish 侧。
     /// <para>
-    /// 判的是**当前**状态：删项目那一刻的 <c>project.deleted</c> 事件在事务提交后才发，
-    /// 那时项目已经在回收站里，所以它自己（以及连带删掉的想法）的那批通知都发不出去 ——
-    /// 一次删除本来会往同一个 webhook 里灌「1 条 project.deleted + N 条 idea.deleted」。
+    /// 项目行整个没了（回收站到期清理把它彻底删掉）也算「不在活跃状态」。
     /// </para>
     /// </remarks>
-    private bool IsProjectInTrash(string? projectId, Dictionary<string, bool> cache)
+    private bool IsProjectInTrash(string projectId)
     {
-        if (string.IsNullOrEmpty(projectId))
-        {
-            // 项目级 webhook 却没有绑项目（库里被手改过的行）：判成「不可投递」。
-            return true;
-        }
-
-        if (cache.TryGetValue(projectId, out var cached))
-        {
-            return cached;
-        }
-
         var project = projects.Get(projectId);
-
-        // 项目行没了（回收站到期清理把它彻底删掉）：它的 webhook 也会被外键带走，
-        // 同样判成「不可投递」。
-        var inTrash = project is null || project.DeletedAt is not null;
-
-        cache[projectId] = inTrash;
-        return inTrash;
+        return project is null || project.DeletedAt is not null;
     }
 
     /// <summary>这个 webhook 该不该收这个事件。</summary>
@@ -127,9 +122,18 @@ public sealed class WebhookEventHandler(
             return false;
         }
 
-        if (webhook.Scope == ProjectScope && webhook.ProjectId != projectId)
+        if (webhook.Scope == ProjectScope)
         {
-            return false;
+            // 项目级 webhook 却没绑项目（库里被手改过的行）：不投递。
+            if (string.IsNullOrEmpty(webhook.ProjectId))
+            {
+                return false;
+            }
+
+            if (webhook.ProjectId != projectId)
+            {
+                return false;
+            }
         }
 
         // 订阅列表为空 = 不订阅任何事件。
