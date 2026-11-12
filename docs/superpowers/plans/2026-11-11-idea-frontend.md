@@ -215,6 +215,8 @@ git commit -m "feat(web): 初始化 Vue3+Vite 骨架、路由、主题与 API �
 > **jsdom 没有 `EventSource`**（Node 24 与 jsdom 都不提供）—— F2 的 spec **必须 `vi.stubGlobal('EventSource', ...)`** 造一个假的，否则 `new EventSource(...)` 会直接炸。F1 已把 vitest 的 `environment` 改成全局 `jsdom`。
 > **`changed` / `mergedFrom` 是必填可空**（`string[] | null`，没有 `?`）—— 后端恒定写出这两个键，运行时永远不是 `undefined`；判定三态用 `=== null` / `length === 0`。**注意：写 `=== undefined` 不会被 TS 拦下**（TS 的相等性比较在目标类型是 null/undefined 时放行，不报 TS2367），它只是运行时恒假的死分支 —— 三态判定一律写 `=== null`。漏写这两个键（TS2739）与不判空就 `.length`（TS18047）才是 TS 真正拦得住的两种错法。
 > **`ApiError` 判错要用 `instanceof`，别只看 `status`** —— 有一条路径是「2xx + 非 JSON 响应体」，那时 `status` 是 200。
+> **后端的续发位置解析：`Last-Event-ID` 请求头优先、`?lastEventId=` 查询参数兜底**（`EventSource` 不能设自定义头，所以查询参数是浏览器端唯一能用的续发方式）。前端重连的 URL 里**带** `?lastEventId=<最后收到的事件id>`。
+> **重连成功后前端仍保留「整表重拉一次」的安全网** —— 后端认了查询参数后这层是冗余的（服务端要么精确续上、要么发 `resync`），但**多一次列表请求 << 静默丢事件**，保留。
 ### Task 2 (F2): SSE 客户端（重连、Last-Event-ID、resync）
 
 **Files:**
