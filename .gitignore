@@ -7,6 +7,7 @@ artifacts/
 # 前端
 node_modules/
 web/dist/
+server/IdeaApp/wwwroot/
 
 # 运行时数据（SQLite 及 WAL）
 *.db

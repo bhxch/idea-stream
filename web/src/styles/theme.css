@@ -1,0 +1,33 @@
+/*
+ * 主题变量。
+ *
+ * 主题跟随系统：亮色是 :root 的默认值，暗色由 prefers-color-scheme 覆盖，
+ * 不提供手动切换开关 —— 一次跟随，两端一致。
+ */
+:root {
+  --bg: #f6f6f8;
+  --fg: #1c1c1e;
+  --muted: #6b6b73;
+  --border: #dcdce2;
+  --accent: #2f6fed;
+  --accent-fg: #ffffff;
+  --chip-bg: #ecedf2;
+  --danger: #c0392b;
+  --panel: #ffffff;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15151a;
+    --fg: #ececf1;
+    --muted: #9a9aa5;
+    --border: #2d2d36;
+    --accent: #6c9bff;
+    --accent-fg: #10131a;
+    --chip-bg: #26262e;
+    --danger: #ff6b6b;
+    --panel: #1c1c22;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  }
+}
