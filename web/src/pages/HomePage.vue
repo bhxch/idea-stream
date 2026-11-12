@@ -38,6 +38,13 @@ const allTags = ref<Tag[]>([]);
 /** 被勾选的想法 id（多选批量操作在 F6 接上）。 */
 const selectedIds = ref<Set<string>>(new Set());
 
+/**
+ * 正在切换完成态的条目 id（请求在飞）。
+ *
+ * 请求在飞时按钮禁用、重复点击忽略：连点两次会拿同一个旧状态去提交，
+ * 等于没切换 —— 用户以为 toggled 了，实际什么也没变。
+ */
+const togglingIds = ref<Set<string>>(new Set());
 
 /** 是否贴着列表底部（滚动跟随在 F11 接上）。 */
 const atBottom = ref(true);
@@ -263,18 +270,28 @@ async function onSubmit(content: string): Promise<boolean> {
  *
  * 先落库再更新本地：接口返回的想法才是最新的（`updatedAt` 由后端给），
  * 本地不自己猜。失败时本地状态不动，条目还是原来的样子。
-
+ *
+ * 请求在飞时忽略重复点击（按钮也是禁用的）：第二次点击会拿同一个旧状态
+ * 算出同一个 `done` 值 —— 那不是「切换」，是把第一次的结果又发了一遍。
  */
 async function onToggleDone(id: string): Promise<void> {
+  if (togglingIds.value.has(id)) {
+    return;
+  }
   const idea = ideas.value.find((item) => item.id === id);
   if (!idea) {
     return;
   }
+  togglingIds.value = new Set(togglingIds.value).add(id);
   try {
     const updated = await apiSend<Idea>('POST', `/ideas/${id}/complete`, { done: !idea.done });
     applyLocalUpsert(updated);
   } catch (error) {
     reportError(error, '更新完成状态失败');
+  } finally {
+    const next = new Set(togglingIds.value);
+    next.delete(id);
+    togglingIds.value = next;
   }
 }
 
@@ -316,6 +333,7 @@ onMounted(() => {
     <MessageList
       :ideas="visibleIdeas"
       :selected-ids="selectedIds"
+      :busy-ids="togglingIds"
       :at-bottom="atBottom"
       @toggle-select="onToggleSelect"
       @toggle-done="onToggleDone"

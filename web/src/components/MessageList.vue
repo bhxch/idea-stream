@@ -7,6 +7,12 @@ defineProps<{
   ideas: Idea[];
   /** 被勾选的 id 集合。 */
   selectedIds: Set<string>;
+  /**
+   * 请求在飞的条目 id 集合。
+   *
+   * 在飞的那条要禁用它的按钮：连点两次会拿同一个旧状态去提交，等于没切换。
+   */
+  busyIds: Set<string>;
   /** 当前是否贴着列表底部（滚动跟随用，F11 消费）。 */
   atBottom: boolean;
 }>();
@@ -32,6 +38,7 @@ const emit = defineEmits<{
       :key="idea.id"
       :idea="idea"
       :selected="selectedIds.has(idea.id)"
+      :busy="busyIds.has(idea.id)"
       @toggle-select="emit('toggle-select', $event)"
       @toggle-done="emit('toggle-done', $event)"
       @edit="emit('edit', $event)"

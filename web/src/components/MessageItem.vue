@@ -8,6 +8,12 @@ const props = defineProps<{
   idea: Idea;
   /** 是否被多选勾中。 */
   selected: boolean;
+  /**
+   * 这一条是否有请求在飞（比如切换完成态）。
+   *
+   * 在飞时禁用按钮：连点两次会拿同一个旧状态去提交，等于没切换。
+   */
+  busy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -52,6 +58,7 @@ const visualTitle = computed(() => {
       <button
         class="done"
         type="button"
+        :disabled="busy"
         :aria-pressed="idea.done"
         @click="emit('toggle-done', idea.id)"
       >
@@ -94,6 +101,12 @@ const visualTitle = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 请求在飞：按钮不可点，别让它看起来还能按。 */
+.done:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .title {
