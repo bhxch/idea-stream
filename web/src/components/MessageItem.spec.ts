@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import type { Idea } from '../api/types';
+import type { SaveOutcome } from '../lib/save';
 import MessageItem from './MessageItem.vue';
 
 /** 一条想法。 */
@@ -22,8 +23,8 @@ function mountItem(overrides: Record<string, unknown> = {}) {
       idea,
       selected: false,
       suggest: () => [],
-      onSaveContent: async () => true,
-      onSaveTags: async () => true,
+      onSaveContent: async () => 'saved' as const,
+      onSaveTags: async () => 'saved' as const,
       ...overrides,
     },
   });
@@ -84,7 +85,7 @@ describe('MessageItem', () => {
   });
 
   it('点正文进入编辑态，Ctrl+Enter 保存', async () => {
-    const onSaveContent = vi.fn(async () => true);
+    const onSaveContent = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ onSaveContent });
 
     await wrapper.get('.body').trigger('click');
@@ -101,7 +102,7 @@ describe('MessageItem', () => {
   });
 
   it('失焦也保存', async () => {
-    const onSaveContent = vi.fn(async () => true);
+    const onSaveContent = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ onSaveContent });
 
     await wrapper.get('.body').trigger('click');
@@ -114,7 +115,7 @@ describe('MessageItem', () => {
   });
 
   it('Esc 取消编辑，不保存', async () => {
-    const onSaveContent = vi.fn(async () => true);
+    const onSaveContent = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ onSaveContent });
 
     await wrapper.get('.body').trigger('click');
@@ -128,7 +129,7 @@ describe('MessageItem', () => {
   });
 
   it('保存失败时留在编辑态（用户敲的正文不能丢）', async () => {
-    const onSaveContent = vi.fn(async () => false);
+    const onSaveContent = vi.fn(async () => 'failed' as const);
     const wrapper = mountItem({ onSaveContent });
 
     await wrapper.get('.body').trigger('click');
@@ -142,7 +143,7 @@ describe('MessageItem', () => {
   });
 
   it('正文一点没改时失焦不发请求（别为一次空改动打扰服务端）', async () => {
-    const onSaveContent = vi.fn(async () => true);
+    const onSaveContent = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ onSaveContent });
 
     await wrapper.get('.body').trigger('click');
@@ -155,10 +156,10 @@ describe('MessageItem', () => {
   });
 
   it('失焦保存撞上在飞时先攒着，在飞结束后自动补存（不能默默丢掉）', async () => {
-    let resolveSave: ((ok: boolean) => void) | undefined;
+    let resolveSave: ((ok: SaveOutcome) => void) | undefined;
     const onSaveContent = vi.fn(
       () =>
-        new Promise<boolean>((resolve) => {
+        new Promise<SaveOutcome>((resolve) => {
           resolveSave = resolve;
         }),
     );
@@ -186,14 +187,14 @@ describe('MessageItem', () => {
 
     expect(onSaveContent).toHaveBeenCalledWith('idea-1', '改过的正文');
 
-    resolveSave?.(true);
+    resolveSave?.('saved');
     await flushPromises();
     // 存好了才退出编辑态。
     expect(wrapper.findAll('textarea.editor')).toHaveLength(0);
   });
 
   it('攒着的正文在 Esc 取消后不再补存（用户说了不要）', async () => {
-    const onSaveContent = vi.fn(async () => true);
+    const onSaveContent = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ onSaveContent });
 
     await wrapper.get('.body').trigger('click');
@@ -236,7 +237,7 @@ describe('MessageItem', () => {
   });
 
   it('编辑标签：回车加标签后交给上层保存', async () => {
-    const onSaveTags = vi.fn(async () => true);
+    const onSaveTags = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ onSaveTags });
 
     await wrapper.get('button.action--tags').trigger('click');
@@ -248,7 +249,7 @@ describe('MessageItem', () => {
   });
 
   it('编辑标签保存失败时草稿不丢（编辑器留着，标签还在）', async () => {
-    const onSaveTags = vi.fn(async () => false);
+    const onSaveTags = vi.fn(async () => 'failed' as const);
     const wrapper = mountItem({ onSaveTags });
 
     await wrapper.get('button.action--tags').trigger('click');
@@ -261,7 +262,7 @@ describe('MessageItem', () => {
   });
 
   it('标签保存成功后不收起编辑器（连续编辑：加第二个标签不用重新打开）', async () => {
-    const onSaveTags = vi.fn(async () => true);
+    const onSaveTags = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ onSaveTags });
 
     await wrapper.get('button.action--tags').trigger('click');
@@ -298,7 +299,7 @@ describe('MessageItem', () => {
 
   it('草稿跟服务端不一致时收起会再问一次（不能静默丢掉未保存的改动）', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    const onSaveTags = vi.fn(async () => false); // 保存失败：改动没落库
+    const onSaveTags = vi.fn(async () => 'failed' as const); // 保存失败：改动没落库
     const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
 
     await wrapper.get('button.action--tags').trigger('click');
@@ -319,7 +320,7 @@ describe('MessageItem', () => {
 
   it('用户确定收起后编辑器关掉，但没存上的改动没丢（下次打开还在）', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const onSaveTags = vi.fn(async () => false);
+    const onSaveTags = vi.fn(async () => 'failed' as const);
     const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
 
     await wrapper.get('button.action--tags').trigger('click');
@@ -349,7 +350,7 @@ describe('MessageItem', () => {
 
   it('保存成功后服务端值已更新，收起时不再提示', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    const onSaveTags = vi.fn(async () => true);
+    const onSaveTags = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
 
     await wrapper.get('button.action--tags').trigger('click');
@@ -363,10 +364,10 @@ describe('MessageItem', () => {
   });
 
   it('保存还在飞时再改标签，会等前一次结束再存（不能丢）', async () => {
-    let resolveSave: ((ok: boolean) => void) | undefined;
+    let resolveSave: ((ok: SaveOutcome) => void) | undefined;
     const onSaveTags = vi.fn(
       () =>
-        new Promise<boolean>((resolve) => {
+        new Promise<SaveOutcome>((resolve) => {
           resolveSave = resolve;
         }),
     );
@@ -385,12 +386,83 @@ describe('MessageItem', () => {
     expect(onSaveTags).toHaveBeenCalledTimes(1);
 
     // 前一次存好了、在飞解除 → 攒下的那一版补存。
-    resolveSave?.(true);
+    resolveSave?.('saved');
     await flushPromises();
     await wrapper.setProps({ busy: false });
     await flushPromises();
 
     expect(onSaveTags).toHaveBeenCalledTimes(2);
     expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲', '乙']);
+  });
+
+  it('补存时正文与标签串行发：标签要等正文存完（并发会被在飞保护挡下，那次改动就没了）', async () => {
+    // 父组件的同款在飞保护：同一条目上同时只允许一个写操作，撞上了回 'busy'。
+    const contentDone = { value: false };
+    let resolveContent: ((ok: SaveOutcome) => void) | undefined;
+    const onSaveContent = vi.fn(
+      () =>
+        new Promise<SaveOutcome>((resolve) => {
+          resolveContent = resolve;
+        }),
+    );
+    const onSaveTags = vi.fn(async (): Promise<SaveOutcome> =>
+      contentDone.value ? 'saved' : 'busy',
+    );
+    const wrapper = mountItem({ onSaveContent, onSaveTags });
+
+    // 攒下两份改动：正文草稿（编辑态里）+ 标签（标签编辑器里）。
+    await wrapper.get('.body').trigger('click');
+    const editor = wrapper.get('textarea.editor');
+    await editor.setValue('改过的正文');
+    await wrapper.get('button.action--tags').trigger('click');
+
+    // 在飞：正文的失焦与标签的改动都先攒着。
+    await wrapper.setProps({ busy: true });
+    editor.element.dispatchEvent(new Event('blur'));
+    await flushPromises();
+    await wrapper.get('.tag-editor input').setValue('甲');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+    expect(onSaveContent).not.toHaveBeenCalled();
+    expect(onSaveTags).not.toHaveBeenCalled();
+
+    // 在飞结束 → 补存。
+    await wrapper.setProps({ busy: false });
+    await flushPromises();
+
+    // 正文先发，标签还在等（串行：并发的话标签会被在飞保护挡下）。
+    expect(onSaveContent).toHaveBeenCalledTimes(1);
+    expect(onSaveTags).not.toHaveBeenCalled();
+
+    // 正文存完了 → 标签才发，这次没被挡下（改动没丢）。
+    contentDone.value = true;
+    resolveContent?.('saved');
+    await flushPromises();
+
+    expect(onSaveTags).toHaveBeenCalledTimes(1);
+    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲']);
+  });
+
+  it('被在飞保护挡下时（父组件回 busy）改动会重新入队，在飞结束后再补存（不能静默丢掉）', async () => {
+    let blocked = true;
+    const onSaveTags = vi.fn(async (): Promise<SaveOutcome> => (blocked ? 'busy' : 'saved'));
+    const wrapper = mountItem({ onSaveTags });
+
+    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('甲');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+
+    // 第一次被挡下了：这次压根没发出去。
+    expect(onSaveTags).toHaveBeenCalledTimes(1);
+
+    // 父组件那边空出来了 → 补存那一版（不能就这么丢掉）。
+    blocked = false;
+    await wrapper.setProps({ busy: true });
+    await wrapper.setProps({ busy: false });
+    await flushPromises();
+
+    expect(onSaveTags).toHaveBeenCalledTimes(2);
+    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲']);
   });
 });

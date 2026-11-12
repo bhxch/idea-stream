@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import { ApiError } from '../api/client';
 import type { Idea, Project } from '../api/types';
+import MessageList from '../components/MessageList.vue';
 import ToastHost from '../components/ToastHost.vue';
+import type { SaveOutcome } from '../lib/save';
 import { focusIdeaId } from '../stores/ideas';
 import { currentProjectId } from '../stores/projects';
 
@@ -527,6 +529,44 @@ describe('HomePage', () => {
     await flushPromises();
 
     expect(wrapper.findAll('.idea')).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it('在飞保护挡下保存时返回 busy 而不是失败（调用方要能分出「压根没发出去」）', async () => {
+    let resolvePatch: ((value: Idea) => void) | undefined;
+    apiSend.mockImplementation((method: string) =>
+      method === 'PATCH'
+        ? new Promise<Idea>((resolve) => {
+            resolvePatch = resolve;
+          })
+        : Promise.resolve({ ...idea, done: true }),
+    );
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // 先发起一次保存（这一条进入在飞）。
+    const list = wrapper.findComponent(MessageList);
+    const onSaveContent = list.props('onSaveContent') as (
+      id: string,
+      content: string,
+    ) => Promise<SaveOutcome>;
+    const onSaveTags = list.props('onSaveTags') as (
+      id: string,
+      tags: string[],
+    ) => Promise<SaveOutcome>;
+
+    const first = onSaveContent('idea-1', '第一版');
+    await flushPromises();
+
+    // 在飞期间再发：这次压根没发出去（不是失败 —— 失败有提示，这里没有）。
+    expect(await onSaveContent('idea-1', '第二版')).toBe('busy');
+    expect(await onSaveTags('idea-1', ['新标签'])).toBe('busy');
+    // 挡下不算失败：不弹错误提示。
+    expect(apiSend).toHaveBeenCalledTimes(1);
+
+    resolvePatch?.({ ...idea, content: '第一版' });
+    expect(await first).toBe('saved');
     wrapper.unmount();
   });
 

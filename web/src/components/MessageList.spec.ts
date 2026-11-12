@@ -28,8 +28,8 @@ function mountList(overrides: Record<string, unknown> = {}) {
       busyIds: new Set<string>(),
       atBottom: true,
       suggest: () => [],
-      onSaveContent: async () => true,
-      onSaveTags: async () => true,
+      onSaveContent: async () => 'saved' as const,
+      onSaveTags: async () => 'saved' as const,
       ...overrides,
     },
   });
@@ -38,8 +38,8 @@ function mountList(overrides: Record<string, unknown> = {}) {
 describe('MessageList', () => {
   it('把 suggest / onSaveContent / onSaveTags 转给条目（转发链是单点风险）', () => {
     const suggest = vi.fn(() => ['候选']);
-    const onSaveContent = vi.fn(async () => true);
-    const onSaveTags = vi.fn(async () => true);
+    const onSaveContent = vi.fn(async () => 'saved' as const);
+    const onSaveTags = vi.fn(async () => 'saved' as const);
 
     const wrapper = mountList({ suggest, onSaveContent, onSaveTags });
 

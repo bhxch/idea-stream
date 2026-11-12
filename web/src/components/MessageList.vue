@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Idea } from '../api/types';
+import type { SaveOutcome } from '../lib/save';
 import MessageItem from './MessageItem.vue';
 
 defineProps<{
@@ -18,9 +19,9 @@ defineProps<{
   /** 标签补全（页面层提供：请求在页面层发）。 */
   suggest: (prefix: string) => string[];
   /** 保存正文（页面层提供）。 */
-  onSaveContent: (id: string, content: string) => Promise<boolean>;
+  onSaveContent: (id: string, content: string) => Promise<SaveOutcome>;
   /** 保存标签（页面层提供）。 */
-  onSaveTags: (id: string, tags: string[]) => Promise<boolean>;
+  onSaveTags: (id: string, tags: string[]) => Promise<SaveOutcome>;
 }>();
 
 const emit = defineEmits<{

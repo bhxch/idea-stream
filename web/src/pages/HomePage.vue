@@ -10,6 +10,7 @@ import MessageList from '../components/MessageList.vue';
 import { showToast } from '../components/ToastHost.vue';
 import { useTagMode } from '../composables/useTagMode';
 import { matchesFilter, sortIdeas, type IdeaFilter } from '../lib/filter';
+import type { SaveOutcome } from '../lib/save';
 import {
   applyLocalUpsert,
   focusIdeaId,
@@ -336,21 +337,24 @@ async function onToggleDone(id: string): Promise<void> {
  *
  * 用返回的想法覆盖本地（`updatedAt` 由后端给，本地不猜）。
  *
- * @returns true 表示存好了（编辑框据此退出编辑态），false 表示失败
- *   （失败已弹提示，编辑框留着用户的草稿）。
+ * @returns `'saved'` 存好了；`'failed'` 失败（已弹提示，编辑框留着用户的草稿）；
+ *   `'busy'` **这次压根没发出去**（被在飞保护挡下了）——
+ *   调用方要据此重新入队、等在飞结束再补存。
+ *   不能笼统地返回 false：那样调用方分不清「存失败」和「没发出去」，
+ *   被挡下的那次改动就会既没落库也没有提示 —— 静默丢。
  */
-async function onSaveContent(id: string, content: string): Promise<boolean> {
+async function onSaveContent(id: string, content: string): Promise<SaveOutcome> {
   if (busyIds.value.has(id)) {
-    return false;
+    return 'busy';
   }
   const release = markBusy(id);
   try {
     const updated = await apiSend<Idea>('PATCH', `/ideas/${id}`, { content });
     applyLocalUpsert(updated);
-    return true;
+    return 'saved';
   } catch (error) {
     reportError(error, '保存失败');
-    return false;
+    return 'failed';
   } finally {
     release();
   }
@@ -359,20 +363,20 @@ async function onSaveContent(id: string, content: string): Promise<boolean> {
 /**
  * 保存标签（覆盖式：给的就是全部标签）。
  *
- * @returns true 表示存好了，false 表示失败（失败已弹提示，编辑器留着草稿）。
+ * @returns `'saved'` / `'failed'` / `'busy'`，同 {@link onSaveContent}。
  */
-async function onSaveTags(id: string, tags: string[]): Promise<boolean> {
+async function onSaveTags(id: string, tags: string[]): Promise<SaveOutcome> {
   if (busyIds.value.has(id)) {
-    return false;
+    return 'busy';
   }
   const release = markBusy(id);
   try {
     const updated = await apiSend<Idea>('PUT', `/ideas/${id}/tags`, { tags });
     applyLocalUpsert(updated);
-    return true;
+    return 'saved';
   } catch (error) {
     reportError(error, '保存标签失败');
-    return false;
+    return 'failed';
   } finally {
     release();
   }

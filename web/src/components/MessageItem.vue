@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import type { Idea } from '../api/types';
 import { formatRelativeTime } from '../lib/format';
+import type { SaveOutcome } from '../lib/save';
 import TagEditor from './TagEditor.vue';
 
 const props = defineProps<{
@@ -18,14 +19,17 @@ const props = defineProps<{
   /** 标签补全：父组件提供（请求在页面层发，组件不碰网络）。 */
   suggest: (prefix: string) => string[];
   /**
-   * 保存正文：resolve 出 `true` 表示存好了。
+   * 保存正文：resolve 出保存结果（见 {@link SaveOutcome}）。
    *
    * 用 prop 而不是 emit：编辑框要**等保存结果**才知道是退出编辑态还是留在里面，
    * emit 拿不到父组件处理器的返回值。失败时正文留在编辑框里 —— 用户刚敲的不能丢。
+   *
+   * 结果要能分出「被在飞保护挡下了」（`'busy'`）：这一版**没发出去**，
+   * 调用方得知道要重新入队等在飞结束再补存 —— 混在「失败」里的话那次改动就静默丢了。
    */
-  onSaveContent: (id: string, content: string) => Promise<boolean>;
-  /** 保存标签：resolve 出 `true` 表示存好了（失败时留在编辑态）。 */
-  onSaveTags: (id: string, tags: string[]) => Promise<boolean>;
+  onSaveContent: (id: string, content: string) => Promise<SaveOutcome>;
+  /** 保存标签：resolve 出保存结果（三态，同上）。 */
+  onSaveTags: (id: string, tags: string[]) => Promise<SaveOutcome>;
 }>();
 
 const emit = defineEmits<{
@@ -44,13 +48,33 @@ const editing = ref(false);
 const draft = ref('');
 
 /**
+ * 正文的改动序号：每次改动 +1。
+ *
+ * 用来判断「攒着的那一版」是不是已经过时：用户连着改正文时，
+ * 先发出去的那次保存可能回来得很晚 —— 那时用户又改了，
+ * 回来的这一版就不该覆盖更新的那一版。
+ */
+let contentSeq = 0;
+
+/**
  * 攒着的正文（在飞时被挡下的那一版，等在飞结束再存）。
  *
  * 同一条目上同时只允许一个写操作，所以「保存正文」有可能撞上别的操作
  * （比如用户点「标记完成」）。这时候不能直接把这次保存丢掉 ——
  * 用户点了别处就以为存好了，实际既没落库也没提示。
+ *
+ * 带上 `seq`：改动序号，用来判断回来的保存结果是不是已经过时
+ * （用户又改过了的话，回来的是旧的一版，不能覆盖更新的那一版）。
  */
-const pendingContent = ref<string | null>(null);
+const pendingContent = ref<{ seq: number; content: string } | null>(null);
+
+/**
+ * 攒着的标签（被在飞保护挡下的那一版，等在飞结束再存）。
+ *
+ * 带上 `seq`：改动序号，用来判断回来的保存结果是不是已经过时
+ * （用户又改过了的话，回来的是旧的一版，不能覆盖新的）。
+ */
+const pendingTags = ref<{ seq: number; tags: string[] } | null>(null);
 
 /** 编辑框本身（进入编辑态后把焦点放进去）。 */
 const editor = ref<HTMLTextAreaElement | null>(null);
@@ -79,8 +103,6 @@ const serverTags = ref<string[]>([]);
  * 不需要在这里存第二份。
  */
 const unsavedTags = ref<string[] | null>(null);
-/** 攒着的标签（在飞时被挡下的那一版，等在飞结束再存）。 */
-const pendingTags = ref<string[] | null>(null);
 
 /**
  * 标签集合的规范形式：去空白、丢空串、按大小写不敏感去重、再排序。
@@ -179,7 +201,7 @@ function cancelEdit(): void {
  *
  * 在飞时（同一条目上别的写操作在跑）**不能直接丢掉这次保存**：
  * 用户点走了就以为存好了，实际既没落库也没有任何提示。
- * 所以先把草稿攒着（`pendingContent`），等在飞结束自动补存。
+ * 所以先把草稿攒着（`pendingContent`），等在飞自动补存。
  */
 async function saveEdit(): Promise<void> {
   if (!editing.value) {
@@ -188,7 +210,7 @@ async function saveEdit(): Promise<void> {
   if (props.busy) {
     // 内容没变就没什么要补存的（省掉一次没必要的请求）。
     if (draft.value !== props.idea.content) {
-      pendingContent.value = draft.value;
+      pendingContent.value = { seq: ++contentSeq, content: draft.value };
     }
     return;
   }
@@ -198,17 +220,43 @@ async function saveEdit(): Promise<void> {
     draft.value = '';
     return;
   }
-  await saveContent(draft.value);
+  const content = draft.value;
+  const seq = ++contentSeq;
+  const outcome = await saveContent(content, seq);
+  if (outcome === 'busy') {
+    // 被在飞保护挡下了：这次压根没发出去 —— 攒着，等在飞结束再补存。
+    // （期间用户又改过、已经攒了更新的那一版的话，更新的那版留着 —— 它才是用户要的。）
+    if (!pendingContent.value || pendingContent.value.seq < seq) {
+      pendingContent.value = { seq, content };
+    }
+  }
 }
 
-/** 真的发一次保存。存好了退出编辑态；失败留在里面，草稿不丢。 */
-async function saveContent(content: string): Promise<void> {
-  const ok = await props.onSaveContent(props.idea.id, content).catch(() => false);
-  if (ok) {
-    editing.value = false;
-    draft.value = '';
-    pendingContent.value = null;
+/**
+ * 真的发一次保存。
+ *
+ * @param seq 这一版正文的序号（用来判断回来的结果是不是已经过时）。
+ * @returns 保存结果。`'busy'` = 被在飞保护挡下，**这次压根没发出去** ——
+ *   调用方要把它重新入队，等在飞结束再补存。
+ *   （不能当失败处理：失败有提示，用户知道没存上；被挡下若也当失败，
+ *   这一版改动就既没落库也没提示 —— 静默丢。）
+ */
+async function saveContent(content: string, seq: number): Promise<SaveOutcome> {
+  const outcome = await props
+    .onSaveContent(props.idea.id, content)
+    .catch(() => 'failed' as SaveOutcome);
+  if (outcome === 'saved') {
+    // 存的还是当前草稿才收起编辑态（期间用户又改过就别动他的新草稿）。
+    if (draft.value === content) {
+      editing.value = false;
+      draft.value = '';
+    }
+    // 攒着的那一版不比这次新 → 已被这次覆盖，清掉（更新的那一版留着）。
+    if (pendingContent.value && pendingContent.value.seq <= seq) {
+      pendingContent.value = null;
+    }
   }
+  return outcome;
 }
 
 /** 把焦点放进编辑框（进来就能接着改）。 */
@@ -234,13 +282,15 @@ function onEditorKeydown(event: KeyboardEvent): void {
 function startTagEdit(): void {
   // 上次收起时还没落库的那一版：捡回来（用户不用重敲一遍）。
   const restored = unsavedTags.value;
-  unsavedTags.value = null;
   // 服务端那边已经存上了（别处改的）就不用捡了。
   const pending = restored !== null && !sameTags(restored, serverTags.value);
   tagDraft.value = pending ? [...restored] : [...serverTags.value];
   tagEditing.value = true;
   if (pending) {
     // 捡回来的那版还没落库：再存一次（上次多半是网络断了）。
+    // **静默**：用户只是打开编辑器看看、没改任何东西 ——
+    // 失败不该弹「保存标签失败」，那会让人莫名其妙（他没保存过）。
+    // （`unsavedTags` 不在这里清：存上了由 saveTags 清；没存上就留着，下次再捡。）
     void onTagsChange(tagDraft.value);
   }
 }
@@ -282,6 +332,51 @@ function toggleTagEdit(): void {
 }
 
 /**
+ * 标签改动的序号：每次改动 +1。
+ *
+ * 用来判断「攒着的那一版」是不是已经过时了：用户连着改标签时，
+ * 先发出去的那次保存可能回来得很晚 —— 那时用户又改了，
+ * 回来的这一版就不该覆盖更新的那一版。
+ */
+let tagSeq = 0;
+
+/**
+ * 已经落到服务端的最新那一版的序号。
+ *
+ * 两次保存的响应可能**乱序**回来（后发的那次先到）：这时后到的那次是旧的一版，
+ * 不能拿它覆盖「服务端当前值」—— 否则界面会显示一个比实际旧的标签集。
+ */
+let savedTagSeq = 0;
+
+/**
+ * 发一次标签保存。
+ *
+ * @param seq 这一版改动的序号（用来判断回来的结果是不是已经过时）。
+ * @returns 保存结果。`'busy'` = 被在飞保护挡下，**这次压根没发出去** ——
+ *   调用方要把它重新入队，等在飞结束再补存（不能当失败处理：
+ *   失败有提示，用户知道没存上；被挡下若也当失败，这次改动就静默没了）。
+ */
+async function saveTags(tags: string[], seq: number): Promise<SaveOutcome> {
+  const outcome = await props
+    .onSaveTags(props.idea.id, tags)
+    .catch(() => 'failed' as SaveOutcome);
+  if (outcome === 'saved') {
+    // 乱序回来的旧一版不覆盖新的（后发的那次先到了）。
+    if (seq >= savedTagSeq) {
+      savedTagSeq = seq;
+      serverTags.value = [...tags];
+      // 存上了，之前攒着的那一版（没落库的）就没意义了。
+      unsavedTags.value = null;
+    }
+    // 攒着的那一版不比这次新 → 已被这次覆盖，清掉（更新的那一版留着）。
+    if (pendingTags.value && pendingTags.value.seq <= seq) {
+      pendingTags.value = null;
+    }
+  }
+  return outcome;
+}
+
+/**
  * 标签变了：立刻存。**存好了不收起编辑器**，失败留在里面（草稿不丢）。
  *
  * 收起是用户自己的动作（点「✓ 完成编辑」）：编辑标签是**一段连续的会话**
@@ -293,44 +388,114 @@ function toggleTagEdit(): void {
  *
  * 存上了就把「服务端当前值」更新成这一版：父组件覆盖 `props.idea` 要等下一次渲染，
  * 那之前收起的判断会拿旧值跟新草稿比，误判成「还有未保存的改动」。
+ *
+ * @returns 保存结果（`'busy'` = 被在飞保护挡下，这次压根没发出去）。
  */
-async function onTagsChange(next: string[]): Promise<void> {
+async function onTagsChange(next: string[]): Promise<SaveOutcome> {
   tagDraft.value = next;
+  const seq = ++tagSeq;
   if (props.busy) {
-    pendingTags.value = next;
-    return;
+    // 在飞：先攒着，等在飞结束再补存。
+    pendingTags.value = { seq, tags: next };
+    return 'busy';
   }
-  const saved = await props.onSaveTags(props.idea.id, next).catch(() => false);
-  if (saved) {
-    serverTags.value = [...next];
-    // 存上了，之前攒着的那一版（没落库的）就没意义了。
-    unsavedTags.value = null;
+  const outcome = await saveTags(next, seq);
+  if (outcome === 'busy' && (!pendingTags.value || pendingTags.value.seq < seq)) {
+    // 被在飞保护挡下了：这次压根没发出去 —— 攒着，等在飞结束再补存。
+    // （期间用户又改过的话，攒着的该是更新的那一版。）
+    pendingTags.value = { seq, tags: next };
   }
+  return outcome;
 }
+
+/** 补存进行中（防止 watch 连续触发时并发补存）。 */
+let flushing = false;
+
+/** 补存期间又来了一次触发：这一轮结束后再补一轮。 */
+let flushAgain = false;
 
 /**
  * 在飞的操作结束了：把刚才没存上的那一版补存。
  *
  * 那次保存被在飞保护挡下了（同一个条目同时只允许一个写操作）。
- * 正文与标签各攒一份，谁先攒上就先补谁。
+ *
+ * **必须串行**：正文与标签分两次发，不能并发 ——
+ * 并发的话第二个请求会被在飞保护挡下（第一个请求刚发出时父组件就把这条
+ * 标成在飞了），而那一版改动既没落库也没有任何提示：静默丢。
  */
+async function flushPending(): Promise<void> {
+  if (flushing) {
+    // 已经有一轮在补了：这一轮结束后再补一轮（别并发发两个写）。
+    flushAgain = true;
+    return;
+  }
+  flushing = true;
+  try {
+    do {
+      flushAgain = false;
+      await flushOnce();
+    } while (flushAgain);
+  } finally {
+    flushing = false;
+  }
+}
+
+/**
+ * 补存一轮：先正文、再标签（串行，见 {@link flushPending}）。
+ *
+ * 这里**直接调** {@link saveContent} / {@link saveTags}，不走
+ * {@link onTagsChange} 的「在飞就先攒着」那条路：
+ * 补存就是在飞结束时做的，此刻 `props.busy` 可能还是旧值（父组件刚释放、
+ * 子组件还没重渲染），拿它当依据会把该发的请求又攒回去。
+ * 真正准的是父组件的守卫 —— 它挡下了就回 `'busy'`，我们再攒回去。
+ *
+ * 循环着补：补存期间用户可能又改了（新的改动会再攒进来），
+ * 一次补完再回头看有没有新的 —— 别让新攒下的那版等到下一次在飞结束。
+ */
+async function flushOnce(): Promise<void> {
+  for (;;) {
+    const content = pendingContent.value;
+    if (content !== null) {
+      pendingContent.value = null;
+      // 内容跟服务端已经一致了就别再存一次（刚那次保存其实已经存上了）。
+      if (editing.value && content.content !== props.idea.content) {
+        const outcome = await saveContent(content.content, content.seq);
+        if (outcome === 'busy') {
+          // 被在飞保护挡下了：这一版还在，放回去等下一次在飞结束再补存。
+          // （期间攒了更新的那一版的话，那一版才是用户要的 —— 别覆盖它。）
+          if (pendingContent.value === null) {
+            pendingContent.value = content;
+          }
+          // 别在这儿死循环：等下一次在飞结束（父组件会再翻转 busy）再补。
+          return;
+        }
+      }
+      continue;
+    }
+    // 正文这次结束了（无论成功失败），再看标签有没有攒着。
+    const tags = pendingTags.value;
+    if (tags !== null) {
+      pendingTags.value = null;
+      const outcome = await saveTags(tags.tags, tags.seq);
+      if (outcome === 'busy') {
+        if (pendingTags.value === null) {
+          pendingTags.value = tags;
+        }
+        return;
+      }
+      continue;
+    }
+    return;
+  }
+}
+
 watch(
   () => props.busy,
   (busy) => {
     if (busy) {
       return;
     }
-    const pending = pendingContent.value;
-    pendingContent.value = null;
-    // 内容跟服务端已经一致了就别再存一次（刚那次保存其实已经存上了）。
-    if (pending !== null && editing.value && pending !== props.idea.content) {
-      void saveContent(pending);
-    }
-    if (pendingTags.value) {
-      const pendingTagsValue = pendingTags.value;
-      pendingTags.value = null;
-      void onTagsChange(pendingTagsValue);
-    }
+    void flushPending();
   },
 );
 
