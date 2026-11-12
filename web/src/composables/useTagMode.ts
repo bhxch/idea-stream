@@ -24,7 +24,9 @@ function writeStoredMode(mode: TagMode): void {
   try {
     globalThis.localStorage?.setItem(STORAGE_KEY, mode);
   } catch {
-    // 忽略：偏好存不下就退化成「本次会话内有效」。
+    // 忽略：偏好存不下不影响功能。
+    // 但下次读是以 localStorage 为准的，写失败等于这次选择没存住，
+    // 模式会回到存着的那个值（没存过就是 or）。
   }
 }
 
@@ -45,8 +47,10 @@ function setTagMode(mode: TagMode): void {
  * 拿到 AND/OR 模式。
  *
  * 返回的是**共享的** ref，所以任何一处调用 `setTagMode`，其它地方立刻看到变化。
- * 每次调用都以 localStorage 为准重新读一次：本地存储才是这个偏好的唯一来源，
- * 别的标签页改了设置，这里也跟得上。
+ * 每次调用都以 localStorage 为准重新读一次：本地存储才是这个偏好的唯一来源。
+ *
+ * 只在**本页面内**同步：没有监听 `storage` 事件，别的标签页改了设置这里不会跟着变
+ * （单页应用不需要跨标签页同步）。
  */
 export function useTagMode(): { tagMode: Ref<TagMode>; setTagMode: (mode: TagMode) => void } {
   tagMode.value = readStoredMode();
