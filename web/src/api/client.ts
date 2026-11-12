@@ -122,7 +122,18 @@ async function request<T>(
   if (!text) {
     return undefined as T;
   }
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // 状态码是 2xx 但响应体不是 JSON：多半是后端的 index.html 兜底
+    // 把拼错的 API 路径接住了（Task 12 接上 MapFallbackToFile 之后）。
+    // 抛 ApiError 而不是裸 SyntaxError，上层才拿得到 code/detail 去展示。
+    throw new ApiError({
+      title: '响应不是 JSON',
+      status: response.status,
+      detail: `接口返回了非 JSON 的响应体（HTTP ${response.status}），可能是前端路由兜底的 index.html。`,
+    });
+  }
 }
 
 /** 发 GET 请求。查询参数里值为 undefined 的会被跳过。 */

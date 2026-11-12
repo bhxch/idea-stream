@@ -82,6 +82,21 @@ describe('apiGet', () => {
     expect(apiError.message).toBe('想法正文为空或全是空白');
   });
 
+  it('2xx 但响应体不是 JSON 时抛 ApiError，而不是裸 SyntaxError', async () => {
+    // 后端接上 index.html 兜底后，路径写错的 API 会拿到 200 + HTML。
+    const fetchMock = vi.fn(
+      async () => new Response('<!doctype html><title>index</title>', { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const error = await apiGet('/typo').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    const apiError = error as ApiError;
+    expect(apiError.problem.title).toContain('JSON');
+    expect(apiError.problem.status).toBe(200);
+  });
+
   it('非 2xx 且响应体不是 JSON 时抛 ApiError，problem 只剩 title 与 status', async () => {
     const fetchMock = vi.fn(async () => new Response('<html>oops</html>', { status: 502 }));
     vi.stubGlobal('fetch', fetchMock);
