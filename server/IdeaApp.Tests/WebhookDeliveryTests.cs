@@ -215,17 +215,44 @@ public sealed class WebhookDeliveryTests
     }
 
     /// <summary>
-    /// 手动重投一条**失败**的投递：返回的记录是「投递中」，且**没有上次那个错误**。
-    /// </summary>
+    /// 手动重投一条**失败**的投递：那一行回到「投递中」，且**没有上次那个错误**。
+    ///
     /// <remarks>
     /// 「投递中」却挂着上次那个错，看的人会以为「还没重投成功、又要再点一次」。
     /// 所以重投时要把错误清掉。
+    /// <para>
+    /// 这条**不赌时序**：目标端点把**重投那次**的请求卡住不放
+    /// （同时把请求超时调大，卡住的状态不会因为超时被解除）——
+    /// 重投的这次投递一直在途，那一行必然停在「投递中」+ 没有错误。
+    /// </para>
+    /// <para>
+    /// 旧写法（不卡端点）会**间歇失败**：worker 可能在这条请求返回之前就把重投做完
+    /// （那一行变成 attempts=2 的新失败），这时响应报的是**当前**的真实状态（failed），
+    /// 而不是「投递中」—— 那不是 bug，是「响应说真话」。
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task Manual_retry_clears_the_previous_error()
     {
-        using var endpoint = new FakeEndpoint { StatusCodeProvider = _ => 500 };
-        using var factory = new TestAppFactory(webhookMaxAttempts: 1);
+        // 重投那次请求的「放行」开关：卡住 → 在途；放行 → 目标端点回 500。
+        var releaseRetryRequest = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // 第 1 次请求（worker 发的那次）立刻回 500 → 死信；
+        // 第 2 次（手动重投）卡住不放 —— 重投一直在途。
+        using var endpoint = new FakeEndpoint
+        {
+            StatusCodeProvider = _ => 500,
+            OnRequestAsync = async index =>
+            {
+                if (index == 1)
+                {
+                    return;
+                }
+
+                await releaseRetryRequest.Task;
+            }
+        };
+        using var factory = new TestAppFactory(webhookMaxAttempts: 1, webhookTimeoutSeconds: 3600);
         using var client = factory.CreateClient();
 
         var webhookId = await CreateWebhookAsync(client, endpoint.Url, ["idea.created"]);
@@ -239,15 +266,33 @@ public sealed class WebhookDeliveryTests
         var retry = await client.PostAsync($"/api/webhooks/{webhookId}/deliveries/{deliveryId}/retry", null);
         Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
 
+        // 响应里就是「投递中」+ 没有上次那个错误。
         using var document = JsonDocument.Parse(await retry.Content.ReadAsStringAsync());
         Assert.Equal("pending", document.RootElement.GetProperty("status").GetString());
         Assert.Null(document.RootElement.GetProperty("lastError").GetString());
 
+        // 库里也是「投递中」+ 没有上次那个错误。
+        var row = Assert.Single(await ReadDeliveriesAsync(client, webhookId));
+        Assert.Equal("pending", row.GetProperty("status").GetString());
+        Assert.Null(row.GetProperty("lastError").GetString());
+
         // 重投**不重置** attempts：它接着上次的次数继续累加（口径 = 总尝试次数）。
-        // 这里目标端点还在 500，所以重投那次也失败 → 记录变成 attempts == 2。
+        // 重投那次还在途 → 还没记账 → attempts 仍然是 1。
+        Assert.Equal(1, row.GetProperty("attempts").GetInt32());
+
+        // 重投确实发出去了（第 2 个请求到了目标端点），而且被卡在那里。
+        await endpoint.WaitForRequestsAsync(2, TimeSpan.FromSeconds(20));
+
+        // 放行重投那次请求：它回 500 → 这次尝试记在**同一行**上 → attempts 变成 2。
+        releaseRetryRequest.TrySetResult(true);
+
         var afterRetry = await WaitForDeliveryAsync(
-            client, webhookId, d => d.GetProperty("attempts").GetInt32() == 2, TimeSpan.FromSeconds(20));
+            client,
+            webhookId,
+            d => d.GetProperty("attempts").GetInt32() == 2 && d.GetProperty("status").GetString() == "failed",
+            TimeSpan.FromSeconds(20));
         Assert.Equal("failed", afterRetry.GetProperty("status").GetString());
+        Assert.Equal(2, afterRetry.GetProperty("attempts").GetInt32());
     }
 
     /// <summary>
@@ -264,6 +309,11 @@ public sealed class WebhookDeliveryTests
     /// → 队列只进不出），下一次入队就必然失败。
     /// <b>断言仍然走 HTTP 契约</b>；用到的后台类型只用来准备这个前置条件。
     /// </para>
+    /// <para>
+    /// 「卡住」是**稳的**，不靠真实超时：请求超时被调到 3600 秒 ——
+    /// 卡住的请求在整条测试期间都不会超时，8 个并发位就一直占着，
+    /// 队列就一直满着（默认 10 秒超时的话，机器一慢并发位就被腾出来，队列被排空）。
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task Manual_retry_that_cannot_be_queued_keeps_the_failed_record_and_its_error()
@@ -274,7 +324,7 @@ public sealed class WebhookDeliveryTests
             // 收到请求就不回：worker 的并发位全卡在这儿，队列只进不出。
             OnRequestAsync = _ => Task.Delay(Timeout.Infinite)
         };
-        using var factory = new TestAppFactory(webhookMaxAttempts: 1);
+        using var factory = new TestAppFactory(webhookMaxAttempts: 1, webhookTimeoutSeconds: 3600);
         using var client = factory.CreateClient();
 
         var webhookId = await CreateWebhookAsync(client, failingEndpoint.Url, ["idea.created"]);
@@ -294,7 +344,7 @@ public sealed class WebhookDeliveryTests
         FillDeliveryQueue(worker, filler);
 
         // 等 worker 的 8 个并发位全卡在目标端点上：队列不会再被消费，「满」是稳的。
-        await blockingEndpoint.WaitForRequestsAsync(8, TimeSpan.FromSeconds(10));
+        await blockingEndpoint.WaitForRequestsAsync(8, TimeSpan.FromSeconds(30));
 
         // 再塞一次：这一次队列确实是满的。
         FillDeliveryQueue(worker, filler);

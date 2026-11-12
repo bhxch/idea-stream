@@ -56,6 +56,10 @@ public sealed class DeliveryService(
     /// 重投与在途投递可能**同时**改着同一行，所以这里只做「定向的状态改动」，
     /// 不拿读出来的旧快照整行覆盖回去（那会把在途投递刚写的 attempts 抹掉）。
     /// </para>
+    /// <para>
+    /// 返回的记录**永远是这一行现在的样子**：置不成 pending 时回读一次再返回，
+    /// 不报一个假的「投递中」。
+    /// </para>
     /// </remarks>
     public DeliveryDto Retry(string webhookId, string deliveryId)
     {
@@ -82,18 +86,23 @@ public sealed class DeliveryService(
         // 入队成功 → 把这一行置回「投递中」并清掉上次的错误。
         // 带前置条件：只有这一行还是我们读到时的样子（状态与尝试次数都没变）才改 ——
         // 入队之后 worker 可能已经把这次投递投完了，那边的结果比我们的重投更该算数。
-        var rearmed = deliveries.MarkPending(record.Id, record.Status, record.Attempts);
-
-        // 没置成（那一行在我们读它之后被改过）就如实返回我们读到的那份：
-        // 与其报一个假的「投递中」，不如把这一行现在的样子给出去。
-        return ToDto(rearmed
-            ? record with
+        if (deliveries.MarkPending(record.Id, record.Status, record.Attempts))
+        {
+            return ToDto(record with
             {
                 Status = DeliveryStatuses.Pending,
                 LastError = null,
                 UpdatedAt = DateTimeOffset.UtcNow
-            }
-            : record);
+            });
+        }
+
+        // 没置成：那一行在我们读它之后被改过了（多半是 worker 已经把这次重投投完）。
+        // **回读一次**再返回 —— 库里是什么状态，响应就报什么状态：
+        // 返回读时那份旧快照的话，接口会说「failed」而库里已经是「delivered」
+        // （或者反过来），用户看到的与真实情况对不上。
+        var current = deliveries.Get(record.Id) ?? record;
+
+        return ToDto(current);
     }
 
     /// <summary>列表最多返回多少条（与每个 webhook 保留的记录数一致）。</summary>
