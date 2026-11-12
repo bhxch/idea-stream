@@ -544,7 +544,9 @@ async function onBulkDelete(): Promise<void> {
  * 把它的 id 记进 `focusIdeaId`，F11 拿它滚动定位过去。
  */
 async function onMergeConfirm(content: string): Promise<void> {
-  const ids = [...selectedIds.value];
+  // 用 `selectedIdeas` 的顺序（列表顺序），不是勾选顺序 ——
+  // 合并对话框里的预览就是这个顺序，两个对不上会误导排查。
+  const ids = selectedIdeas.value.map((idea) => idea.id);
   if (ids.length < 2 || batchBusy.value) {
     return;
   }

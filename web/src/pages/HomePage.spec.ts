@@ -663,4 +663,45 @@ describe('HomePage', () => {
     wrapper.unmount();
   });
 
+  it('合并请求里的 ids 按列表顺序（跟预览一致），不是勾选顺序', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([ideaA, ideaB]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    apiSend.mockImplementation((_method: string, path: string) =>
+      path === '/ideas/merge'
+        ? Promise.resolve({ ...ideaA, id: 'idea-merged', content: '甲\n\n乙' })
+        : Promise.resolve([ideaA, ideaB]),
+    );
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // 先勾第二条、再勾第一条：勾选顺序跟列表顺序不一样。
+    const checkboxes = wrapper.findAll('input.select');
+    await checkboxes[1].setValue(true);
+    await checkboxes[0].setValue(true);
+
+    await wrapper.get('.batch-bar button.action--merge').trigger('click');
+    await flushPromises();
+    await wrapper.get('button.action--confirm').trigger('click');
+    await flushPromises();
+
+    // 预览是按列表顺序拼的，请求里的 ids 得是同一个顺序。
+    expect(apiSend).toHaveBeenCalledWith('POST', '/ideas/merge', {
+      ids: ['idea-a', 'idea-b'],
+      content: '甲\n\n乙',
+    });
+    wrapper.unmount();
+  });
 });
