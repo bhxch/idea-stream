@@ -96,6 +96,17 @@ export interface ProjectSnapshot {
  * 没设 `DefaultIgnoreCondition`，null 不会被省略），所以线上报文里这两个键
  * 总是存在，值可能是 `null`。
  *
+ * 因此这两个属性是**必填可空**（`string[] | null`，**没有 `?`**）——
+ * 类型如实反映现实：运行时永远不会是 `undefined`。
+ *
+ * 去掉 `?` 换来的两道编译期护栏：
+ * - 构造事件对象时漏写这两个键 → TS2739（属性缺失）；
+ * - 不判空就 `changed.length` → TS18047（可能是 null）。
+ *
+ * 注意：**`changed === undefined` 不会被 TS 拦下**（相等性比较的可比性检查
+ * 在目标类型是 null/undefined 时直接放行），它只是运行时恒假 ——
+ * 所以「该事件没有 changed 概念」必须用 `changed === null` 判定。
+ *
  * `changed` 是**三态**，三种都要分别处理：
  * - `null`：该事件类型没有「改了什么」的概念（如 `idea.created`）——
  *   判定要用 `changed === null`，**不是** `changed === undefined`；
@@ -110,8 +121,8 @@ export interface IdeaEvent {
   timestamp: string;
   project: ProjectSnapshot | null;
   idea: Idea | null;
-  changed?: string[] | null;
-  mergedFrom?: string[] | null;
+  changed: string[] | null;
+  mergedFrom: string[] | null;
 }
 
 /**

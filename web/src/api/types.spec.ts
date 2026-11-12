@@ -54,4 +54,50 @@ describe('IdeaEvent 的线上报文形状', () => {
     expect(evt.project?.sortOrder).toBe(3);
     expect(evt.project?.name).toBe('项目');
   });
+
+  it('与 undefined 比较不会被 TS 拦下 —— 那是运行时恒假的写法，判定要用 === null', () => {
+    const evt: IdeaEvent = {
+      id: 'e4',
+      type: 'idea.created',
+      timestamp: '2026-11-12T00:00:00Z',
+      project: null,
+      idea: null,
+      changed: null,
+      mergedFrom: null,
+    };
+
+    // 说明：TypeScript **不会**为 `x === undefined` 报 TS2367
+    // （相等性比较的可比性检查在目标类型是 null/undefined 时直接放行），
+    // 所以这条断言编译得过、运行时恒为 false —— 正好演示「写 === undefined 会静默走错分支」。
+    expect(evt.changed === undefined).toBe(false);
+    expect(evt.mergedFrom === undefined).toBe(false);
+  });
+
+  it('两个键是必填的：漏写会编译不过（TS2739）', () => {
+    // @ts-expect-error 后端恒写出 changed 与 mergedFrom，构造事件时必须给全。
+    const incomplete: IdeaEvent = {
+      id: 'e5',
+      type: 'idea.created',
+      timestamp: '2026-11-12T00:00:00Z',
+      project: null,
+      idea: null,
+    };
+
+    expect(incomplete).toBeDefined();
+  });
+
+  it('不判空就取 length 会编译不过（TS18047）', () => {
+    const evt: IdeaEvent = {
+      id: 'e6',
+      type: 'idea.updated',
+      timestamp: '2026-11-12T00:00:00Z',
+      project: null,
+      idea: null,
+      changed: ['content'],
+      mergedFrom: null,
+    };
+
+    // @ts-expect-error changed 的类型含 null，编译期强制先判空再用。
+    expect(evt.changed.length).toBe(1);
+  });
 });
