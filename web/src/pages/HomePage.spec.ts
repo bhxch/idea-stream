@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushPromises, mount } from '@vue/test-utils';
+import { config, flushPromises, mount, type VueWrapper } from '@vue/test-utils';
+import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import { ApiError } from '../api/client';
 import type { Idea, Project } from '../api/types';
 import MessageList from '../components/MessageList.vue';
@@ -74,7 +75,10 @@ function tooManyError(): ApiError {
   });
 }
 
-beforeEach(() => {
+/** 这一轮测试用的路由（HomePage 要用 useRoute/useRouter）。 */
+let router: Router;
+
+beforeEach(async () => {
   apiGet.mockReset();
   apiSend.mockReset();
   currentProjectId.value = null;
@@ -94,9 +98,47 @@ beforeEach(() => {
     }
   });
   apiSend.mockResolvedValue({ ...idea, done: true });
+
+  router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/', component: { template: '<div />' } }],
+  });
+  await router.push('/');
+  await router.isReady();
+  // 装成全局插件：每个用例都挂同一个路由，省得每个 mount 都写一遍。
+  config.global.plugins = [router];
 });
 
+/**
+ * 点侧栏里的某个项目（`null` 表示「全部项目」）。
+ *
+ * 宽屏侧栏与窄屏 Tab 渲染的是同一份数据，这里点侧栏那个。
+ */
+async function selectProject(wrapper: VueWrapper, id: string | null): Promise<void> {
+  const key = id ?? 'all';
+  await wrapper.get(`.project-sidebar [data-project-id="${key}"]`).trigger('click');
+}
+
+/** 侧栏里当前标着的是哪个项目（`null` 表示「全部项目」）。 */
+function activeProject(wrapper: VueWrapper): string | null {
+  const active = wrapper.findAll('.project-sidebar .project-sidebar__item.is-active');
+  expect(active).toHaveLength(1);
+  const id = active[0].attributes('data-project-id');
+  return id === 'all' ? null : (id ?? null);
+}
+
 describe('HomePage', () => {
+  it('同一份项目数据渲染两次：宽屏侧栏与窄屏 Tab 都在（互斥显示靠 CSS 媒体查询）', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    expect(wrapper.find('.project-sidebar').exists()).toBe(true);
+    expect(wrapper.find('.project-tabs').exists()).toBe(true);
+    // 两边渲染的是同一批项目。
+    expect(wrapper.get('.project-sidebar').text()).toContain('新项目');
+    expect(wrapper.get('.project-tabs').text()).toContain('新项目');
+  });
+
   it('点「标记完成」会落库，并用返回的想法刷新本地状态', async () => {
     const wrapper = mount(HomePage);
     await flushPromises();
@@ -160,8 +202,8 @@ describe('HomePage', () => {
     // 提示语说的是实际发生的事：应用已经替他切好了。
     expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('已切到最近有活动的项目「新项目」');
     expect(currentProjectId.value).toBe('project-2');
-    // 下拉的值也跟着切过去（列表与下拉必须对得上）。
-    expect((wrapper.get('select').element as HTMLSelectElement).value).toBe('project-2');
+    // 侧栏里标着的也是那个项目（列表与导航必须对得上）。
+    expect(activeProject(wrapper)).toBe('project-2');
     expect(apiGet).toHaveBeenCalledWith('/ideas', { projectId: 'project-2' });
 
     wrapper.unmount();
@@ -197,13 +239,12 @@ describe('HomePage', () => {
       return Promise.resolve([]);
     });
 
-    const select = wrapper.get('select');
-    await select.setValue('project-1');
+    await selectProject(wrapper, 'project-1');
     await flushPromises();
 
     // 回滚到原来的「全部项目」，过滤条件也跟着回去（否则旧数据会被滤成空）。
     expect(currentProjectId.value).toBe(null);
-    expect((select.element as HTMLSelectElement).value).toBe('');
+    expect(activeProject(wrapper)).toBe(null);
     expect(wrapper.get('.list').text()).toContain('一条想法');
     wrapper.unmount();
   });
@@ -240,8 +281,7 @@ describe('HomePage', () => {
       return Promise.resolve([]);
     });
 
-    const select = wrapper.get('select');
-    await select.setValue('project-2');
+    await selectProject(wrapper, 'project-2');
     await flushPromises();
 
     // 回滚了：项目没换，勾选不该跟着没。
@@ -274,8 +314,7 @@ describe('HomePage', () => {
     await checkbox.setValue(true);
     expect((checkbox.element as HTMLInputElement).checked).toBe(true);
 
-    const select = wrapper.get('select');
-    await select.setValue('project-2');
+    await selectProject(wrapper, 'project-2');
     await flushPromises();
 
     expect(currentProjectId.value).toBe('project-2');
@@ -308,9 +347,9 @@ describe('HomePage', () => {
     const toastHost = mount(ToastHost);
     await flushPromises();
 
-    // 补救失败 → 回到原处，不能停在「下拉是 project-2、列表却是空的」。
+    // 补救失败 → 回到原处，不能停在「侧栏标着 project-2、列表却是空的」。
     expect(currentProjectId.value).toBe(null);
-    expect((wrapper.get('select').element as HTMLSelectElement).value).toBe('');
+    expect(activeProject(wrapper)).toBe(null);
     // 提示队列是模块级单例，前面的用例留下的还在 —— 只看新弹的那一条。
     expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('切到最近有活动的项目也失败了');
 
@@ -344,17 +383,16 @@ describe('HomePage', () => {
     await flushPromises();
     const before = toastHost.findAll('.toast').length;
 
-    const select = wrapper.get('select');
-    await select.setValue('project-2');
+    await selectProject(wrapper, 'project-2');
     await flushPromises();
 
     // 只给一条提示（不再对同一个项目切一次、也不再弹第二条）。
     const toasts = toastHost.findAll('.toast');
     expect(toasts.length).toBe(before + 1);
     expect(toasts.at(-1)?.text()).toContain('共 3 条超过单次上限');
-    // 切不过去 → 回到原来的范围，下拉与列表对得上。
+    // 切不过去 → 回到原来的范围，侧栏与列表对得上。
     expect(currentProjectId.value).toBe(null);
-    expect((select.element as HTMLSelectElement).value).toBe('');
+    expect(activeProject(wrapper)).toBe(null);
     // 没有对 project-2 发起第二次请求。
     const project2Calls = apiGet.mock.calls.filter((call) => call[1]?.projectId === 'project-2');
     expect(project2Calls).toHaveLength(1);

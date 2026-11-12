@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { ApiError, apiGet, apiSend } from '../api/client';
 import type { Idea, Project, Tag } from '../api/types';
 import BatchBar from '../components/BatchBar.vue';
@@ -7,6 +8,8 @@ import Composer from '../components/Composer.vue';
 import FilterBar from '../components/FilterBar.vue';
 import MergeDialog from '../components/MergeDialog.vue';
 import MessageList from '../components/MessageList.vue';
+import ProjectSidebar from '../components/ProjectSidebar.vue';
+import ProjectTabs from '../components/ProjectTabs.vue';
 import { showToast } from '../components/ToastHost.vue';
 import { useTagMode } from '../composables/useTagMode';
 import { matchesFilter, sortIdeas, type IdeaFilter } from '../lib/filter';
@@ -23,9 +26,12 @@ import {
   currentProjectId,
   loadProjects,
   loadSortMode,
+  projectSortMode,
   projects,
+  saveSortMode,
   setCurrentProject,
 } from '../stores/projects';
+import type { ProjectSortMode } from '../stores/projects';
 
 /**
  * AND/OR 偏好存在本地（每台设备各自的）。
@@ -33,6 +39,9 @@ import {
  * 组合式函数返回的是共享的 ref，所以切换模式后各处立刻一致。
  */
 const { tagMode, setTagMode } = useTagMode();
+
+/** 路由（项目管理的入口要用它跳转）。 */
+const router = useRouter();
 
 /** 过滤条件。项目、状态、标签三者取交集。 */
 const filter = ref<IdeaFilter>({
@@ -157,29 +166,69 @@ async function switchProject(next: string | null): Promise<SwitchResult> {
 /**
  * 切换项目：换掉列表范围，之前勾选的条目也不再相关。
  *
+ * 入口是项目侧栏（宽屏）与项目 Tab（窄屏）—— 两者渲染的是同一份数据。
+ *
  * 拉取失败时把项目选择**回滚**（见 {@link switchProject}）：
  * 数据还停在上一个项目，`filter.projectId` 若停在新项目，
  * 旧数据会被过滤成空列表 —— 两边必须对齐。
  */
-async function onProjectChange(event: Event): Promise<void> {
-  const select = event.target as HTMLSelectElement;
-  const value = select.value;
+async function onSelectProject(id: string | null): Promise<void> {
   const previous = currentProjectId.value;
-  const next = value === '' ? null : value;
-  const result = await switchProject(next);
+  if (id === previous) {
+    return;
+  }
+  const result = await switchProject(id);
   if (result.ok) {
     return;
   }
-  // 状态回滚了，下拉的 DOM 值也得回去：绑定值前后一样时 Vue 不会重设它，
-  // 不手动改的话下拉会停在用户刚选的那个项目上，与状态对不上。
-  select.value = previous ?? '';
   if (isTooManyIdeas(result.error)) {
     // 切「全部项目」会一次要全库，超了上限 —— 这不是普通的失败，
     // 改切最近有活动的项目（补救在 recoverFromTooMany 里）。
-    await recoverFromTooMany(result.error, next);
+    await recoverFromTooMany(result.error, id);
     return;
   }
   reportError(result.error, '加载想法失败');
+}
+
+/**
+ * 去项目管理页。
+ *
+ * 新建项目、项目改名/删除这些是**管理**动作，归项目管理页（Task F8）。
+ * 这一轮只做布局与接线，所以这两个入口先指向那里。
+ */
+function onManageProjects(): void {
+  void router.push('/projects');
+}
+
+/**
+ * 拖拽重排项目（只有「手动排序」模式下才拖得动）。
+ *
+ * 顺序存在后端：重排成功后用返回的项目列表覆盖本地（后端重写了全表的
+ * sort_order，返回值才是真的顺序）。
+ */
+async function onReorderProjects(ids: string[]): Promise<void> {
+  try {
+    projects.value = await apiSend<Project[]>('POST', '/projects/reorder', { ids });
+  } catch (error) {
+    reportError(error, '重排项目失败');
+    // 顺序没改成功，本地显示的顺序可能已经跟后端对不上了：拉回来。
+    await loadProjects();
+  }
+}
+
+/**
+ * 切换项目排序方式。
+ *
+ * 排序方式存在后端（跨设备共享），所以改完要重新拉一次项目列表 ——
+ * 两种方式下后端给的顺序不一样。
+ */
+async function onChangeSortMode(mode: ProjectSortMode): Promise<void> {
+  try {
+    await saveSortMode(mode);
+    await loadProjects();
+  } catch (error) {
+    reportError(error, '切换排序方式失败');
+  }
 }
 
 /**
@@ -588,51 +637,81 @@ onMounted(() => {
 </script>
 
 <template>
+  <!--
+    两版布局：同一份项目数据渲染两次（宽屏侧栏、窄屏 Tab），
+    互斥显示由下面的媒体查询决定（断点 1024px）。
+  -->
   <main class="home">
-    <header class="bar">
-      <h1 class="bar__title">想法</h1>
-      <label class="bar__project">
-        项目
-        <select class="bar__select" :value="currentProjectId ?? ''" @change="onProjectChange">
-          <option value="">全部项目</option>
-          <option v-for="project in projects" :key="project.id" :value="project.id">
-            {{ project.name }}（{{ project.ideaCount }}）
-          </option>
-        </select>
-      </label>
-    </header>
+    <aside class="home__sidebar">
+      <ProjectSidebar
+        :projects="projects"
+        :current-id="currentProjectId"
+        :mode="projectSortMode"
+        @select="onSelectProject"
+        @new-project="onManageProjects"
+        @reorder="onReorderProjects"
+        @change-mode="onChangeSortMode"
+      />
+    </aside>
 
-    <FilterBar :filter="activeFilter" :all-tags="allTags" @update:filter="onFilterUpdate" />
+    <section class="home__content">
+      <header class="bar">
+        <h1 class="bar__title">想法</h1>
+      </header>
 
-    <p v-if="loading" class="hint">加载中…</p>
+      <div class="home__tabs">
+        <ProjectTabs
+          :projects="projects"
+          :current-id="currentProjectId"
+          :mode="projectSortMode"
+          @select="onSelectProject"
+          @new-project="onManageProjects"
+          @open-menu="onManageProjects"
+        />
+      </div>
 
-    <MessageList
-      :ideas="visibleIdeas"
-      :selected-ids="selectedIds"
-      :busy-ids="busyIds"
-      :at-bottom="atBottom"
-      :suggest="suggestTags"
-      :on-save-content="onSaveContent"
-      :on-save-tags="onSaveTags"
-      @toggle-select="onToggleSelect"
-      @toggle-done="onToggleDone"
-      @delete="onDelete"
-    />
+      <div class="home__filters">
+        <FilterBar :filter="activeFilter" :all-tags="allTags" @update:filter="onFilterUpdate" />
+      </div>
 
-    <Composer :on-submit="onSubmit" />
+      <div class="home__body">
+        <div class="home__scroll">
+          <p v-if="loading" class="hint">加载中…</p>
 
-    <BatchBar
-      v-if="selectedIds.size > 0"
-      :count="selectedIds.size"
-      :busy="batchBusy"
-      :suggest="suggestTags"
-      @complete="onBulkComplete(true)"
-      @undo-complete="onBulkComplete(false)"
-      @merge="mergeOpen = true"
-      @delete="onBulkDelete"
-      @add-tags="onBulkAddTags"
-      @clear="onClearSelection"
-    />
+          <MessageList
+            :ideas="visibleIdeas"
+            :selected-ids="selectedIds"
+            :busy-ids="busyIds"
+            :at-bottom="atBottom"
+            :suggest="suggestTags"
+            :on-save-content="onSaveContent"
+            :on-save-tags="onSaveTags"
+            @toggle-select="onToggleSelect"
+            @toggle-done="onToggleDone"
+            @delete="onDelete"
+          />
+        </div>
+
+        <!--
+          批量操作条**随内容流**排（不 fixed）：固定在底部会盖住下面的输入框，
+          页面滚到底部时用户想接着记一条都点不到「记下」。
+        -->
+        <BatchBar
+          v-if="selectedIds.size > 0"
+          :count="selectedIds.size"
+          :busy="batchBusy"
+          :suggest="suggestTags"
+          @complete="onBulkComplete(true)"
+          @undo-complete="onBulkComplete(false)"
+          @merge="mergeOpen = true"
+          @delete="onBulkDelete"
+          @add-tags="onBulkAddTags"
+          @clear="onClearSelection"
+        />
+      </div>
+
+      <Composer :on-submit="onSubmit" />
+    </section>
 
     <MergeDialog
       :open="mergeOpen"
@@ -644,15 +723,39 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/*
+ * 宽度约束：这一轮定成「侧栏 + 内容」两栏，整体居中；
+ * 内容栏不写死宽度，但有上限 —— 太宽的话一行字太长，不好读。
+ */
 .home {
   display: flex;
+  gap: 20px;
+  height: 100vh;
+  /* 移动端浏览器地址栏收起/展开时高度会变，dvh 更准（不支持时用上面的 vh）。 */
+  height: 100dvh;
+  overflow: hidden;
+  justify-content: center;
+  padding: 16px;
+}
+
+.home__sidebar {
+  flex: 0 0 220px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.home__content {
+  display: flex;
   flex-direction: column;
-  gap: 12px;
-  /* 宽度约束留给 F7 的两版布局（侧栏 + 内容），这里不写死居中容器。 */
-  padding: 24px 16px;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  max-width: 880px;
 }
 
 .bar {
+  order: 1;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -664,20 +767,82 @@ onMounted(() => {
   font-size: 20px;
 }
 
-.bar__project {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 13px;
+/* 窄屏：项目收成顶部横向 Tab；宽屏：这一块不显示（见下面的媒体查询）。 */
+.home__tabs {
+  order: 2;
+  min-width: 0;
 }
 
-.bar__select {
-  min-width: 160px;
+/* 宽屏：过滤栏在消息流上面。 */
+.home__filters {
+  order: 2;
+}
+
+.home__body {
+  order: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 消息流的滚动容器：只有它滚，标题与输入框始终留在原地。 */
+.home__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 输入框永远在最下面（宽屏也在下面，与窄屏一致）。 */
+.composer {
+  order: 4;
 }
 
 .hint {
   margin: 0;
   color: var(--muted);
+}
+
+/* 窄屏（<1024px）：侧栏收成顶部 Tab，过滤栏挪到输入框上面。 */
+@media (max-width: 1023px) {
+  .home {
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .home__sidebar {
+    display: none;
+  }
+
+  .home__tabs {
+    display: block;
+    order: 2;
+  }
+
+  .home__body {
+    order: 3;
+  }
+
+  /* 过滤栏移到输入框上方（窄屏上方的横向空间留给 Tab）。 */
+  .home__filters {
+    order: 4;
+  }
+
+  .composer {
+    order: 5;
+  }
+}
+
+/* 宽屏（≥1024px）：左侧项目栏 + 中间消息流。 */
+@media (min-width: 1024px) {
+  .home__sidebar {
+    display: block;
+  }
+
+  .home__tabs {
+    display: none;
+  }
 }
 </style>

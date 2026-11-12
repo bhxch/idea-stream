@@ -200,6 +200,10 @@ function onKeydown(event: KeyboardEvent): void {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
+  /*
+   * 补全下拉要盖在别的浮层上面（批量操作条 z-index 5、标签过滤面板 z-index 20）——
+   * 被盖住的话用户看不见候选，等于补全没生效。
+   */
   z-index: 20;
   display: flex;
   flex-direction: column;

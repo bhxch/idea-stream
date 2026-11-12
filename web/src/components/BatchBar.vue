@@ -155,22 +155,28 @@ function confirmDelete(): void {
 </template>
 
 <style scoped>
+/*
+ * 操作条**随内容流**排（不再 fixed）。
+ *
+ * 之前它固定在视口底部中央，会盖住下面的输入框：勾选条目后页面滚到底部，
+ * 用户想接着记一条都点不到「记下」。现在它排在消息流与输入框之间 ——
+ * 位置还是底部，但不会压住输入框。
+ *
+ * z-index 只比内容高一点：条目里的标签编辑器下拉（z-index 20）要能盖住它，
+ * 反过来被它盖住就看不见候选了。
+ */
 .batch-bar {
-  position: fixed;
-  left: 50%;
-  bottom: 16px;
-  z-index: 30;
+  position: relative;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  max-width: calc(100vw - 32px);
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
   box-shadow: var(--shadow);
-  transform: translateX(-50%);
 }
 
 .count {

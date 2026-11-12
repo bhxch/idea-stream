@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Tag } from '../api/types';
 import type { TagMode } from '../lib/filter';
 
@@ -22,6 +22,9 @@ const emit = defineEmits<{
 /** 下拉面板是否展开。 */
 const open = ref(false);
 
+/** 组件根节点：用来判断「点的是不是组件内部」。 */
+const root = ref<HTMLElement | null>(null);
+
 /** 勾选/取消一个标签。 */
 function toggleTag(name: string): void {
   const next = props.selected.includes(name)
@@ -34,10 +37,47 @@ function toggleTag(name: string): void {
 function toggleMode(): void {
   emit('update:mode', props.mode === 'or' ? 'and' : 'or');
 }
+
+/**
+ * 点组件外面 → 收起面板。
+ *
+ * 面板是浮在下拉按钮下面的一层，不点它就不会消失的话，
+ * 用户会以为「点了没反应」，只能刷新页面。
+ *
+ * 点在组件内部（按钮本身、面板里的复选框）不算「外面」——
+ * 触发按钮的 click 会冒泡到 document，靠这条判断才不会「刚打开就被关掉」。
+ */
+function onDocumentClick(event: MouseEvent): void {
+  if (!open.value) {
+    return;
+  }
+  const target = event.target;
+  if (target instanceof Node && root.value?.contains(target)) {
+    return;
+  }
+  open.value = false;
+}
+
+/** Esc → 收起面板。 */
+function onDocumentKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    open.value = false;
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocumentClick);
+  document.addEventListener('keydown', onDocumentKeydown);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocumentClick);
+  document.removeEventListener('keydown', onDocumentKeydown);
+});
 </script>
 
 <template>
-  <div class="tag-filter">
+  <div ref="root" class="tag-filter">
     <button
       class="tag-filter__trigger"
       type="button"
