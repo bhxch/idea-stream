@@ -559,6 +559,17 @@ export default defineConfig({
 }
 ```
 
+- [ ] **Step 1b: 接线静态文件与 SPA 兜底（后端组合根）**
+
+前端产物落在 `server/IdeaApp/wwwroot/`，**后端要能把它发出去**。在 `server/IdeaApp/Program.cs` 里加两行（**增量加，不要整体替换组合根** —— 它含前 14 个 task 累积的注册）：
+
+```csharp
+app.UseStaticFiles();                 // 必须在 MapFallbackToFile 之前
+app.MapFallbackToFile("index.html");  // history 模式的深链兜底
+```
+
+`UseStaticFiles` 没有它，`wwwroot/assets/` 下的 JS/CSS 全部 404（前端页面会白屏）；`MapFallbackToFile` 没有它，`/projects`、`/trash` 这类前端路由直接 404。
+
 - [ ] **Step 2: 构建并检查产物**
 
 Run: `cd web && npm run build` → Expected: `server/IdeaApp/wwwroot/index.html` 与 `assets/` 存在
