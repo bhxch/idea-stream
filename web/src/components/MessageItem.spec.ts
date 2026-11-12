@@ -180,4 +180,46 @@ describe('MessageItem', () => {
 
     expect(wrapper.findAll('.tag-editor')).toHaveLength(1);
   });
+
+  it('点「完成」收起标签编辑器', async () => {
+    const wrapper = mountItem();
+
+    await wrapper.get('button.action--tags').trigger('click');
+    expect(wrapper.findAll('.tag-editor')).toHaveLength(1);
+
+    await wrapper.get('button.action--tags').trigger('click');
+    expect(wrapper.findAll('.tag-editor')).toHaveLength(0);
+  });
+
+  it('保存还在飞时再改标签，会等前一次结束再存（不能丢）', async () => {
+    let resolveSave: ((ok: boolean) => void) | undefined;
+    const onSaveTags = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    const wrapper = mountItem({ onSaveTags });
+
+    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('甲');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    expect(onSaveTags).toHaveBeenCalledTimes(1);
+
+    // 父组件把这条标成在飞（保存请求还没回来）。
+    await wrapper.setProps({ busy: true });
+    await wrapper.get('.tag-editor input').setValue('乙');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    // 在飞时不能再发一次（会被在飞保护挡下）。
+    expect(onSaveTags).toHaveBeenCalledTimes(1);
+
+    // 前一次存好了、在飞解除 → 攒下的那一版补存。
+    resolveSave?.(true);
+    await flushPromises();
+    await wrapper.setProps({ busy: false });
+    await flushPromises();
+
+    expect(onSaveTags).toHaveBeenCalledTimes(2);
+    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲', '乙']);
+  });
 });

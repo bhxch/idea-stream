@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import type { Idea } from '../api/types';
 import { formatRelativeTime } from '../lib/format';
 import TagEditor from './TagEditor.vue';
@@ -51,6 +51,9 @@ const tagEditing = ref(false);
 
 /** 标签草稿：保存失败时留着，用户能直接重试。 */
 const tagDraft = ref<string[]>([]);
+
+/** 攒着的标签（在飞时被挡下的那一版，等在飞结束再存）。 */
+const pendingTags = ref<string[] | null>(null);
 
 /** 删除的二次确认。 */
 const confirmingDelete = ref(false);
@@ -139,10 +142,31 @@ function startTagEdit(): void {
   tagEditing.value = true;
 }
 
-/** 标签变了：立刻存。存好了收起编辑器，失败留在里面（草稿不丢）。 */
+/** 收起标签编辑器（改动都已经存过了）。 */
+function cancelTagEdit(): void {
+  tagEditing.value = false;
+  tagDraft.value = [];
+}
+
+/** 点「标签」：开着就收起，没开就打开。 */
+function toggleTagEdit(): void {
+  if (tagEditing.value) {
+    cancelTagEdit();
+    return;
+  }
+  startTagEdit();
+}
+
+/**
+ * 标签变了：立刻存。存好了收起编辑器，失败留在里面（草稿不丢）。
+ *
+ * 在飞时（自己的保存，或别的操作）先攒着，等在飞结束再存 ——
+ * 用户连按两下回车，第二个标签不能因为快了一点就没了。
+ */
 async function onTagsChange(next: string[]): Promise<void> {
   tagDraft.value = next;
   if (props.busy) {
+    pendingTags.value = next;
     return;
   }
   const ok = await props.onSaveTags(props.idea.id, next).catch(() => false);
@@ -151,6 +175,23 @@ async function onTagsChange(next: string[]): Promise<void> {
     tagDraft.value = [];
   }
 }
+
+/**
+ * 在飞的操作结束了：把刚才没存上的那一版补存。
+ *
+ * 那次保存被在飞保护挡下了（同一个条目同时只允许一个写操作）。
+ */
+watch(
+  () => props.busy,
+  (busy) => {
+    if (busy || !pendingTags.value) {
+      return;
+    }
+    const pending = pendingTags.value;
+    pendingTags.value = null;
+    void onTagsChange(pending);
+  },
+);
 
 /** 点「删除」：先问一句，别真删。 */
 function requestDelete(): void {
@@ -209,7 +250,6 @@ function confirmDelete(): void {
     <TagEditor
       v-if="tagEditing"
       v-model:value="tagDraft"
-      class="idea__tags"
       :suggest="suggest"
       @update:value="onTagsChange"
     />
@@ -222,9 +262,9 @@ function confirmDelete(): void {
         class="action action--tags"
         type="button"
         :disabled="busy"
-        @click="startTagEdit"
+        @click="toggleTagEdit"
       >
-        🏷 标签
+        {{ tagEditing ? '✓ 完成' : '🏷 标签' }}
       </button>
       <button
         class="action action--delete"
