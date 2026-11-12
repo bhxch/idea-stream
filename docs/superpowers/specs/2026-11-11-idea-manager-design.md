@@ -300,7 +300,7 @@ CREATE TABLE setting (
 }
 ```
 
-`mergedFrom` 只在 `idea.merged` 时出现，其余事件省略。
+`mergedFrom` **恒定写出这个键**（源生成没设 `DefaultIgnoreCondition`，null 不省略），只有在 `idea.merged` 时才是非空数组；其余事件它的值是 `null`。`changed` 同理 —— 恒存在，值可能是 `null`（该事件类型没有「改了什么」的概念）、空数组（写了但值没变）、或非空数组。客户端判定这三态用 `=== null` / `length === 0` / 其它。
 
 **两个格式细节**（实现即如此，客户端按此解析）：
 
