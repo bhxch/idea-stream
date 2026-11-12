@@ -1,4 +1,6 @@
 using System.Text.Json;
+using IdeaApp.Contracts;
+using IdeaApp.Domain;
 using IdeaApp.Infrastructure;
 
 namespace IdeaApp.Tests;
@@ -135,6 +137,187 @@ public sealed class OpenApiDocumentTests
         }
 
         return statuses;
+    }
+
+    /// <summary>
+    /// 契约里必须写得出事件类型：SSE 的 data 帧与 webhook 的投递体都是它。
+    ///
+    /// <para>
+    /// 事件是**前端 SSE 客户端与任何 agent 消费者之间的公共契约**。
+    /// 契约文件里没有它，消费方只能对着服务端源码写类型，写错了没有第二处能发现。
+    /// </para>
+    ///
+    /// <para>
+    /// 这里守三件事：
+    /// <list type="number">
+    /// <item>三个 schema（事件与两个快照）在 <c>components.schemas</c> 里；</item>
+    /// <item><c>changed</c> / <c>mergedFrom</c> 是**必填可空**（后端恒定写出这两个键，
+    /// 值可能是 null）—— 改成「可选」就说明消费方可能整个键都读不到；</item>
+    /// <item>schema 里的字段名与**实际报文**一致（拿真事件序列化一遍来比），
+    /// 免得手写的 schema 与后端记录悄悄对不上。</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Committed_document_declares_event_schemas()
+    {
+        var committed = await File.ReadAllTextAsync(CommittedDocumentPath());
+        using var document = JsonDocument.Parse(committed);
+
+        var schemas = document.RootElement.GetProperty("components").GetProperty("schemas");
+
+        foreach (var name in new[] { "IdeaEvent", "IdeaSnapshot", "ProjectSnapshot" })
+        {
+            Assert.True(schemas.TryGetProperty(name, out _), $"components.schemas 里没有 {name}");
+        }
+
+        var ideaEvent = schemas.GetProperty("IdeaEvent");
+        var eventProperties = ideaEvent.GetProperty("properties");
+        var eventRequired = Required(ideaEvent);
+
+        Assert.Contains("changed", eventRequired);
+        Assert.Contains("mergedFrom", eventRequired);
+
+        // 必填可空 ≠ 可选：键恒在，值可能是 null。
+        Assert.True(AllowsNull(eventProperties.GetProperty("changed")), "changed 必须可空（值可能是 null）");
+        Assert.True(AllowsNull(eventProperties.GetProperty("mergedFrom")), "mergedFrom 必须可空（值可能是 null）");
+
+        // title 同理：string | null，不是「可选」。
+        var snapshot = schemas.GetProperty("IdeaSnapshot");
+        var snapshotProperties = snapshot.GetProperty("properties");
+
+        Assert.Contains("title", Required(snapshot));
+        Assert.True(AllowsNull(snapshotProperties.GetProperty("title")), "title 必须可空（string | null）");
+
+        // 字段名必须与实际报文一致：拿一个「什么都是 null」的真事件序列化一遍。
+        var evt = new IdeaEvent(
+            Id: "0198f0a1b2c3d4e5f60718293a4b5c6d",
+            Type: "idea.created",
+            Timestamp: new DateTimeOffset(2026, 11, 11, 9, 0, 0, TimeSpan.Zero),
+            Project: null,
+            Idea: null,
+            Changed: null,
+            MergedFrom: null);
+
+        var payload = JsonDocument.Parse(JsonSerializer.Serialize(evt, IdeaJsonContext.Default.IdeaEvent));
+
+        Assert.Equal(JsonValueKind.Null, payload.RootElement.GetProperty("changed").ValueKind);
+        Assert.Equal(JsonValueKind.Null, payload.RootElement.GetProperty("mergedFrom").ValueKind);
+
+        Assert.Equal(
+            SortedNames(eventProperties),
+            SortedNames(payload.RootElement));
+
+        // SSE 端点的响应描述要指向 IdeaEvent：消费方看响应就够知道帧的形状。
+        var description = document.RootElement
+            .GetProperty("paths")
+            .GetProperty("/api/events")
+            .GetProperty("get")
+            .GetProperty("responses")
+            .GetProperty("200")
+            .GetProperty("description")
+            .GetString() ?? string.Empty;
+
+        Assert.Contains("IdeaEvent", description, StringComparison.Ordinal);
+        Assert.Contains("text/event-stream", description, StringComparison.Ordinal);
+    }
+
+    /// <summary>schema 的 required 清单。</summary>
+    private static HashSet<string> Required(JsonElement schema)
+    {
+        var required = new HashSet<string>(StringComparer.Ordinal);
+
+        if (!schema.TryGetProperty("required", out var list) || list.ValueKind != JsonValueKind.Array)
+        {
+            return required;
+        }
+
+        foreach (var item in list.EnumerateArray())
+        {
+            var name = item.GetString();
+            if (name is not null)
+            {
+                required.Add(name);
+            }
+        }
+
+        return required;
+    }
+
+    /// <summary>
+    /// schema 是否允许 null：<c>type</c> 里带 null，或 <c>oneOf</c>/<c>anyOf</c> 里有 null 分支。
+    /// </summary>
+    private static bool AllowsNull(JsonElement schema)
+    {
+        if (SchemaTypes(schema).Contains("null"))
+        {
+            return true;
+        }
+
+        foreach (var keyword in new[] { "oneOf", "anyOf" })
+        {
+            if (!schema.TryGetProperty(keyword, out var branches) || branches.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var branch in branches.EnumerateArray())
+            {
+                if (SchemaTypes(branch).Contains("null"))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>schema 的 type 取值（type 可能是字符串，也可能是数组）。</summary>
+    private static HashSet<string> SchemaTypes(JsonElement schema)
+    {
+        var types = new HashSet<string>(StringComparer.Ordinal);
+
+        if (!schema.TryGetProperty("type", out var type))
+        {
+            return types;
+        }
+
+        if (type.ValueKind == JsonValueKind.String)
+        {
+            var name = type.GetString();
+            if (name is not null)
+            {
+                types.Add(name);
+            }
+
+            return types;
+        }
+
+        if (type.ValueKind != JsonValueKind.Array)
+        {
+            return types;
+        }
+
+        foreach (var item in type.EnumerateArray())
+        {
+            var name = item.GetString();
+            if (name is not null)
+            {
+                types.Add(name);
+            }
+        }
+
+        return types;
+    }
+
+    /// <summary>对象里的字段名（排好序，便于比较）。</summary>
+    private static string[] SortedNames(JsonElement element)
+    {
+        return element.EnumerateObject()
+            .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
     }
 
     /// <summary>JSON 语义比较：忽略空白与对象键的顺序，数组按顺序比。</summary>

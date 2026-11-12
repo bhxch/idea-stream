@@ -934,7 +934,7 @@
         ],
         "responses": {
           "200": {
-            "description": "OK",
+            "description": "服务器推送的 SSE 事件流（Content-Type: text/event-stream）。每一帧由三行加一个空行组成：id: <事件 id>、event: <事件类型>、data: <单行 JSON>，随后一个空行结束该帧。data 是 components.schemas.IdeaEvent 的单行 JSON（字段含义见该 schema）。空闲时服务端每隔心跳间隔发一行 `: ping` 注释帧，客户端应忽略。客户端漏了事件时可以带 Last-Event-ID 请求头重连，服务端从该 id 之后补发；补不了时改发一帧 event: resync（data 是空对象 {}，没有 id 行），客户端收到后应重新拉取完整列表。事件类型共 8 种：idea.created、idea.updated、idea.deleted、idea.restored、idea.merged、project.created、project.updated、project.deleted。",
             "content": {
               "text/event-stream": {
                 "schema": {
@@ -1529,6 +1529,132 @@
           }
         }
       },
+      "IdeaEvent": {
+        "required": [
+          "id",
+          "type",
+          "timestamp",
+          "project",
+          "idea",
+          "changed",
+          "mergedFrom"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "事件 id：单调 UUIDv7（32 位无连字符的小写 hex）。SSE 补发时客户端拿它当 Last-Event-ID，「漏了哪些事件」按字典序比较就能算出来。"
+          },
+          "type": {
+            "type": "string",
+            "description": "事件类型：idea.created、idea.updated、idea.deleted、idea.restored、idea.merged、project.created、project.updated、project.deleted。订阅端按这个清单筛选，不要假设还有别的取值。"
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "事件发生时间（UTC，ISO-8601）。",
+            "format": "date-time"
+          },
+          "project": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProjectSnapshot"
+              }
+            ],
+            "description": "项目快照。project.* 事件带它，其它事件为 null。"
+          },
+          "idea": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IdeaSnapshot"
+              }
+            ],
+            "description": "想法快照。idea.* 事件带它，其它事件为 null。"
+          },
+          "changed": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "这次操作写过的字段名。三态：null = 该事件类型没有「改了什么」的概念（订阅端按「整条对象是新数据」处理）；空数组 = 写了但值没变（数据本身仍然是最新的，别把这次更新跳过）；非空数组 = 这次写过的字段名（如 title、done、tags、name、sortOrder、deletedAt）。注意：SetTags / SetDone 与项目改名一律列该字段，不跟旧值比对。"
+          },
+          "mergedFrom": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "被合并掉的源想法 id 列表。只有 idea.merged 事件有值，其它事件为 null。"
+          }
+        },
+        "description": "一条领域事件。SSE 端点（GET /api/events）每一帧的 data 行就是本 schema 的单行 JSON，webhook 的投递体也是它。type 的取值共 8 种：idea.created、idea.updated、idea.deleted、idea.restored、idea.merged、project.created、project.updated、project.deleted。"
+      },
+      "IdeaSnapshot": {
+        "required": [
+          "id",
+          "projectId",
+          "title",
+          "content",
+          "tags",
+          "done",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "想法 id。"
+          },
+          "projectId": {
+            "type": "string",
+            "description": "所属项目 id。"
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "标题。可以是 null（未命名想法）——键一定在，值可能是 null。"
+          },
+          "content": {
+            "type": "string",
+            "description": "正文（非空）。"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "标签名数组（已去重）。"
+          },
+          "done": {
+            "type": "boolean",
+            "description": "是否已完成。"
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "创建时间（UTC，ISO-8601）。",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "description": "最后更新时间（UTC，ISO-8601）。",
+            "format": "date-time"
+          }
+        },
+        "description": "想法的对外快照：去掉删除时间、标签转成字符串数组。idea.deleted 事件带的是**删除前**的快照（deletedAt 不在快照里，回收站里的条目另有接口）。"
+      },
       "MergeIdeasRequest": {
         "required": [
           "ids",
@@ -1653,6 +1779,34 @@
             "format": "date-time"
           }
         }
+      },
+      "ProjectSnapshot": {
+        "required": [
+          "id",
+          "name",
+          "sortOrder"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "项目 id。"
+          },
+          "name": {
+            "type": "string",
+            "description": "项目名称。"
+          },
+          "sortOrder": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "排序位置（越小越靠前）。",
+            "format": "int32"
+          }
+        },
+        "description": "项目的对外快照：id、名字与排序位置。sortOrder 必带：project.updated 的 changed 里含 sortOrder 时，订阅端要拿到**新值**才能更新本地顺序，缺了它就只能整表重拉。"
       },
       "RenameProjectRequest": {
         "required": [

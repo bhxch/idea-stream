@@ -44,5 +44,10 @@ public static class IdeaOpenApi
         // 顺序无关（一个改 info、一个改 paths/components），但两者都在
         // 「文档已生成」之后跑：框架先生成 paths，再跑文档 transformer。
         options.AddDocumentTransformer<OpenApiProblemTransformer>();
+
+        // 事件类型：框架只为「端点返回类型」生成 schema，而事件（IdeaEvent）
+        // 不出现在任何端点的返回类型里（它是 SSE 的报文、也是 webhook 的投递体）——
+        // 它是消费方的公共契约，必须自己写进契约文件。
+        options.AddDocumentTransformer<OpenApiEventTransformer>();
     }
 }
