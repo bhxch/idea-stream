@@ -11,7 +11,7 @@ namespace IdeaApp.Tests;
 /// SSE 端点的集成测试：帧格式、心跳、断线补发与 resync。
 ///
 /// 这些测试从**客户端的角度**看 SSE：连上 <c>GET /api/events</c>，
-/// 读帧、断开、带 <c>Last-Event-ID</c> 重连。
+/// 读帧、断开、带 <c>Last-Event-ID</c> 请求头或 <c>?lastEventId=</c> 查询参数重连。
 ///
 /// 一条贯穿全篇的前提：事件是**异步广播**的 ——
 /// 写接口返回时，事件可能还没进服务端缓冲。
@@ -111,6 +111,103 @@ public sealed class SseTests
 
         // 补发的正是断线期间漏掉的那条（不是第一条重发）。
         Assert.Contains(secondIdeaId, replayed.Data!);
+    }
+
+    /// <summary>
+    /// 断线重连时用 <c>?lastEventId=</c> 查询参数续发（**不带** Last-Event-ID 请求头）：
+    /// 服务端要照样把漏掉的事件补发出来。
+    /// </summary>
+    /// <remarks>
+    /// 为什么这条路径必须有：浏览器的原生 <c>EventSource</c> **不能自定义请求头**，
+    /// 前端重建连接时只能把最后的事件 id 放进 URL 的查询参数
+    /// （<c>?lastEventId=&lt;id&gt;</c>）。后端只认请求头的话，
+    /// 这条路径上的续发请求会被当成「客户端刚打开页面」——
+    /// 断线期间的事件静默丢失（服务端既不补发，也不发 resync 提醒重拉）。
+    /// </remarks>
+    [Fact]
+    public async Task Sse_reconnect_with_last_event_id_query_parameter_replays_missed_events()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        string firstEventId;
+        string secondIdeaId;
+
+        using (var connection = await ConnectAsync(client))
+        {
+            await CreateIdeaAsync(client, "第一条想法");
+            firstEventId = SseFrame.Parse(await ReadFrameAsync(connection)).Id!;
+
+            // 断线期间写的第二条：先在**旧连接**上读到它，
+            // 才能确定服务端已经把它放进了缓冲（事件是异步广播的，
+            // 写接口返回不代表广播器已经收到）。
+            secondIdeaId = await CreateIdeaAsync(client, "断线期间写的想法");
+            var second = SseFrame.Parse(await ReadFrameAsync(connection));
+
+            Assert.Equal("idea.created", second.Event);
+            Assert.Contains(secondIdeaId, second.Data!);
+
+            // 现在断开：第二条已经在缓冲里，重连时它就是「漏掉的那条」。
+        }
+
+        // 重连：**不带** Last-Event-ID 请求头，续发位置放在查询参数里。
+        using var reconnected = await ConnectAsync(client, lastEventIdQuery: firstEventId);
+
+        var replayed = SseFrame.Parse(await ReadFrameAsync(reconnected));
+
+        Assert.Equal("idea.created", replayed.Event);
+        Assert.NotEqual(firstEventId, replayed.Id);
+
+        // 补发的正是断线期间漏掉的那条（不是第一条重发）。
+        Assert.Contains(secondIdeaId, replayed.Data!);
+    }
+
+    /// <summary>
+    /// 头与查询参数都带时以**请求头**为准（SSE 规范里约定的是头）。
+    /// </summary>
+    /// <remarks>
+    /// 两条路径给的是**不同的** id，所以结果能区分开：头说「我收到第二条了」，
+    /// 查询参数说「我收到第一条了」。以头为准 → 只补发第三条；
+    /// 以查询参数为准 → 会先补发第二条。
+    /// </remarks>
+    [Fact]
+    public async Task Sse_last_event_id_header_takes_precedence_over_query_parameter()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        string firstEventId;
+        string secondEventId;
+        string secondIdeaId;
+        string thirdIdeaId;
+
+        using (var connection = await ConnectAsync(client))
+        {
+            await CreateIdeaAsync(client, "第一条想法");
+            firstEventId = SseFrame.Parse(await ReadFrameAsync(connection)).Id!;
+
+            secondIdeaId = await CreateIdeaAsync(client, "第二条想法");
+            secondEventId = SseFrame.Parse(await ReadFrameAsync(connection)).Id!;
+
+            thirdIdeaId = await CreateIdeaAsync(client, "第三条想法");
+            var third = SseFrame.Parse(await ReadFrameAsync(connection));
+
+            Assert.Equal("idea.created", third.Event);
+            Assert.Contains(thirdIdeaId, third.Data!);
+        }
+
+        using var reconnected = await ConnectAsync(
+            client,
+            lastEventId: secondEventId,
+            lastEventIdQuery: firstEventId);
+
+        var replayed = SseFrame.Parse(await ReadFrameAsync(reconnected));
+
+        Assert.Equal("idea.created", replayed.Event);
+
+        // 以头为准：第二条不重发，第一帧是第三条。
+        Assert.DoesNotContain(secondIdeaId, replayed.Data!);
+        Assert.Contains(thirdIdeaId, replayed.Data!);
     }
 
     /// <summary>
@@ -248,9 +345,28 @@ public sealed class SseTests
     }
 
     /// <summary>连上事件流。</summary>
-    private static async Task<SseConnection> ConnectAsync(HttpClient client, string? lastEventId = null)
+    /// <param name="client">发请求用的客户端。</param>
+    /// <param name="lastEventId">
+    /// 续发位置，放进 <c>Last-Event-ID</c> 请求头（不给就不带这个头）。
+    /// </param>
+    /// <param name="lastEventIdQuery">
+    /// 续发位置，放进 <c>?lastEventId=</c> 查询参数（不给就不带这个参数）。
+    /// 浏览器原生 <c>EventSource</c> 不能自定义请求头，前端重建连接时走的是这条路。
+    /// </param>
+    private static async Task<SseConnection> ConnectAsync(
+        HttpClient client,
+        string? lastEventId = null,
+        string? lastEventIdQuery = null)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, "/api/events");
+        var path = "/api/events";
+
+        if (lastEventIdQuery is not null)
+        {
+            path += $"?lastEventId={Uri.EscapeDataString(lastEventIdQuery)}";
+        }
+
+        var request = new HttpRequestMessage(HttpMethod.Get, path);
+
         if (lastEventId is not null)
         {
             request.Headers.TryAddWithoutValidation("Last-Event-ID", lastEventId);

@@ -45,6 +45,12 @@ public sealed class OpenApiEventTransformer : IOpenApiDocumentTransformer
     /// <summary>SSE 的内容类型。</summary>
     private const string EventStreamContentType = "text/event-stream";
 
+    /// <summary>SSE 端点的路径。</summary>
+    private const string EventsPath = "/api/events";
+
+    /// <summary>续发用的查询参数名（与端点的处理函数参数同名）。</summary>
+    private const string LastEventIdParameterName = "lastEventId";
+
     /// <inheritdoc />
     public Task TransformAsync(
         OpenApiDocument document,
@@ -69,6 +75,7 @@ public sealed class OpenApiEventTransformer : IOpenApiDocumentTransformer
         schemas[IdeaEventSchemaName] = BuildIdeaEventSchema(document);
 
         DescribeEventStream(document);
+        DescribeLastEventIdParameter(document);
 
         return Task.CompletedTask;
     }
@@ -280,10 +287,65 @@ public sealed class OpenApiEventTransformer : IOpenApiDocumentTransformer
         builder.Append("随后一个空行结束该帧。");
         builder.Append($"data 是 components.schemas.{IdeaEventSchemaName} 的单行 JSON（字段含义见该 schema）。");
         builder.Append("空闲时服务端每隔心跳间隔发一行 `: ping` 注释帧，客户端应忽略。");
-        builder.Append("客户端漏了事件时可以带 Last-Event-ID 请求头重连，服务端从该 id 之后补发；");
+        builder.Append("客户端漏了事件时可以带 Last-Event-ID 请求头重连（也可以用 ?lastEventId=<id> 查询参数，");
+        builder.Append("服务端以请求头优先、查询参数兜底），服务端从该 id 之后补发；");
         builder.Append("补不了时改发一帧 event: resync（data 是空对象 {}，没有 id 行），");
         builder.Append("客户端收到后应重新拉取完整列表。");
         builder.Append($"事件类型共 {EventTypes.All.Length} 种：{string.Join("、", EventTypes.All)}。");
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// 给 SSE 端点的 <c>lastEventId</c> 查询参数写描述。
+    /// </summary>
+    /// <remarks>
+    /// 框架只会把这个参数写成一个光秃秃的 <c>{"name":"lastEventId","in":"query"}</c>，
+    /// 看不出它是干什么的 —— 而它恰恰是这个端点**唯一**的入参，
+    /// 不知道它的人只能去读服务端源码。契约文件是给 agent 当接口手册用的，
+    /// 这种地方不能留白。
+    /// </remarks>
+    private static void DescribeLastEventIdParameter(OpenApiDocument document)
+    {
+        var paths = document.Paths;
+
+        if (paths is null
+            || !paths.TryGetValue(EventsPath, out var pathItem)
+            || pathItem?.Operations is null)
+        {
+            return;
+        }
+
+        foreach (var operation in pathItem.Operations.Values)
+        {
+            if (operation?.Parameters is null)
+            {
+                continue;
+            }
+
+            foreach (var parameter in operation.Parameters)
+            {
+                if (parameter.Name != LastEventIdParameterName
+                    || parameter.In != ParameterLocation.Query
+                    || parameter is not OpenApiParameter concrete)
+                {
+                    continue;
+                }
+
+                concrete.Description = LastEventIdParameterDescription();
+            }
+        }
+    }
+
+    /// <summary><c>lastEventId</c> 查询参数的描述文本。</summary>
+    private static string LastEventIdParameterDescription()
+    {
+        var builder = new StringBuilder();
+
+        builder.Append("断线续发的位置：客户端最后收到的事件 id（帧里 id: 行的那一串）。");
+        builder.Append("服务端从该 id 之后补发漏掉的事件；补不了时改发一帧 event: resync。");
+        builder.Append("与 Last-Event-ID 请求头等价，两者都带时以请求头为准。");
+        builder.Append("浏览器的原生 EventSource 不能自定义请求头，重建连接时只能用它 —— 所以它不能省。");
 
         return builder.ToString();
     }

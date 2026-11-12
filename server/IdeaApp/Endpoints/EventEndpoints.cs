@@ -18,6 +18,11 @@ namespace IdeaApp.Endpoints;
 /// <c>localStorage</c> 里，服务端无从得知，也不该替客户端猜（spec §10.2）。
 /// </para>
 /// <para>
+/// 唯一的入参是「续发位置」：<c>Last-Event-ID</c> 请求头优先，
+/// <c>?lastEventId=</c> 查询参数兜底（原生 <c>EventSource</c> 不能自定义请求头，
+/// 浏览器端重建连接时只能把 id 放进查询参数）。
+/// </para>
+/// <para>
 /// 帧格式：
 /// <code>
 /// id: &lt;事件 id&gt;
@@ -33,14 +38,14 @@ public static class EventEndpoints
     public static IEndpointRouteBuilder MapEventEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet("/api/events",
-            async (HttpContext context, SseBroadcaster broadcaster, ILoggerFactory loggerFactory) =>
+            async (HttpContext context, string? lastEventId, SseBroadcaster broadcaster, ILoggerFactory loggerFactory) =>
             {
                 // 端点类是静态类，不能当日志的泛型参数：用分类名建日志器。
                 var logger = loggerFactory.CreateLogger("IdeaApp.Endpoints.EventEndpoints");
 
                 try
                 {
-                    await StreamAsync(context, broadcaster);
+                    await StreamAsync(context, broadcaster, lastEventId);
                 }
                 catch (OperationCanceledException)
                 {
@@ -79,7 +84,10 @@ public static class EventEndpoints
     }
 
     /// <summary>推流：补发漏掉的事件，然后一直推新事件（外加心跳）。</summary>
-    private static async Task StreamAsync(HttpContext context, SseBroadcaster broadcaster)
+    private static async Task StreamAsync(
+        HttpContext context,
+        SseBroadcaster broadcaster,
+        string? queryLastEventId)
     {
         var response = context.Response;
         var ct = context.RequestAborted;
@@ -109,7 +117,7 @@ public static class EventEndpoints
             await response.StartAsync(ct);
             await response.Body.FlushAsync(ct);
 
-            var lastSentId = await WriteReplayAsync(context, broadcaster, ct);
+            var lastSentId = await WriteReplayAsync(context, broadcaster, queryLastEventId, ct);
             await PumpAsync(context, broadcaster, subscription, lastSentId, ct);
         }
         finally
@@ -125,13 +133,14 @@ public static class EventEndpoints
     private static async Task<string?> WriteReplayAsync(
         HttpContext context,
         SseBroadcaster broadcaster,
+        string? queryLastEventId,
         CancellationToken ct)
     {
-        var lastEventId = context.Request.Headers["Last-Event-ID"].ToString();
+        var lastEventId = ResolveLastEventId(context, queryLastEventId);
 
         if (string.IsNullOrEmpty(lastEventId))
         {
-            // 客户端没带 Last-Event-ID：它是自己刚打开页面的，没有漏掉的东西。
+            // 客户端没带续发位置：它是自己刚打开页面的，没有漏掉的东西。
             return null;
         }
 
@@ -156,6 +165,41 @@ public static class EventEndpoints
         }
 
         return lastSentId;
+    }
+
+    /// <summary>
+    /// 解析「客户端最后收到的事件 id」：<c>Last-Event-ID</c> 请求头优先，
+    /// <c>?lastEventId=</c> 查询参数兜底。两个都没有就是「没有续发位置」。
+    /// </summary>
+    /// <remarks>
+    /// 为什么要有查询参数这条兜底：浏览器的原生 <c>EventSource</c>
+    /// **不能自定义请求头**。它自己重连时会自动带上 <c>Last-Event-ID</c> 头，
+    /// 但前端重建连接（例如换了地址、主动重连）时只能把 id 塞进 URL ——
+    /// 也就是 <c>?lastEventId=&lt;id&gt;</c>。后端只认头的话，这条路径上的
+    /// 续发请求会被当成「没有续发位置」，断线期间的事件就静默丢了
+    /// （服务端既不补发，也不发 resync 提醒客户端重拉）。
+    /// <para>
+    /// 头优先：两个都带时以头为准（它是 SSE 规范里约定的那个）。
+    /// 空值按「没带」处理 —— 空的续发位置没有任何信息量，
+    /// 不该把一个真的查询参数也一起挡掉。
+    /// </para>
+    /// </remarks>
+    private static string? ResolveLastEventId(HttpContext context, string? queryLastEventId)
+    {
+        var fromHeader = context.Request.Headers["Last-Event-ID"].FirstOrDefault();
+
+        if (!string.IsNullOrWhiteSpace(fromHeader))
+        {
+            return fromHeader.Trim();
+        }
+
+        // 查询参数由框架绑定（参数名 lastEventId），这里拿到的就是 ?lastEventId= 的值。
+        if (!string.IsNullOrWhiteSpace(queryLastEventId))
+        {
+            return queryLastEventId.Trim();
+        }
+
+        return null;
     }
 
     /// <summary>推新事件 + 心跳，直到客户端断开或订阅被关掉。</summary>

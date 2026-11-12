@@ -932,9 +932,19 @@
         "tags": [
           "IdeaApp"
         ],
+        "parameters": [
+          {
+            "name": "lastEventId",
+            "in": "query",
+            "description": "断线续发的位置：客户端最后收到的事件 id（帧里 id: 行的那一串）。服务端从该 id 之后补发漏掉的事件；补不了时改发一帧 event: resync。与 Last-Event-ID 请求头等价，两者都带时以请求头为准。浏览器的原生 EventSource 不能自定义请求头，重建连接时只能用它 —— 所以它不能省。",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "服务器推送的 SSE 事件流（Content-Type: text/event-stream）。每一帧由三行加一个空行组成：id: <事件 id>、event: <事件类型>、data: <单行 JSON>，随后一个空行结束该帧。data 是 components.schemas.IdeaEvent 的单行 JSON（字段含义见该 schema）。空闲时服务端每隔心跳间隔发一行 `: ping` 注释帧，客户端应忽略。客户端漏了事件时可以带 Last-Event-ID 请求头重连，服务端从该 id 之后补发；补不了时改发一帧 event: resync（data 是空对象 {}，没有 id 行），客户端收到后应重新拉取完整列表。事件类型共 8 种：idea.created、idea.updated、idea.deleted、idea.restored、idea.merged、project.created、project.updated、project.deleted。",
+            "description": "服务器推送的 SSE 事件流（Content-Type: text/event-stream）。每一帧由三行加一个空行组成：id: <事件 id>、event: <事件类型>、data: <单行 JSON>，随后一个空行结束该帧。data 是 components.schemas.IdeaEvent 的单行 JSON（字段含义见该 schema）。空闲时服务端每隔心跳间隔发一行 `: ping` 注释帧，客户端应忽略。客户端漏了事件时可以带 Last-Event-ID 请求头重连（也可以用 ?lastEventId=<id> 查询参数，服务端以请求头优先、查询参数兜底），服务端从该 id 之后补发；补不了时改发一帧 event: resync（data 是空对象 {}，没有 id 行），客户端收到后应重新拉取完整列表。事件类型共 8 种：idea.created、idea.updated、idea.deleted、idea.restored、idea.merged、project.created、project.updated、project.deleted。",
             "content": {
               "text/event-stream": {
                 "schema": {
