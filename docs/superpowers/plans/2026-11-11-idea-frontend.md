@@ -211,6 +211,10 @@ git commit -m "feat(web): 初始化 Vue3+Vite 骨架、路由、主题与 API �
 
 ---
 
+
+> **jsdom 没有 `EventSource`**（Node 24 与 jsdom 都不提供）—— F2 的 spec **必须 `vi.stubGlobal('EventSource', ...)`** 造一个假的，否则 `new EventSource(...)` 会直接炸。F1 已把 vitest 的 `environment` 改成全局 `jsdom`。
+> **`changed` / `mergedFrom` 是必填可空**（`string[] | null`，没有 `?`）—— 后端恒定写出这两个键，运行时永远不是 `undefined`；判定三态用 `=== null` / `length === 0`，写 `=== undefined` 会被 TS2367 拦下。
+> **`ApiError` 判错要用 `instanceof`，别只看 `status`** —— 有一条路径是「2xx + 非 JSON 响应体」，那时 `status` 是 200。
 ### Task 2 (F2): SSE 客户端（重连、Last-Event-ID、resync）
 
 **Files:**
