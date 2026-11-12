@@ -289,18 +289,18 @@ CREATE TABLE setting (
   "id": "0199a7f23c4d7abc8def0123456789ab",
   "type": "idea.updated",
   "timestamp": "2026-11-11T09:00:00+00:00",
-  "project": { "id": "inbox", "name": "收件箱" },
+  "project": { "id": "inbox", "name": "收件箱", "sortOrder": 0 },
   "idea": {
-    "id": "0199a7f1-...", "title": null, "content": "…",
+    "id": "0199a7f1...", "title": null, "content": "…",
     "tags": ["交互", "核心"], "done": false,
-    "created_at": "…", "updated_at": "…"
+    "createdAt": "…", "updatedAt": "…"
   },
   "changed": ["content"],
-  "mergedFrom": ["0199a7f3-…"]
+  "mergedFrom": null
 }
 ```
 
-`mergedFrom` **恒定写出这个键**（源生成没设 `DefaultIgnoreCondition`，null 不省略），只有在 `idea.merged` 时才是非空数组；其余事件它的值是 `null`。`changed` 同理 —— 恒存在，值可能是 `null`（该事件类型没有「改了什么」的概念）、空数组（写了但值没变）、或非空数组。客户端判定这三态用 `=== null` / `length === 0` / 其它。
+`mergedFrom`（只有在 `idea.merged` 时才是非空数组，其余事件是 `null`）**恒定写出这个键**（源生成没设 `DefaultIgnoreCondition`，null 不省略），只有在 `idea.merged` 时才是非空数组；其余事件它的值是 `null`。`changed` 同理 —— 恒存在，值可能是 `null`（该事件类型没有「改了什么」的概念）、空数组（写了但值没变）、或非空数组。客户端判定这三态用 `=== null` / `length === 0` / 其它。
 
 **两个格式细节**（实现即如此，客户端按此解析）：
 
