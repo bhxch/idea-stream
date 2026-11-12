@@ -429,6 +429,139 @@ describe('HomePage', () => {
     wrapper.unmount();
   });
 
+  it('保存正文在飞时条目标成在飞（HomePage → busyIds → MessageList → MessageItem）', async () => {
+    let resolvePatch: ((value: Idea) => void) | undefined;
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([titledIdea]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    apiSend.mockImplementation((method: string) =>
+      method === 'PATCH'
+        ? new Promise<Idea>((resolve) => {
+            resolvePatch = resolve;
+          })
+        : Promise.resolve({ ...titledIdea, done: true }),
+    );
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('.body').trigger('click');
+    const editor = wrapper.get('textarea.editor');
+    await editor.setValue('改过的正文');
+    await editor.trigger('keydown', { key: 'Enter', ctrlKey: true });
+    await flushPromises();
+
+    // 在飞：条目上的按钮禁用（这条传播链不能断）。
+    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('button.action--tags').element as HTMLButtonElement).disabled).toBe(true);
+
+    resolvePatch?.({ ...titledIdea, content: '改过的正文' });
+    await flushPromises();
+
+    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('保存标签在飞时条目标成在飞', async () => {
+    let resolvePut: ((value: Idea) => void) | undefined;
+    apiSend.mockImplementation((method: string) =>
+      method === 'PUT'
+        ? new Promise<Idea>((resolve) => {
+            resolvePut = resolve;
+          })
+        : Promise.resolve({ ...idea, done: true }),
+    );
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('新标签');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+
+    // 在飞：条目上的按钮禁用。
+    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('button.action--tags').element as HTMLButtonElement).disabled).toBe(true);
+
+    resolvePut?.({ ...idea, tags: ['新标签'] });
+    await flushPromises();
+
+    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('删除在飞时条目标成在飞', async () => {
+    let resolveDelete: ((value: void) => void) | undefined;
+    apiSend.mockImplementation((method: string) =>
+      method === 'DELETE'
+        ? new Promise<void>((resolve) => {
+            resolveDelete = resolve;
+          })
+        : Promise.resolve({ ...idea, done: true }),
+    );
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('button.action--delete').trigger('click');
+    await wrapper.get('button.confirm__delete').trigger('click');
+    await flushPromises();
+
+    // 在飞：条目上的按钮禁用。
+    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('button.action--delete').element as HTMLButtonElement).disabled).toBe(true);
+
+    resolveDelete?.(undefined);
+    await flushPromises();
+
+    expect(wrapper.findAll('.idea')).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it('标签补全走 GET /tags/suggest，带上项目与前缀', async () => {
+    currentProjectId.value = 'project-1';
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([idea]);
+        case '/tags/suggest':
+          return Promise.resolve(['建议标签']);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('建');
+    await flushPromises();
+
+    expect(apiGet).toHaveBeenCalledWith('/tags/suggest', { projectId: 'project-1', prefix: '建' });
+    // 候选到了以后下拉自动补上（补全是异步的）。
+    expect(wrapper.get('.tag-editor__option').text()).toBe('建议标签');
+    wrapper.unmount();
+  });
+
   it('编辑标签会 PUT 覆盖式设置标签', async () => {
     apiSend.mockImplementation((method: string) =>
       method === 'PUT' ? Promise.resolve({ ...idea, tags: ['新标签'] }) : Promise.resolve({ ...idea, done: true }),
