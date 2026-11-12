@@ -17,6 +17,10 @@ import type { IdeaEvent } from './types';
  * 补发位置的，服务端既然发了 resync 就说明它**已经补不到**了。再带着它重连，
  * 服务端只会再回一帧 resync —— 每一次重连都白白多一轮「整表重拉」。
  * 清零之后下次重连按「全新订阅」处理，正确性由「重连后整表重拉」兜住。
+ *
+ * <p>记住的事件 id 永远是「**我们真的处理过的那一帧**」的 id：报文没通过校验
+ * 就不记。服务端是以那个 id 为续发起点的，坏帧的 id 若被记下，服务端就
+ * **不会再重发这一条** —— 那条变更在增量流里会永久缺失。
  */
 
 /** SSE 端点。 */
@@ -83,6 +87,71 @@ export interface EventHandlers {
 }
 
 /**
+ * 校验项目的快照形状（对应后端 `ProjectSnapshot`）。
+ *
+ * 返回 `null` 表示通过；返回字符串表示坏在哪。
+ */
+function validateProjectSnapshot(value: unknown): string | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return 'project 既不是 null 也不是对象';
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== 'string') {
+    return 'project.id 不是字符串';
+  }
+  if (typeof record.name !== 'string') {
+    return 'project.name 不是字符串';
+  }
+  // sortOrder 在线上就是数字（OpenAPI 导出器把 int32 写成 ["integer","string"]，
+  // 那只是导出器的写法；types.ts 里也是 number）。
+  if (typeof record.sortOrder !== 'number') {
+    return 'project.sortOrder 不是数字';
+  }
+  return null;
+}
+
+/**
+ * 校验想法的快照形状（对应后端 `IdeaSnapshot`）。
+ *
+ * 返回 `null` 表示通过；返回字符串表示坏在哪。
+ */
+function validateIdeaSnapshot(value: unknown): string | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return 'idea 既不是 null 也不是对象';
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== 'string') {
+    return 'idea.id 不是字符串';
+  }
+  if (typeof record.content !== 'string') {
+    return 'idea.content 不是字符串';
+  }
+  if (!Array.isArray(record.tags)) {
+    return 'idea.tags 不是数组';
+  }
+  if (typeof record.done !== 'boolean') {
+    return 'idea.done 不是布尔值';
+  }
+  // title 必填可空：值要么是 null、要么是字符串。
+  if (!(record.title === null || typeof record.title === 'string')) {
+    return 'idea.title 既不是 null 也不是字符串';
+  }
+  if (typeof record.createdAt !== 'string') {
+    return 'idea.createdAt 不是字符串';
+  }
+  if (typeof record.updatedAt !== 'string') {
+    return 'idea.updatedAt 不是字符串';
+  }
+  return null;
+}
+
+/**
  * 校验一帧报文的形状。
  *
  * 返回 `null` 表示通过；返回字符串表示坏在哪（会写进报给 `onError` 的消息里）。
@@ -90,6 +159,9 @@ export interface EventHandlers {
  * <p>为什么不能只判「是不是对象」：`JSON.parse('[]')` 解析出来也是对象
  * （数组），不排掉的话一帧数组会被当成事件交给 `onEvent`。
  * 这里是把服务端报文送进应用的**唯一入口**，未经校验的报文不能进。
+ *
+ * <p>校验的字段与后端 `IdeaEvent` / `ProjectSnapshot` / `IdeaSnapshot` 逐字对齐
+ * （后端 camelCase 输出、null 恒定写出，键不会缺）。
  */
 function validatePayload(value: unknown): string | null {
   if (value === null || typeof value !== 'object') {
@@ -99,8 +171,14 @@ function validatePayload(value: unknown): string | null {
     return 'data 是数组，不是事件对象';
   }
   const record = value as Record<string, unknown>;
+  if (typeof record.id !== 'string') {
+    return 'id 缺失或不是字符串';
+  }
   if (typeof record.type !== 'string') {
     return 'type 缺失或不是字符串';
+  }
+  if (typeof record.timestamp !== 'string') {
+    return 'timestamp 缺失或不是字符串';
   }
   // changed / mergedFrom 后端恒定写出，值要么是 null、要么是字符串数组。
   // 键整个缺失（undefined）也算坏帧：那是协议错配，不是「没有这个概念」。
@@ -109,6 +187,14 @@ function validatePayload(value: unknown): string | null {
   }
   if (!(record.mergedFrom === null || Array.isArray(record.mergedFrom))) {
     return 'mergedFrom 缺失，或既不是 null 也不是数组';
+  }
+  const projectError = validateProjectSnapshot(record.project);
+  if (projectError !== null) {
+    return projectError;
+  }
+  const ideaError = validateIdeaSnapshot(record.idea);
+  if (ideaError !== null) {
+    return ideaError;
   }
   return null;
 }
@@ -171,15 +257,17 @@ export function connectEvents(handlers: EventHandlers): EventStream {
 
   /** 处理一帧业务事件。 */
   function handleFrame(ev: MessageEvent): void {
-    // 帧里的 `id:` 行就是事件 id —— 记住它，重连时要用。
-    if (ev.lastEventId) {
-      lastEventId = ev.lastEventId;
-    }
     const { event, error } = parseEvent(ev.data);
     if (event === null) {
-      // 坏帧丢掉，但要让调用方看得见：否则协议错配完全隐形。
+      // 坏帧**不能**记 id：服务端会以那个 id 为续发起点、**不再重发这一条**，
+      // 那条变更在增量流里就永久缺失了（只能靠重连时的整表重拉补回来）。
+      // 续发起点必须是「我们真的处理过的那一帧」。
       handlers.onError?.(new Error(`SSE 坏帧已丢弃：${error}`));
       return;
+    }
+    // 帧里的 `id:` 行就是事件 id —— 校验通过之后才记它，重连时要用。
+    if (ev.lastEventId) {
+      lastEventId = ev.lastEventId;
     }
     handlers.onEvent(event);
   }

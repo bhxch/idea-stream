@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connectEvents } from './events';
-import type { IdeaEvent } from './types';
+import type { Idea, IdeaEvent } from './types';
 
 /**
  * 假的 `EventSource`。
@@ -66,7 +66,7 @@ class FakeEventSource {
 }
 
 /** 造一条合法的事件载荷。 */
-function makeEvent(type: string, id: string): IdeaEvent {
+function makeEvent(type: string, id: string, overrides: Partial<IdeaEvent> = {}): IdeaEvent {
   return {
     id,
     type,
@@ -75,8 +75,24 @@ function makeEvent(type: string, id: string): IdeaEvent {
     idea: null,
     changed: null,
     mergedFrom: null,
+    ...overrides,
   };
 }
+
+/** 造一个合法的项目快照。 */
+const validProject = { id: 'p1', name: '项目', sortOrder: 3 };
+
+/** 造一个合法的想法快照。 */
+const validIdea: Idea = {
+  id: 'i1',
+  projectId: 'p1',
+  title: null,
+  content: '正文',
+  tags: ['标签'],
+  done: false,
+  createdAt: '2026-11-12T00:00:00Z',
+  updatedAt: '2026-11-12T00:00:00Z',
+};
 
 /** 连上事件流，返回回调的替身与连接句柄。 */
 function setup() {
@@ -215,6 +231,82 @@ describe('connectEvents', () => {
     });
 
     expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it('坏帧的 id 不会被记成续发起点', () => {
+    const { onEvent, stream } = setup();
+    const source = FakeEventSource.instances[0];
+
+    // 还没有任何 id 时来一帧坏帧：不能凭空记一个。
+    source.emit('idea.updated', '[]', 'e1');
+    expect(stream.lastEventId).toBeNull();
+
+    // 一帧合法事件：id 记下来了。
+    source.emit('idea.updated', JSON.stringify(makeEvent('idea.updated', 'e2')), 'e2');
+    expect(stream.lastEventId).toBe('e2');
+
+    // 一帧 id 合法但形状不合的：续发起点不能动。
+    // （服务端会以那个 id 为续发起点、不再重发这一条，
+    //   记下来就等于让这条变更在增量流里永久缺失。）
+    source.emit('idea.updated', JSON.stringify({ ...makeEvent('idea.updated', 'e3'), type: 42 }), 'e3');
+    expect(stream.lastEventId).toBe('e2');
+    expect(onEvent).toHaveBeenCalledTimes(1);
+
+    // 下一帧合法：这时才更新。
+    source.emit('idea.updated', JSON.stringify(makeEvent('idea.updated', 'e4')), 'e4');
+    expect(stream.lastEventId).toBe('e4');
+    expect(onEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it('project / idea 快照形状不对的帧一律丢掉，不进 onEvent', () => {
+    const { onEvent } = setup();
+    const source = FakeEventSource.instances[0];
+
+    const base = {
+      id: 'e1',
+      type: 'idea.updated',
+      timestamp: '2026-11-12T00:00:00Z',
+      project: null,
+      idea: null,
+      changed: null,
+      mergedFrom: null,
+    };
+
+    const badPayloads: unknown[] = [
+      { ...base, project: 'p1' }, // project 不是对象
+      { ...base, project: [] }, // project 是数组
+      { ...base, project: { ...validProject, id: 1 } }, // project.id 不是字符串
+      { ...base, project: { ...validProject, name: null } }, // project.name 不是字符串
+      { ...base, project: { ...validProject, sortOrder: '3' } }, // project.sortOrder 不是数字
+      { ...base, idea: 'i1' }, // idea 不是对象
+      { ...base, idea: { ...validIdea, id: 1 } }, // idea.id 不是字符串
+      { ...base, idea: { ...validIdea, content: null } }, // idea.content 不是字符串
+      { ...base, idea: { ...validIdea, tags: '标签' } }, // idea.tags 不是数组
+      { ...base, idea: { ...validIdea, done: 'false' } }, // idea.done 不是布尔
+      { ...base, idea: { ...validIdea, title: 42 } }, // idea.title 既不是 null 也不是字符串
+      { ...base, idea: { ...validIdea, createdAt: null } }, // idea.createdAt 不是字符串
+      { ...base, idea: { ...validIdea, updatedAt: 1 } }, // idea.updatedAt 不是字符串
+    ];
+
+    badPayloads.forEach((payload) => {
+      source.emit('idea.updated', JSON.stringify(payload), 'e1');
+    });
+
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it('带 project / idea 快照的合法帧照常进 onEvent', () => {
+    const { onEvent } = setup();
+    const evt = makeEvent('idea.updated', 'e1', {
+      project: validProject,
+      idea: validIdea,
+      changed: ['content'],
+    });
+
+    FakeEventSource.instances[0].emit('idea.updated', JSON.stringify(evt), 'e1');
+
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(onEvent).toHaveBeenCalledWith(evt);
   });
 
   it('坏帧会报给 onError', () => {
