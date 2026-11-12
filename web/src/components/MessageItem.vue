@@ -43,6 +43,15 @@ const editing = ref(false);
 /** 编辑中的正文草稿。 */
 const draft = ref('');
 
+/**
+ * 攒着的正文（在飞时被挡下的那一版，等在飞结束再存）。
+ *
+ * 同一条目上同时只允许一个写操作，所以「保存正文」有可能撞上别的操作
+ * （比如用户点「标记完成」）。这时候不能直接把这次保存丢掉 ——
+ * 用户点了别处就以为存好了，实际既没落库也没提示。
+ */
+const pendingContent = ref<string | null>(null);
+
 /** 编辑框本身（进入编辑态后把焦点放进去）。 */
 const editor = ref<HTMLTextAreaElement | null>(null);
 
@@ -103,17 +112,44 @@ function startEdit(): void {
 function cancelEdit(): void {
   editing.value = false;
   draft.value = '';
+  // 攒着的那一版也不存了：用户明确说了不要。
+  pendingContent.value = null;
 }
 
-/** 存好了才退出编辑态；失败留在里面，草稿不丢。 */
+/**
+ * 存正文。
+ *
+ * 在飞时（同一条目上别的写操作在跑）**不能直接丢掉这次保存**：
+ * 用户点走了就以为存好了，实际既没落库也没有任何提示。
+ * 所以先把草稿攒着（`pendingContent`），等在飞结束自动补存。
+ */
 async function saveEdit(): Promise<void> {
-  if (!editing.value || props.busy) {
+  if (!editing.value) {
     return;
   }
-  const ok = await props.onSaveContent(props.idea.id, draft.value).catch(() => false);
+  if (props.busy) {
+    // 内容没变就没什么要补存的（省掉一次没必要的请求）。
+    if (draft.value !== props.idea.content) {
+      pendingContent.value = draft.value;
+    }
+    return;
+  }
+  if (draft.value === props.idea.content) {
+    // 一点没改：没什么要存的，直接收起编辑态（别为一次空改动发请求）。
+    editing.value = false;
+    draft.value = '';
+    return;
+  }
+  await saveContent(draft.value);
+}
+
+/** 真的发一次保存。存好了退出编辑态；失败留在里面，草稿不丢。 */
+async function saveContent(content: string): Promise<void> {
+  const ok = await props.onSaveContent(props.idea.id, content).catch(() => false);
   if (ok) {
     editing.value = false;
     draft.value = '';
+    pendingContent.value = null;
   }
 }
 
@@ -142,8 +178,8 @@ function startTagEdit(): void {
   tagEditing.value = true;
 }
 
-/** 收起标签编辑器（改动都已经存过了）。 */
-function cancelTagEdit(): void {
+/** 收起标签编辑器（改动都已经存过了，不丢）。 */
+function closeTagEdit(): void {
   tagEditing.value = false;
   tagDraft.value = [];
 }
@@ -151,14 +187,18 @@ function cancelTagEdit(): void {
 /** 点「标签」：开着就收起，没开就打开。 */
 function toggleTagEdit(): void {
   if (tagEditing.value) {
-    cancelTagEdit();
+    closeTagEdit();
     return;
   }
   startTagEdit();
 }
 
 /**
- * 标签变了：立刻存。存好了收起编辑器，失败留在里面（草稿不丢）。
+ * 标签变了：立刻存。**存好了不收起编辑器**，失败留在里面（草稿不丢）。
+ *
+ * 收起是用户自己的动作（点「✓ 完成编辑」）：编辑标签是**一段连续的会话**
+ * —— 输入框 + 自动补全 + 回车确认 + × 删除。中途每次落库就收起的话，
+ * 加第二个标签要重新点一次「🏷 标签」，删第二个标签也要重新打开（打开后 × 才存在）。
  *
  * 在飞时（自己的保存，或别的操作）先攒着，等在飞结束再存 ——
  * 用户连按两下回车，第二个标签不能因为快了一点就没了。
@@ -169,27 +209,32 @@ async function onTagsChange(next: string[]): Promise<void> {
     pendingTags.value = next;
     return;
   }
-  const ok = await props.onSaveTags(props.idea.id, next).catch(() => false);
-  if (ok) {
-    tagEditing.value = false;
-    tagDraft.value = [];
-  }
+  await props.onSaveTags(props.idea.id, next).catch(() => false);
 }
 
 /**
  * 在飞的操作结束了：把刚才没存上的那一版补存。
  *
  * 那次保存被在飞保护挡下了（同一个条目同时只允许一个写操作）。
+ * 正文与标签各攒一份，谁先攒上就先补谁。
  */
 watch(
   () => props.busy,
   (busy) => {
-    if (busy || !pendingTags.value) {
+    if (busy) {
       return;
     }
-    const pending = pendingTags.value;
-    pendingTags.value = null;
-    void onTagsChange(pending);
+    const pending = pendingContent.value;
+    pendingContent.value = null;
+    // 内容跟服务端已经一致了就别再存一次（刚那次保存其实已经存上了）。
+    if (pending !== null && editing.value && pending !== props.idea.content) {
+      void saveContent(pending);
+    }
+    if (pendingTags.value) {
+      const pendingTagsValue = pendingTags.value;
+      pendingTags.value = null;
+      void onTagsChange(pendingTagsValue);
+    }
   },
 );
 
@@ -264,7 +309,7 @@ function confirmDelete(): void {
         :disabled="busy"
         @click="toggleTagEdit"
       >
-        {{ tagEditing ? '✓ 完成' : '🏷 标签' }}
+        {{ tagEditing ? '✓ 完成编辑' : '🏷 标签' }}
       </button>
       <button
         class="action action--delete"

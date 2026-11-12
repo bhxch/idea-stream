@@ -443,12 +443,11 @@ describe('HomePage', () => {
     await flushPromises();
 
     expect(apiSend).toHaveBeenCalledWith('PUT', '/ideas/idea-1/tags', { tags: ['新标签'] });
-    expect(wrapper.get('.chip').text()).toBe('新标签');
+    expect(wrapper.get('.chip__name').text()).toBe('新标签');
     wrapper.unmount();
   });
 
-  it('删除要点二次确认，确认后 DELETE 并把条目移出列表', async () => {
-    apiSend.mockImplementation((method: string) =>
+  it('删除要点二次确认，确认后 DELETE 并把条目移出列表', async () => {    apiSend.mockImplementation((method: string) =>
       method === 'DELETE' ? Promise.resolve(undefined) : Promise.resolve({ ...idea, done: true }),
     );
 
@@ -623,4 +622,5 @@ describe('HomePage', () => {
     expect(focusIdeaId.value).toBe('idea-merged');
     wrapper.unmount();
   });
+
 });
