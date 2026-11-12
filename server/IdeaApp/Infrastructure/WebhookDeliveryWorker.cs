@@ -22,7 +22,8 @@ namespace IdeaApp.Infrastructure;
 /// </para>
 ///
 /// <para>
-/// 重试退避是 1 秒 / 5 秒 / 30 秒；总尝试次数是 <c>Webhook:MaxAttempts</c>（默认 3，<b>含首次</b>）。
+/// 重试退避是 1 秒 / 5 秒 / 30 秒；总尝试次数是 <c>Webhook:MaxAttempts</c>（默认 4，<b>含首次</b>），
+/// 也就是「首次 + 3 次重试」—— 三段退避正好一一对应。
 /// </para>
 /// </summary>
 public sealed class WebhookDeliveryWorker(
@@ -41,7 +42,13 @@ public sealed class WebhookDeliveryWorker(
     /// <summary>签名头：配了密钥就有。</summary>
     public const string SignatureHeader = "X-Idea-Signature";
 
-    /// <summary>重试之间的退避：第 1 次重试等 1 秒，第 2 次等 5 秒，第 3 次等 30 秒。</summary>
+    /// <summary>
+    /// 重试之间的退避：第 1 次重试等 1 秒，第 2 次等 5 秒，第 3 次等 30 秒。
+    /// </summary>
+    /// <remarks>
+    /// 表长 3 段，正好对应默认的 <c>MaxAttempts = 4</c>（含首次 → 首次 + 3 次重试）：
+    /// 默认值下三段退避都用得上。段数更多时按最后一段兜底。
+    /// </remarks>
     private static readonly TimeSpan[] Backoff =
     [
         TimeSpan.FromSeconds(1),

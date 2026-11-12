@@ -95,12 +95,20 @@ public sealed class WebhookDeliveryTests
     }
 
     /// <summary>
-    /// 目标端点一直返回 500 → 重试到上限后记 failed：attempts == 3（含首次），last_error 非空。
+    /// 目标端点一直返回 500 → 重试到上限后记 failed：attempts == 4（含首次），last_error 非空。
     /// </summary>
+    /// <remarks>
+    /// 默认 <c>Webhook:MaxAttempts = 4</c>（首次 + 3 次重试），
+    /// 退避 1s / 5s / 30s —— 这条测试要等满 36 秒才等到死信，是全套里最慢的一条。
+    /// <para>
+    /// 它顺带把「三段退避一一对应」钉住：默认值得是 4 的话，
+    /// 退避表里的 30 秒那一段才用得上（默认值若是 3，它永远用不上）。
+    /// </para>
+    /// </remarks>
     [Fact]
     public async Task Failed_delivery_retries_three_times_then_records_failed()
     {
-        using var endpoint = new FakeEndpoint { StatusCodeProvider = () => 500 };
+        using var endpoint = new FakeEndpoint { StatusCodeProvider = _ => 500 };
         using var factory = new TestAppFactory();
         using var client = factory.CreateClient();
 
@@ -108,14 +116,26 @@ public sealed class WebhookDeliveryTests
 
         await client.PostAsJsonAsync("/api/ideas", new { content = "会失败的想法" });
 
-        var delivery = await WaitForDeliveryAsync(client, webhookId, IsFailed, TimeSpan.FromSeconds(30));
+        var delivery = await WaitForDeliveryAsync(client, webhookId, IsFailed, TimeSpan.FromSeconds(90));
 
-        // attempts 的口径是**总尝试次数（含首次）**：首次 + 两次重试 = 3。
-        Assert.Equal(3, delivery.GetProperty("attempts").GetInt32());
+        // attempts 的口径是**总尝试次数（含首次）**：首次 + 三次重试 = 4。
+        Assert.Equal(4, delivery.GetProperty("attempts").GetInt32());
         Assert.False(string.IsNullOrEmpty(delivery.GetProperty("lastError").GetString()));
 
-        // 目标端点确实被打了 3 次。
-        await endpoint.WaitForRequestsAsync(3, TimeSpan.FromSeconds(5));
+        // 目标端点确实被打了 4 次。
+        await endpoint.WaitForRequestsAsync(4, TimeSpan.FromSeconds(5));
+
+        // 三段退避一一对应：1 秒 / 5 秒 / 30 秒。
+        var requests = endpoint.Requests;
+        Assert.True(
+            requests[1].ReceivedAt - requests[0].ReceivedAt >= TimeSpan.FromSeconds(1),
+            $"第 1 次退避不到 1 秒：{requests[1].ReceivedAt - requests[0].ReceivedAt}");
+        Assert.True(
+            requests[2].ReceivedAt - requests[1].ReceivedAt >= TimeSpan.FromSeconds(5),
+            $"第 2 次退避不到 5 秒：{requests[2].ReceivedAt - requests[1].ReceivedAt}");
+        Assert.True(
+            requests[3].ReceivedAt - requests[2].ReceivedAt >= TimeSpan.FromSeconds(30),
+            $"第 3 次退避不到 30 秒：{requests[3].ReceivedAt - requests[2].ReceivedAt}");
     }
 
     /// <summary>投递成功 → 记 delivered，attempts == 1（只试了一次就成功）。</summary>
@@ -803,8 +823,14 @@ public sealed class WebhookDeliveryTests
         /// <summary>webhook 该填的 URL。</summary>
         public string Url => $"http://127.0.0.1:{Port}/hook";
 
-        /// <summary>每次请求返回的状态码（默认 200）。</summary>
-        public Func<int> StatusCodeProvider { get; set; } = () => 200;
+        /// <summary>
+        /// 每次请求返回的状态码（默认 200）。
+        /// </summary>
+        /// <param name="requestIndex">这是第几个请求（从 1 开始）。</param>
+        /// <remarks>
+        /// 带上序号才能写出「第 1 次失败、第 2 次成功」这种按次变化的响应。
+        /// </remarks>
+        public Func<int, int> StatusCodeProvider { get; set; } = _ => 200;
 
         /// <summary>响应前的延迟（用来模拟慢目标端点）。</summary>
         public TimeSpan ResponseDelay { get; set; } = TimeSpan.Zero;
@@ -899,11 +925,14 @@ public sealed class WebhookDeliveryTests
                 context.Request.HttpMethod,
                 body,
                 context.Request.ContentType,
-                headers);
+                headers,
+                DateTimeOffset.UtcNow);
 
+            int index;
             lock (_gate)
             {
                 _requests.Add(request);
+                index = _requests.Count;
             }
 
             if (ResponseDelay > TimeSpan.Zero)
@@ -912,7 +941,7 @@ public sealed class WebhookDeliveryTests
             }
 
             var bytes = Encoding.UTF8.GetBytes("{}");
-            context.Response.StatusCode = StatusCodeProvider();
+            context.Response.StatusCode = StatusCodeProvider(index);
             context.Response.ContentType = "application/json";
             await context.Response.OutputStream.WriteAsync(bytes);
             context.Response.Close();
@@ -935,7 +964,8 @@ public sealed class WebhookDeliveryTests
         string Method,
         string Body,
         string? ContentType,
-        Dictionary<string, string> Headers)
+        Dictionary<string, string> Headers,
+        DateTimeOffset ReceivedAt)
     {
         /// <summary>取一个请求头（大小写不敏感）。</summary>
         public string? Header(string name) =>

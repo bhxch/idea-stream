@@ -36,7 +36,16 @@ public sealed class ApiOptions
 public sealed class WebhookOptions
 {
     public int TimeoutSeconds { get; set; } = 10;
-    public int MaxAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// 最多投递尝试次数（**含首次尝试**）。
+    /// </summary>
+    /// <remarks>
+    /// 默认 4 = 首次 + 3 次重试，正好把 1s / 5s / 30s 三段退避都用上
+    /// （默认是 3 的话，退避表里的 30 秒永远用不上）。
+    /// </remarks>
+    public int MaxAttempts { get; set; } = 4;
+
     public int MaxDeliveryRecords { get; set; } = 500;
 }
 
