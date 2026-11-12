@@ -260,7 +260,7 @@ git commit -m "feat(server): 搭建解决方案骨架与健康检查端点"
     public sealed class WebhookOptions
     {
         public int TimeoutSeconds { get; set; } = 10;
-        public int MaxAttempts { get; set; } = 3;
+        public int MaxAttempts { get; set; } = 4;   // 含首次尝试 → 首次 + 3 次重试
         public int MaxDeliveryRecords { get; set; } = 500;
     }
     public sealed class SseOptions { public int BufferSize { get; set; } = 500; }
@@ -317,7 +317,7 @@ VALUES ('inbox', '收件箱', 0, NULL, :now, :now);
   "Database": { "Path": "data/idea.db" },
   "Trash": { "RetentionDays": 30 },
   "Api": { "MaxIdeasPerResponse": 2000 },
-  "Webhook": { "TimeoutSeconds": 10, "MaxAttempts": 3, "MaxDeliveryRecords": 500 },
+  "Webhook": { "TimeoutSeconds": 10, "MaxAttempts": 4, "MaxDeliveryRecords": 500 },
   "Sse": { "BufferSize": 500 },
   "PublicBaseUrl": "",
   "Logging": { "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning" } }
@@ -1327,7 +1327,9 @@ bash server/scripts/aot-smoke.sh
 - [ ] **Step 2: 运行测试确认失败** → Expected: FAIL
 - [ ] **Step 3: 实现**
   - `WebhookEventHandler : IEventHandler` —— `HandleAsync` 查出匹配且启用的 webhook，逐个用 `EventPlaceholders.Build` + `TemplateRenderer.RenderJson` 渲染 payload，构造 `WebhookDeliveryJob` 投进 worker 的 `Channel`（容量 1000，满则 `TryWrite` 失败 → 记日志丢弃）。
-  - `WebhookDeliveryWorker` 用 `Parallel.ForEachAsync` 消费，`MaxDegreeOfParallelism = 8`；每个 job 内部：插入/取投递记录 → 尝试 POST → 成功记 delivered，失败按 1s/5s/30s 退避重试，共 `MaxAttempts` 次（**含首次**）→ 仍失败记 failed 与 `last_error`。
+  - `WebhookDeliveryWorker` 用 `Parallel.ForEachAsync` 消费，`MaxDegreeOfParallelism = 8`；每个 job 内部：插入/取投递记录 → 尝试 POST → 成功记 delivered，失败按 1s/5s/30s 退避重试，共 `MaxAttempts` 次（**含首次**，默认 4 = 首次 + 3 次重试，三段退避一一对应）→ 仍失败记 failed 与 `last_error`。
+  - **投递记录的并发安全（Task 14 评审的 Important）**：`attempts` 的递增与状态跃迁必须在 **SQL 侧原子化** —— `UPDATE ... SET attempts = attempts + 1, status = ..., last_error = ..., updated_at = ... WHERE id = $id`，不要「读出来算好再整行覆盖写回」。否则手动重投与在途投递并发时，旧快照会把新快照覆盖掉：`attempts` 少记、已成功的投递被改回 `pending`/`failed`。状态跃迁加前置条件（只允许 `pending → delivered/failed`），且**入队失败时的还原只改 `status`、不动 `attempts`/`last_error`**。
+  - **`webhook_delivery` 表加唯一索引** `CREATE UNIQUE INDEX ix_delivery_event ON webhook_delivery(webhook_id, event_id);`（一行索引即可），`Insert` 改成 `INSERT OR IGNORE` + 读回 —— 「一个 (webhook, event) 一行」不能只靠代码约定。
   - HTTP 客户端用 `IHttpClientFactory` 创建的 `HttpClient`，超时由 `Webhook:TimeoutSeconds` 设定（通过 `HttpClient.Timeout`）。
   - 匹配规则：webhook 启用的前提下，`global` 作用域全部收；`project` 作用域只收 `evt.Project?.Id == webhook.ProjectId` 的事件；再叠加 `Events` 包含事件类型。
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS

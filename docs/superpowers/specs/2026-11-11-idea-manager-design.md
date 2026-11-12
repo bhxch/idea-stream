@@ -398,7 +398,7 @@ CREATE TABLE setting (
 - 投递是**异步**的：事件 → 投递队列（`Channel`，容量 1000）→ `BackgroundService` 消费 → HTTP POST。webhook 队列与 SSE 通道**彼此独立**，webhook 卡住不影响浏览器推送。
 - 队列满时**丢弃新事件并记日志**，绝不阻塞写路径（写路径不等投递）。
 - 超时默认 10 秒。
-- 失败重试 **3 次**（`Webhook:MaxAttempts`，**含首次尝试**），退避 1s / 5s / 30s。
+- 失败重试 **3 次** —— `Webhook:MaxAttempts` 默认 **4**（**含首次尝试**，即首次 + 3 次重试），退避 1s / 5s / 30s 三段依次对应三次重试。（默认若是 3，退避表里的 30s 永远用不上。）
 - **投递记录生命周期**：每次尝试都更新同一行，`attempts` 累加（口径 = 总尝试次数，含首次），`last_error` 记录最近一次错误；终态写 `status='delivered'` 或 `status='failed'`。一条记录对应**一次事件投递**，不是每次尝试一行。
 - **手动重投**：重发表里**已渲染的 `payload`**，不按当前模板重新渲染（表里没存事件全量数据，重渲染的输入并不存在）。重投后 `attempts` 继续累加。
 - 每个 webhook 只保留最近 `Webhook:MaxDeliveryRecords`（默认 500）条投递记录，超出的删除最旧的。
@@ -535,7 +535,7 @@ public interface IEventHandler
 | `PublicBaseUrl` | 空 | 用于生成 `{{idea.url}}`，如 `https://ideas.example.com` |
 | `Api:MaxIdeasPerResponse` | `2000` | 单次列表返回的最大条数，超过则 400 |
 | `Webhook:TimeoutSeconds` | `10` | 单次投递超时 |
-| `Webhook:MaxAttempts` | `3` | 失败重试次数（**含首次尝试**） |
+| `Webhook:MaxAttempts` | `4` | 最多投递尝试次数（**含首次尝试**）→ 默认即「首次 + 3 次重试」，与 1s/5s/30s 三段退避一一对应 |
 | `Webhook:MaxDeliveryRecords` | `500` | 每个 webhook 保留的投递记录条数 |
 | `Sse:BufferSize` | `500` | 服务端事件缓冲条数（供 `Last-Event-ID` 补发） |
 | `Sse:HeartbeatSeconds` | `25` | SSE 心跳间隔（发 `: ping` 注释帧，防中间代理掐断空闲连接） |
