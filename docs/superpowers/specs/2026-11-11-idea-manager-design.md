@@ -179,13 +179,17 @@ CREATE TABLE webhook_delivery (
     event_id        TEXT NOT NULL,
     event_type      TEXT NOT NULL,
     payload         TEXT NOT NULL,              -- 已渲染的请求体
-    status          TEXT NOT NULL,              -- 'delivered' | 'failed'
+    status          TEXT NOT NULL,              -- 'pending' | 'delivered' | 'failed'
     attempts        INTEGER NOT NULL DEFAULT 0,
     last_error      TEXT NULL,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX ix_delivery_webhook ON webhook_delivery(webhook_id, created_at DESC);
+-- 一个 (webhook, 事件) 只允许有一行：手动重投与在途投递可能同时插同一行，
+-- 没有这个唯一索引就会插出两行 —— 列表出现重复条目，attempts 分散在两行，
+-- 手动重投只更新其中一行。
+CREATE UNIQUE INDEX ix_delivery_event ON webhook_delivery(webhook_id, event_id);
 
 CREATE TABLE setting (
     key   TEXT PRIMARY KEY,
@@ -399,7 +403,7 @@ CREATE TABLE setting (
 - 队列满时**丢弃新事件并记日志**，绝不阻塞写路径（写路径不等投递）。
 - 超时默认 10 秒。
 - 失败重试 **3 次** —— `Webhook:MaxAttempts` 默认 **4**（**含首次尝试**，即首次 + 3 次重试），退避 1s / 5s / 30s 三段依次对应三次重试。（默认若是 3，退避表里的 30s 永远用不上。）
-- **投递记录生命周期**：每次尝试都更新同一行，`attempts` 累加（口径 = 总尝试次数，含首次），`last_error` 记录最近一次错误；终态写 `status='delivered'` 或 `status='failed'`。一条记录对应**一次事件投递**，不是每次尝试一行。
+- **投递记录生命周期**：每次尝试都更新同一行，`attempts` 累加（口径 = 总尝试次数，含首次），`last_error` 记录最近一次错误；投递中写 `status='pending'`，终态写 `status='delivered'` 或 `status='failed'`。一条记录对应**一次事件投递**，不是每次尝试一行。
 - **手动重投**：重发表里**已渲染的 `payload`**，不按当前模板重新渲染（表里没存事件全量数据，重渲染的输入并不存在）。重投后 `attempts` 继续累加。
 - 每个 webhook 只保留最近 `Webhook:MaxDeliveryRecords`（默认 500）条投递记录，超出的删除最旧的。
 
