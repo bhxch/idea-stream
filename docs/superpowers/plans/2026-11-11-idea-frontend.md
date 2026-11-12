@@ -265,7 +265,9 @@ git commit -m "feat(web): 初始化 Vue3+Vite 骨架、路由、主题与 API �
     —— **注意签名只有 `projectId`，没有 `filter`**：过滤在客户端做（AND/OR 偏好在各设备自己的 localStorage 里，服务端按它自己的 `or` 处理，与本机选的 `and` 会打架）。把 `filter` 传给后端会让用户看到的 AND 语义失效。
   - `web/src/lib/format.ts`：`formatRelativeTime(iso: string, now?: Date): string` —— 输出 `刚刚` / `N 分钟前` / `N 小时前` / `N 天前` / `M月D日`。
   - 组件 props：`MessageList` 收 `ideas: Idea[]`、`selectedIds: Set<string>`、`atBottom: boolean`，emit `toggle-select`、`edit`、`delete`、`toggle-done`、`edit-tags`。
-  - 组件 props：`Composer` 无 props，emit `submit(content: string)`。
+  - 组件 props：`Composer` 收 **`onSubmit: (content: string) => Promise<boolean>`**（**不是 emit**）。
+    —— 提交回调返回 Promise 表示成败：**成功之后才清空输入框并保持焦点**；失败时内容原样留在框里（用户刚敲的正文不能因为一次网络失败就没了）。
+    `Composer` 内部另有 `submitting` 标志防重复提交。
 
 - [ ] **Step 1: 写失败测试**
 
