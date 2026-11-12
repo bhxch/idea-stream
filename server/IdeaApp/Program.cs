@@ -7,6 +7,16 @@ using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 环境变量前缀 IDEA_：README、spec §16.2 与 skill 计划里的启动命令都用这个前缀
+// （IDEA_Urls= / IDEA_Database__Path= / IDEA_Trash__RetentionDays=）。
+//
+// 默认的无前缀 provider 保留（Urls=、Trash__RetentionDays= 仍然生效），
+// 两套并存：后注册的 provider 赢，所以带前缀的优先。
+//
+// 少这一行，IDEA_ 开头的环境变量会被静默忽略 —— 应用照样起得来，
+// 只是连的是默认端口、默认库路径，出问题时没人查得出来。
+builder.Configuration.AddEnvironmentVariables("IDEA_");
+
 // OpenAPI 文档：/openapi/v1.json。给 agent 一份可读的接口契约，
 // 提交进仓库的 openapi/idea-v1.json 就是它的快照。
 //
