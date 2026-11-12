@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { ApiError } from '../api/client';
 import type { Idea, Project } from '../api/types';
 import ToastHost from '../components/ToastHost.vue';
+import { focusIdeaId } from '../stores/ideas';
 import { currentProjectId } from '../stores/projects';
 
 const { apiGet, apiSend } = vi.hoisted(() => ({ apiGet: vi.fn(), apiSend: vi.fn() }));
@@ -75,6 +76,7 @@ beforeEach(() => {
   apiGet.mockReset();
   apiSend.mockReset();
   currentProjectId.value = null;
+  focusIdeaId.value = null;
   apiGet.mockImplementation((path: string) => {
     switch (path) {
       case '/projects':
@@ -462,6 +464,163 @@ describe('HomePage', () => {
 
     expect(apiSend).toHaveBeenCalledWith('DELETE', '/ideas/idea-1');
     expect(wrapper.findAll('.idea')).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it('勾选后批量标记完成会调 bulk/complete', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([ideaA, ideaB]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    apiSend.mockResolvedValue([{ ...ideaA, done: true }, { ...ideaB, done: true }]);
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    const checkboxes = wrapper.findAll('input.select');
+    await checkboxes[0].setValue(true);
+    await checkboxes[1].setValue(true);
+
+    await wrapper.get('.batch-bar button.action--complete').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('POST', '/ideas/bulk/complete', {
+      ids: ['idea-a', 'idea-b'],
+      done: true,
+    });
+    wrapper.unmount();
+  });
+
+  it('批量加标签会调 bulk/tags', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([ideaA, ideaB]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    apiSend.mockResolvedValue([ideaA, ideaB]);
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    const checkboxes = wrapper.findAll('input.select');
+    await checkboxes[0].setValue(true);
+    await checkboxes[1].setValue(true);
+
+    await wrapper.get('.batch-bar button.action--add-tags').trigger('click');
+    await wrapper.get('.batch-bar .tag-editor input').setValue('新标签');
+    await wrapper.get('.batch-bar .tag-editor input').trigger('keydown', { key: 'Enter' });
+    await wrapper.get('.batch-bar button.action--apply-tags').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('POST', '/ideas/bulk/tags', {
+      ids: ['idea-a', 'idea-b'],
+      tags: ['新标签'],
+      replace: false,
+    });
+    wrapper.unmount();
+  });
+
+  it('批量删除会调 bulk/delete 并把条目移出列表', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([ideaA, ideaB]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    apiSend.mockResolvedValue([ideaA, ideaB]);
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    const checkboxes = wrapper.findAll('input.select');
+    await checkboxes[0].setValue(true);
+    await checkboxes[1].setValue(true);
+
+    await wrapper.get('.batch-bar button.action--delete').trigger('click');
+    await wrapper.get('.batch-bar button.confirm__delete').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('POST', '/ideas/bulk/delete', {
+      ids: ['idea-a', 'idea-b'],
+    });
+    expect(wrapper.findAll('.idea')).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it('合并会调 merge：源条目消失、新条目出现，并记下新条目的 id', async () => {
+    const merged: Idea = { ...ideaA, id: 'idea-merged', content: '甲\n\n乙' };
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([ideaA, ideaB]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    apiSend.mockImplementation((_method: string, path: string) =>
+      path === '/ideas/merge'
+        ? Promise.resolve(merged)
+        : Promise.resolve([ideaA, ideaB]),
+    );
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    const checkboxes = wrapper.findAll('input.select');
+    await checkboxes[0].setValue(true);
+    await checkboxes[1].setValue(true);
+
+    await wrapper.get('.batch-bar button.action--merge').trigger('click');
+    await flushPromises();
+
+    // 对话框里的初始正文就是各条以空行拼接的结果。
+    expect((wrapper.get('.merge-dialog textarea').element as HTMLTextAreaElement).value).toBe('甲\n\n乙');
+
+    await wrapper.get('button.action--confirm').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('POST', '/ideas/merge', {
+      ids: ['idea-a', 'idea-b'],
+      content: '甲\n\n乙',
+    });
+    // 源条目没了，只剩合并出来的新条目。
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+    expect(wrapper.get('.title').text()).toBe('甲');
+    // 记下新条目的 id，供 F11 滚动定位。
+    expect(focusIdeaId.value).toBe('idea-merged');
     wrapper.unmount();
   });
 });

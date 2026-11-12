@@ -14,6 +14,14 @@ export const ideas = ref<Idea[]>([]);
 export const loading = ref(false);
 
 /**
+ * 要定位的条目 id（合并出来的新条目）。
+ *
+ * 合并的源条目会被硬删、结果出现在列表最下面，用户多半没看见它；
+ * F11 用这个 id 滚动定位过去。
+ */
+export const focusIdeaId = ref<string | null>(null);
+
+/**
  * 拉取想法列表。
  *
  * 只把项目范围交给后端过滤，**状态与标签过滤在客户端做**：

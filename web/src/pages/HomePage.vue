@@ -2,13 +2,22 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ApiError, apiGet, apiSend } from '../api/client';
 import type { Idea, Project, Tag } from '../api/types';
+import BatchBar from '../components/BatchBar.vue';
 import Composer from '../components/Composer.vue';
 import FilterBar from '../components/FilterBar.vue';
+import MergeDialog from '../components/MergeDialog.vue';
 import MessageList from '../components/MessageList.vue';
 import { showToast } from '../components/ToastHost.vue';
 import { useTagMode } from '../composables/useTagMode';
 import { matchesFilter, sortIdeas, type IdeaFilter } from '../lib/filter';
-import { applyLocalUpsert, ideas, loadIdeas, loading, removeLocal } from '../stores/ideas';
+import {
+  applyLocalUpsert,
+  focusIdeaId,
+  ideas,
+  loadIdeas,
+  loading,
+  removeLocal,
+} from '../stores/ideas';
 import {
   currentProjectId,
   loadProjects,
@@ -35,8 +44,14 @@ const filter = ref<IdeaFilter>({
 /** 全部标签（标签多选下拉的选项）。 */
 const allTags = ref<Tag[]>([]);
 
-/** 被勾选的想法 id（多选批量操作在 F6 接上）。 */
+/** 被勾选的想法 id（多选批量操作用）。 */
 const selectedIds = ref<Set<string>>(new Set());
+
+/** 合并对话框是否展开。 */
+const mergeOpen = ref(false);
+
+/** 有批量请求在飞：操作条禁用，防重复提交。 */
+const batchBusy = ref(false);
 
 /**
  * 有请求在飞的条目 id。
@@ -439,6 +454,112 @@ function onToggleSelect(id: string): void {
   selectedIds.value = next;
 }
 
+/**
+ * 勾选中的想法，按列表顺序。
+ *
+ * 顺序与后端合并时的拼接顺序一致（`updated_at ASC, id ASC`），
+ * 所以合并对话框里看到的拼接结果就是后端会拼出来的那份。
+ */
+const selectedIdeas = computed(() =>
+  sortIdeas(ideas.value.filter((idea) => selectedIds.value.has(idea.id))),
+);
+
+/** 批量标记完成 / 撤销完成。 */
+async function onBulkComplete(done: boolean): Promise<void> {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0 || batchBusy.value) {
+    return;
+  }
+  batchBusy.value = true;
+  try {
+    const updated = await apiSend<Idea[]>('POST', '/ideas/bulk/complete', { ids, done });
+    updated.forEach((idea) => applyLocalUpsert(idea));
+  } catch (error) {
+    reportError(error, done ? '批量标记完成失败' : '批量撤销完成失败');
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+/**
+ * 批量加标签。
+ *
+ * 并集式追加（`replace: false`）：原有的标签留着，不是覆盖。
+ */
+async function onBulkAddTags(tags: string[]): Promise<void> {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0 || tags.length === 0 || batchBusy.value) {
+    return;
+  }
+  batchBusy.value = true;
+  try {
+    const updated = await apiSend<Idea[]>('POST', '/ideas/bulk/tags', {
+      ids,
+      tags,
+      replace: false,
+    });
+    updated.forEach((idea) => applyLocalUpsert(idea));
+  } catch (error) {
+    reportError(error, '批量加标签失败');
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+/**
+ * 批量删除（进回收站）。
+ *
+ * 后端返回被软删的那些想法：按返回的移除本地列表，
+ * 删掉的条目不在列表里了，勾选也就没意义。
+ */
+async function onBulkDelete(): Promise<void> {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0 || batchBusy.value) {
+    return;
+  }
+  batchBusy.value = true;
+  try {
+    const deleted = await apiSend<Idea[]>('POST', '/ideas/bulk/delete', { ids });
+    deleted.forEach((idea) => removeLocal(idea.id));
+    selectedIds.value = new Set();
+  } catch (error) {
+    reportError(error, '批量删除失败');
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+/**
+ * 合并：源条目硬删，生成一条全新的想法。
+ *
+ * 合并结果出现在列表最下面（它是最新的），用户多半没看见 ——
+ * 把它的 id 记进 `focusIdeaId`，F11 拿它滚动定位过去。
+ */
+async function onMergeConfirm(content: string): Promise<void> {
+  const ids = [...selectedIds.value];
+  if (ids.length < 2 || batchBusy.value) {
+    return;
+  }
+  batchBusy.value = true;
+  try {
+    const merged = await apiSend<Idea>('POST', '/ideas/merge', { ids, content });
+    ids.forEach((id) => removeLocal(id));
+    applyLocalUpsert(merged);
+    selectedIds.value = new Set();
+    mergeOpen.value = false;
+    focusIdeaId.value = merged.id;
+  } catch (error) {
+    reportError(error, '合并失败');
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+/** 取消勾选。 */
+function onClearSelection(): void {
+  selectedIds.value = new Set();
+}
+
 onMounted(() => {
   void init();
 });
@@ -477,6 +598,26 @@ onMounted(() => {
     />
 
     <Composer :on-submit="onSubmit" />
+
+    <BatchBar
+      v-if="selectedIds.size > 0"
+      :count="selectedIds.size"
+      :busy="batchBusy"
+      :suggest="suggestTags"
+      @complete="onBulkComplete(true)"
+      @undo-complete="onBulkComplete(false)"
+      @merge="mergeOpen = true"
+      @delete="onBulkDelete"
+      @add-tags="onBulkAddTags"
+      @clear="onClearSelection"
+    />
+
+    <MergeDialog
+      :open="mergeOpen"
+      :ideas="selectedIdeas"
+      @confirm="onMergeConfirm"
+      @cancel="mergeOpen = false"
+    />
   </main>
 </template>
 
