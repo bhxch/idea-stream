@@ -121,6 +121,25 @@ async function onSubmit(content: string): Promise<boolean> {
   }
 }
 
+/**
+ * 切换完成态。
+ *
+ * 先落库再更新本地：接口返回的想法才是最新的（`updatedAt` 由后端给），
+ * 本地不自己猜。失败时本地状态不动，条目还是原来的样子。
+ */
+async function onToggleDone(id: string): Promise<void> {
+  const idea = ideas.value.find((item) => item.id === id);
+  if (!idea) {
+    return;
+  }
+  try {
+    const updated = await apiSend<Idea>('POST', `/ideas/${id}/complete`, { done: !idea.done });
+    applyLocalUpsert(updated);
+  } catch (error) {
+    reportError(error, '更新完成状态失败');
+  }
+}
+
 /** 勾选/取消勾选一条想法。 */
 function onToggleSelect(id: string): void {
   const next = new Set(selectedIds.value);
@@ -161,6 +180,7 @@ onMounted(() => {
       :selected-ids="selectedIds"
       :at-bottom="atBottom"
       @toggle-select="onToggleSelect"
+      @toggle-done="onToggleDone"
     />
 
     <Composer :on-submit="onSubmit" />
