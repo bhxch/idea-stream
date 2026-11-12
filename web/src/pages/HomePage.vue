@@ -60,13 +60,33 @@ function reportError(error: unknown, fallback: string): void {
   showToast(message, 'error');
 }
 
-/** 首屏加载：项目列表 + 排序方式 + 全部标签 + 当前项目的想法。 */
+/**
+ * 首屏加载。
+ *
+ * 三件事互不依赖：项目列表、排序方式偏好、全部标签。
+ * 排序方式只是个偏好，取不到也不该拖垮整屏 —— 用 `allSettled` 各自兜底，
+ * 想法列表**单独**加载，列表挂了不影响别的提示。
+ */
 async function init(): Promise<void> {
+  const [projectsResult, sortModeResult, tagsResult] = await Promise.allSettled([
+    loadProjects(),
+    loadSortMode(),
+    loadTags(),
+  ]);
+  if (projectsResult.status === 'rejected') {
+    reportError(projectsResult.reason, '加载项目失败');
+  }
+  if (sortModeResult.status === 'rejected') {
+    reportError(sortModeResult.reason, '加载排序方式失败');
+  }
+  if (tagsResult.status === 'rejected') {
+    reportError(tagsResult.reason, '加载标签失败');
+  }
+
   try {
-    await Promise.all([loadProjects(), loadSortMode(), loadTags()]);
     await loadIdeas(currentProjectId.value);
   } catch (error) {
-    reportError(error, '加载失败');
+    handleIdeasError(error);
   }
 }
 
@@ -75,14 +95,98 @@ async function loadTags(): Promise<void> {
   allTags.value = await apiGet<Tag[]>('/tags');
 }
 
-/** 切换项目：换掉列表范围，之前勾选的条目也不再相关。 */
+/**
+ * 切换项目：换掉列表范围，之前勾选的条目也不再相关。
+ *
+ * 拉取失败时把项目选择**回滚**：数据还停在上一个项目，
+ * `filter.projectId` 若停在新项目，旧数据会被过滤成空列表 —— 两边必须对齐。
+ */
 async function onProjectChange(event: Event): Promise<void> {
-  const value = (event.target as HTMLSelectElement).value;
-  setCurrentProject(value === '' ? null : value);
-  filter.value = { ...filter.value, projectId: currentProjectId.value };
+  const select = event.target as HTMLSelectElement;
+  const value = select.value;
+  const previous = currentProjectId.value;
+  const next = value === '' ? null : value;
+  setCurrentProject(next);
+  filter.value = { ...filter.value, projectId: next };
   selectedIds.value = new Set();
   try {
-    await loadIdeas(currentProjectId.value);
+    await loadIdeas(next);
+  } catch (error) {
+    if (isTooManyIdeas(error)) {
+      // 切「全部项目」会一次要全库，超了上限 —— 改切最近有活动的项目，不回滚。
+      reportTooManyIdeas(error);
+      return;
+    }
+    setCurrentProject(previous);
+    filter.value = { ...filter.value, projectId: previous };
+    // 状态回滚了，下拉的 DOM 值也得回去：绑定值前后一样时 Vue 不会重设它，
+    // 不手动改的话下拉会停在用户刚选的那个项目上，与状态对不上。
+    select.value = previous ?? '';
+    reportError(error, '加载想法失败');
+  }
+}
+
+/**
+ * 加载想法列表失败时的分派。
+ *
+ * 「全部项目」一次要拉回全库，会撞上服务端的单次返回上限（`too_many_ideas`）——
+ * 这不是普通的失败，得给一条能照着做的提示。
+ */
+function handleIdeasError(error: unknown): void {
+  if (isTooManyIdeas(error)) {
+    reportTooManyIdeas(error);
+    return;
+  }
+  reportError(error, '加载想法失败');
+}
+
+/** 是不是「命中数超过单次返回上限」。 */
+function isTooManyIdeas(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === 'too_many_ideas';
+}
+
+/**
+ * 「命中数超过单次上限」的提示 + 补救。
+ *
+ * 提示里带上条数，用户才知道自己有多少条；然后**自动切到最近有活动的项目**：
+ * 数据仍然完整可用，想看全库再自己切回去。
+ */
+function reportTooManyIdeas(error: ApiError): void {
+  const count = parseHitCount(error.detail);
+  showToast(
+    count === null ? '条目太多，超过单次上限，请先选一个项目' : `共 ${count} 条超过单次上限，请先选一个项目`,
+    'error',
+  );
+  void switchToMostRecentProject();
+}
+
+/** 从服务端的说明里取出命中条数（「命中 37 条想法，超过单次返回上限 2000，…」）。 */
+function parseHitCount(detail: string | undefined): number | null {
+  const matched = /命中\s*(\d+)\s*条/.exec(detail ?? '');
+  return matched ? Number(matched[1]) : null;
+}
+
+/**
+ * 切到最近有活动的项目。
+ *
+ * 按 `lastActivityAt` 挑（不依赖项目排序方式 —— 那只是列表的排列）。
+ * 挑不到就什么都不做：一条想法都没有时切过去也是空的。
+ */
+async function switchToMostRecentProject(): Promise<void> {
+  const ranked = projects.value
+    .map((project) => ({
+      project,
+      activity: project.lastActivityAt ? Date.parse(project.lastActivityAt) : Number.NEGATIVE_INFINITY,
+    }))
+    .sort((left, right) => right.activity - left.activity);
+  const target = ranked[0]?.project;
+  if (!target) {
+    return;
+  }
+  setCurrentProject(target.id);
+  filter.value = { ...filter.value, projectId: target.id };
+  try {
+    await loadIdeas(target.id);
   } catch (error) {
     reportError(error, '加载想法失败');
   }
