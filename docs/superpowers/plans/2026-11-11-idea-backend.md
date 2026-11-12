@@ -1303,7 +1303,7 @@ bash server/scripts/aot-smoke.sh
 // 配置了 header 与 secret → 假端点收到该 header 与 "X-Idea-Signature: sha256=..."
 
 [Fact] public async Task Failed_delivery_retries_three_times_then_records_failed
-// 假端点返回 500 → attempts == 3，status == "failed"，last_error 非空
+// 假端点返回 500 → attempts == 4，status == "failed"，last_error 非空
 
 [Fact] public async Task Successful_delivery_records_delivered_with_attempts_one
 // 200 → status == "delivered"，attempts == 1
