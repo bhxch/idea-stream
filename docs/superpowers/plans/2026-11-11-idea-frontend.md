@@ -23,6 +23,7 @@
 - 所有 API 请求带 `credentials: 'same-origin'`（nginx basic auth 需要）。
 - 错误处理统一读 ProblemDetails 的 `code` 与 `detail`，在 UI 上以 toast 展示 `detail`。
 - 不使用 Pinia；状态用组合式函数 + 模块级单例。
+- **Toast 组件的契约（F1 已建，后续 task 直接用，不要重建）**：`web/src/components/ToastHost.vue` 导出 `showToast(message: string, kind?: 'error' | 'info')`（`kind` 默认 `'info'`）。它挂在 `App.vue` 里，全局可用；错误统一用 `kind: 'error'`。**F1 建的 5 个占位页面（Home/Projects/Trash/Webhooks/ProjectWebhooks）在各自的 task 里是「整体替换」，不是新建。**
 - 每个 task 结束提交一次，commit message 用 Conventional Commits（中文正文）。
 
 ## 后端契约要点（后端 11 个 task 已实现，前端必须按这些写）
