@@ -36,6 +36,13 @@ public static class IdeaOpenApi
     /// <c>IdeaApp | v1</c>，导出工具进程里生成的是 <c>ExportOpenApi | v1</c>。
     /// 同一个接口两种标题，契约文件与服务实际提供的就对不上了。
     /// </remarks>
-    public static void Configure(OpenApiOptions options) =>
+    public static void Configure(OpenApiOptions options)
+    {
         options.AddDocumentTransformer<OpenApiInfoTransformer>();
+
+        // 错误响应：错误码清单与每个错误响应的描述都写进契约。
+        // 顺序无关（一个改 info、一个改 paths/components），但两者都在
+        // 「文档已生成」之后跑：框架先生成 paths，再跑文档 transformer。
+        options.AddDocumentTransformer<OpenApiProblemTransformer>();
+    }
 }

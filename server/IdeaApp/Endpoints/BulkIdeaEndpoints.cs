@@ -25,7 +25,8 @@ public static class BulkIdeaEndpoints
             ApiResults.Run(() => Results.Json(
                 service.BulkSetDone(request.Ids ?? Array.Empty<string>(), request.Done).ToList(),
                 IdeaJsonContext.Default.ListIdeaDto)))
-            .Produces<List<IdeaDto>>(StatusCodes.Status200OK);
+            .Produces<List<IdeaDto>>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         // 批量设置标签：默认并集式追加，replace: true 时覆盖。
         app.MapPost("/api/ideas/bulk/tags", (BulkTagsRequest request, IdeaService service) =>
@@ -35,7 +36,8 @@ public static class BulkIdeaEndpoints
                     request.Tags ?? Array.Empty<string>(),
                     request.Replace ?? false).ToList(),
                 IdeaJsonContext.Default.ListIdeaDto)))
-            .Produces<List<IdeaDto>>(StatusCodes.Status200OK);
+            .Produces<List<IdeaDto>>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         // 批量删除：软删（进回收站），返回被删掉的那些想法。
         // spec §13.5 的「删除返回 204」只适用于 HTTP 方法 DELETE（DELETE /api/ideas/{id}），
@@ -44,14 +46,20 @@ public static class BulkIdeaEndpoints
             ApiResults.Run(() => Results.Json(
                 service.BulkDelete(request.Ids ?? Array.Empty<string>()).ToList(),
                 IdeaJsonContext.Default.ListIdeaDto)))
-            .Produces<List<IdeaDto>>(StatusCodes.Status200OK);
+            .Produces<List<IdeaDto>>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         // 合并：多条想法 → 一条全新的想法，返回合并结果。
         app.MapPost("/api/ideas/merge", (MergeIdeasRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(
                 service.Merge(request.Ids ?? Array.Empty<string>(), request.Content, request.Title),
                 IdeaJsonContext.Default.IdeaDto)))
-            .Produces<IdeaDto>(StatusCodes.Status200OK);
+            .Produces<IdeaDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(
+                StatusCodes.Status400BadRequest,
+                "invalid_merge_selection",
+                "merge_cross_project")
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         return app;
     }

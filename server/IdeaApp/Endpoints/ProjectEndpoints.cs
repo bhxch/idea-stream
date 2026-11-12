@@ -23,11 +23,14 @@ public static class ProjectEndpoints
         app.MapPost("/api/projects", (CreateProjectRequest request, ProjectService service) =>
             ApiResults.Run(() => Results.Json(service.Create(request.Name),
                 IdeaJsonContext.Default.ProjectDto, statusCode: StatusCodes.Status201Created)))
-            .Produces<ProjectDto>(StatusCodes.Status201Created);
+            .Produces<ProjectDto>(StatusCodes.Status201Created)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_project_name");
 
         app.MapPatch("/api/projects/{id}", (string id, RenameProjectRequest request, ProjectService service) =>
             ApiResults.Run(() => Results.Json(service.Rename(id, request.Name), IdeaJsonContext.Default.ProjectDto)))
-            .Produces<ProjectDto>(StatusCodes.Status200OK);
+            .Produces<ProjectDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_project_name")
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "project_not_found");
 
         app.MapDelete("/api/projects/{id}", (string id, ProjectService service) =>
             ApiResults.Run(() =>
@@ -35,17 +38,22 @@ public static class ProjectEndpoints
                 service.Delete(id);
                 return Results.NoContent();
             }))
-            .Produces(StatusCodes.Status204NoContent);
+            .Produces(StatusCodes.Status204NoContent)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "inbox_not_deletable")
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "project_not_found");
 
         // 恢复语义归回收站管：连带恢复「因删项目而删」的想法（见 TrashService）。
         app.MapPost("/api/projects/{id}/restore", (string id, TrashService service) =>
             ApiResults.Run(() => Results.Json(service.RestoreProject(id), IdeaJsonContext.Default.ProjectDto)))
-            .Produces<ProjectDto>(StatusCodes.Status200OK);
+            .Produces<ProjectDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "not_in_trash")
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "project_not_found");
 
         app.MapPost("/api/projects/reorder", (ReorderProjectsRequest request, ProjectService service) =>
             ApiResults.Run(() => Results.Json(service.Reorder(request.Ids).ToList(),
                 IdeaJsonContext.Default.ListProjectDto)))
-            .Produces<List<ProjectDto>>(StatusCodes.Status200OK);
+            .Produces<List<ProjectDto>>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_reorder_ids");
 
         return app;
     }

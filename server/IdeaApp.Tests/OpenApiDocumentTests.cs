@@ -33,11 +33,11 @@ public sealed class OpenApiDocumentTests
         using var currentDocument = JsonDocument.Parse(current);
         using var committedDocument = JsonDocument.Parse(committed);
 
-        // 只比路径、组件与文档信息：servers 段跟当前监听地址有关（默认是回环地址），
-        // 换台机器跑测试就不一样了，它不是契约的一部分。
-        AssertEqual(currentDocument, committedDocument, "info");
-        AssertEqual(currentDocument, committedDocument, "paths");
-        AssertEqual(currentDocument, committedDocument, "components");
+        // 整份文档做 JSON **语义**比较（忽略空白与对象键的顺序）：
+        // 逐段比原始文本太脆 —— 换个框架版本就可能在某个数组里换顺序，
+        // 那种改动不该让测试红。servers 段不在文档里（生成器清掉了它），
+        // 所以整份比较不会踩到「运行期地址」的问题。
+        AssertJsonEqual(currentDocument.RootElement, committedDocument.RootElement, "$");
     }
 
     /// <summary>
@@ -56,36 +56,149 @@ public sealed class OpenApiDocumentTests
         Assert.True(schemas.EnumerateObject().Any(), "components.schemas 一个都没有");
     }
 
-    private static void AssertEqual(JsonDocument current, JsonDocument committed, string section)
+    /// <summary>
+    /// 契约里必须写得出错误响应。
+    /// </summary>
+    /// <remarks>
+    /// 这份文件唯一的用途是给 agent 用。契约里只有成功路径的话，agent 遇到
+    /// 400 / 404 既不知道错误长什么样（RFC 9457 的 ProblemDetails + 扩展字段
+    /// <c>code</c>），也不知道什么时候会拿到 —— 只能靠试错。
+    /// <para>
+    /// 只断言「至少有一个 400 与一个 404」：具体每个端点该有哪些错误码由
+    /// <c>ApiErrorCodeTests</c> 把关，这里守的是「错误响应整体没被漏掉」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Committed_document_declares_error_responses()
     {
-        Assert.True(
-            current.RootElement.TryGetProperty(section, out var currentSection),
-            $"当前文档没有 {section} 段");
+        var committed = await File.ReadAllTextAsync(CommittedDocumentPath());
+        using var document = JsonDocument.Parse(committed);
 
-        Assert.True(
-            committed.RootElement.TryGetProperty(section, out var committedSection),
-            $"提交的契约文件没有 {section} 段");
+        var statuses = DeclaredStatusCodes(document.RootElement);
 
-        Assert.Equal(currentSection.GetRawText(), committedSection.GetRawText());
+        Assert.Contains("400", statuses);
+        Assert.Contains("404", statuses);
     }
 
-    /// <summary>仓库根下的 openapi/idea-v1.json（从测试程序集往上找）。</summary>
-    private static string CommittedDocumentPath()
+    /// <summary>
+    /// ProblemDetails 的 schema 必须写清楚扩展字段 <c>code</c> 的存在与取值。
+    /// </summary>
+    /// <remarks>
+    /// <c>Extensions</c> 不是 ProblemDetails 的类型化属性，schema 里不会自动出现它 ——
+    /// 不显式写，agent 就不知道错误响应里有个可分支处理的 <c>code</c> 字段。
+    /// </remarks>
+    [Fact]
+    public async Task ProblemDetails_schema_documents_the_code_extension()
     {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        var committed = await File.ReadAllTextAsync(CommittedDocumentPath());
+        using var document = JsonDocument.Parse(committed);
 
-        while (directory is not null)
+        var schema = document.RootElement
+            .GetProperty("components")
+            .GetProperty("schemas")
+            .GetProperty("ProblemDetails");
+
+        var description = schema.GetProperty("description").GetString() ?? string.Empty;
+
+        Assert.Contains("code", description, StringComparison.Ordinal);
+        Assert.Contains("idea_not_found", description, StringComparison.Ordinal);
+        Assert.Contains("project_not_found", description, StringComparison.Ordinal);
+
+        // 扩展字段：要么写成 additionalProperties，要么至少在描述里点名。
+        var documented = schema.TryGetProperty("additionalProperties", out _)
+            || description.Contains("扩展字段", StringComparison.Ordinal);
+
+        Assert.True(documented, "ProblemDetails 的 schema 既没有 additionalProperties，也没在描述里说明扩展字段");
+    }
+
+    /// <summary>文档里出现过的全部响应状态码。</summary>
+    private static HashSet<string> DeclaredStatusCodes(JsonElement root)
+    {
+        var statuses = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var path in root.GetProperty("paths").EnumerateObject())
         {
-            var candidate = Path.Combine(directory.FullName, "openapi", "idea-v1.json");
-            if (File.Exists(candidate))
+            foreach (var operation in path.Value.EnumerateObject())
             {
-                return candidate;
-            }
+                // 路径项里除了各方法，还有路径级的 parameters（数组）——跳过。
+                if (operation.Value.ValueKind != JsonValueKind.Object
+                    || !operation.Value.TryGetProperty("responses", out var responses))
+                {
+                    continue;
+                }
 
-            directory = directory.Parent;
+                foreach (var response in responses.EnumerateObject())
+                {
+                    statuses.Add(response.Name);
+                }
+            }
         }
 
-        throw new InvalidOperationException(
-            $"找不到 openapi/idea-v1.json：从 {AppContext.BaseDirectory} 往上找不到。");
+        return statuses;
+    }
+
+    /// <summary>JSON 语义比较：忽略空白与对象键的顺序，数组按顺序比。</summary>
+    private static void AssertJsonEqual(JsonElement expected, JsonElement actual, string path)
+    {
+        if (expected.ValueKind != actual.ValueKind)
+        {
+            Assert.Fail($"{path}: 类型不同（期望 {expected.ValueKind}，实际 {actual.ValueKind}）");
+        }
+
+        switch (expected.ValueKind)
+        {
+            case JsonValueKind.Object:
+            {
+                var expectedKeys = expected.EnumerateObject().Select(item => item.Name).OrderBy(name => name, StringComparer.Ordinal).ToList();
+                var actualKeys = actual.EnumerateObject().Select(item => item.Name).OrderBy(name => name, StringComparer.Ordinal).ToList();
+
+                Assert.True(expectedKeys.SequenceEqual(actualKeys, StringComparer.Ordinal),
+                    $"{path}: 字段不同。期望 [{string.Join(", ", expectedKeys)}]，实际 [{string.Join(", ", actualKeys)}]");
+
+                foreach (var property in expected.EnumerateObject())
+                {
+                    AssertJsonEqual(property.Value, actual.GetProperty(property.Name), $"{path}.{property.Name}");
+                }
+
+                break;
+            }
+
+            case JsonValueKind.Array:
+            {
+                var expectedItems = expected.EnumerateArray().ToList();
+                var actualItems = actual.EnumerateArray().ToList();
+
+                Assert.True(expectedItems.Count == actualItems.Count,
+                    $"{path}: 数组长度不同（期望 {expectedItems.Count}，实际 {actualItems.Count}）");
+
+                for (var index = 0; index < expectedItems.Count; index++)
+                {
+                    AssertJsonEqual(expectedItems[index], actualItems[index], $"{path}[{index}]");
+                }
+
+                break;
+            }
+
+            default:
+                Assert.Equal(expected.GetRawText(), actual.GetRawText());
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 仓库根下的 openapi/idea-v1.json。
+    /// </summary>
+    /// <remarks>
+    /// 先按仓库根（认 <c>IdeaApp.sln</c>）定位，再拼出契约文件的路径 ——
+    /// 逐级上溯找 <c>openapi/idea-v1.json</c> 会命中别处的同名目录
+    /// （比如某个依赖包里恰好也有 openapi/idea-v1.json），那就找错文件了。
+    /// </remarks>
+    private static string CommittedDocumentPath()
+    {
+        var path = RepoPaths.Contract;
+
+        Assert.True(File.Exists(path), $"找不到契约文件：{path}");
+
+        return path;
     }
 }

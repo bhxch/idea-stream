@@ -42,7 +42,11 @@ public static class SettingsEndpoints
 
                 return Results.Json(ReadAll(settings), IdeaJsonContext.Default.DictionaryStringString);
             }))
-            .Produces<Dictionary<string, string>>(StatusCodes.Status200OK);
+            .Produces<Dictionary<string, string>>(StatusCodes.Status200OK)
+            .ProducesApiProblem(
+                StatusCodes.Status400BadRequest,
+                "setting_key_not_writable",
+                "invalid_sort_mode");
 
         return app;
     }

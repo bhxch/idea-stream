@@ -26,7 +26,12 @@ public static class IdeaEndpoints
 
                     return Results.Json(service.List(query).ToList(), IdeaJsonContext.Default.ListIdeaDto);
                 }))
-            .Produces<List<IdeaDto>>(StatusCodes.Status200OK);
+            .Produces<List<IdeaDto>>(StatusCodes.Status200OK)
+            .ProducesApiProblem(
+                StatusCodes.Status400BadRequest,
+                "too_many_ideas",
+                "invalid_status",
+                "invalid_tag_mode");
 
         app.MapPost("/api/ideas", (CreateIdeaRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.Create(
@@ -35,21 +40,27 @@ public static class IdeaEndpoints
                     request.Title,
                     request.Tags ?? Array.Empty<string>()),
                 IdeaJsonContext.Default.IdeaDto, statusCode: StatusCodes.Status201Created)))
-            .Produces<IdeaDto>(StatusCodes.Status201Created);
+            .Produces<IdeaDto>(StatusCodes.Status201Created)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_content")
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "project_not_found");
 
         app.MapPatch("/api/ideas/{id}", (string id, UpdateIdeaRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.Update(id, request.Title, request.Content),
                 IdeaJsonContext.Default.IdeaDto)))
-            .Produces<IdeaDto>(StatusCodes.Status200OK);
+            .Produces<IdeaDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_content")
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         app.MapPut("/api/ideas/{id}/tags", (string id, SetTagsRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.SetTags(id, request.Tags ?? Array.Empty<string>()),
                 IdeaJsonContext.Default.IdeaDto)))
-            .Produces<IdeaDto>(StatusCodes.Status200OK);
+            .Produces<IdeaDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         app.MapPost("/api/ideas/{id}/complete", (string id, SetDoneRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.SetDone(id, request.Done), IdeaJsonContext.Default.IdeaDto)))
-            .Produces<IdeaDto>(StatusCodes.Status200OK);
+            .Produces<IdeaDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         app.MapDelete("/api/ideas/{id}", (string id, IdeaService service) =>
             ApiResults.Run(() =>
@@ -57,12 +68,15 @@ public static class IdeaEndpoints
                 service.Delete(id);
                 return Results.NoContent();
             }))
-            .Produces(StatusCodes.Status204NoContent);
+            .Produces(StatusCodes.Status204NoContent)
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         // 恢复语义归回收站管（见 TrashService）。
         app.MapPost("/api/ideas/{id}/restore", (string id, TrashService service) =>
             ApiResults.Run(() => Results.Json(service.RestoreIdea(id), IdeaJsonContext.Default.IdeaDto)))
-            .Produces<IdeaDto>(StatusCodes.Status200OK);
+            .Produces<IdeaDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "not_in_trash")
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         return app;
     }

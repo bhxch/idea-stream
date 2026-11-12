@@ -33,7 +33,15 @@ public static class WebhookEndpoints
         app.MapPost("/api/webhooks", (WebhookCreateRequest request, WebhookService service) =>
             ApiResults.Run(() => Results.Json(service.Create(request),
                 IdeaJsonContext.Default.WebhookDto, statusCode: StatusCodes.Status201Created)))
-            .Produces<WebhookDto>(StatusCodes.Status201Created);
+            .Produces<WebhookDto>(StatusCodes.Status201Created)
+            .ProducesApiProblem(
+                StatusCodes.Status400BadRequest,
+                "invalid_webhook_name",
+                "invalid_webhook_url",
+                "invalid_webhook_scope",
+                "invalid_webhook_project",
+                "invalid_event_type",
+                "invalid_body_template");
 
         // 模板预设：页面用它预填表单。放在 {id} 之前只是读起来顺，
         // 路由本身不冲突（字面量段优先于参数段，且段数也不同）。
@@ -45,11 +53,19 @@ public static class WebhookEndpoints
 
         app.MapGet("/api/webhooks/{id}", (string id, WebhookService service) =>
             ApiResults.Run(() => Results.Json(service.Get(id), IdeaJsonContext.Default.WebhookDto)))
-            .Produces<WebhookDto>(StatusCodes.Status200OK);
+            .Produces<WebhookDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "webhook_not_found");
 
         app.MapPatch("/api/webhooks/{id}", (string id, WebhookUpdateRequest request, WebhookService service) =>
             ApiResults.Run(() => Results.Json(service.Update(id, request), IdeaJsonContext.Default.WebhookDto)))
-            .Produces<WebhookDto>(StatusCodes.Status200OK);
+            .Produces<WebhookDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(
+                StatusCodes.Status400BadRequest,
+                "invalid_webhook_name",
+                "invalid_webhook_url",
+                "invalid_event_type",
+                "invalid_body_template")
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "webhook_not_found");
 
         app.MapDelete("/api/webhooks/{id}", (string id, WebhookService service) =>
             ApiResults.Run(() =>
@@ -57,20 +73,24 @@ public static class WebhookEndpoints
                 service.Delete(id);
                 return Results.NoContent();
             }))
-            .Produces(StatusCodes.Status204NoContent);
+            .Produces(StatusCodes.Status204NoContent)
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "webhook_not_found");
 
         // 投递记录：最近的在前。列表返回裸数组。
         app.MapGet("/api/webhooks/{id}/deliveries", (string id, DeliveryService service) =>
             ApiResults.Run(() => Results.Json(service.ListForWebhook(id).ToList(),
                 IdeaJsonContext.Default.ListDeliveryDto)))
-            .Produces<List<DeliveryDto>>(StatusCodes.Status200OK);
+            .Produces<List<DeliveryDto>>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "webhook_not_found");
 
         // 手动重投：重发记录里已渲染的 payload（不按当前模板重新渲染）。
         app.MapPost("/api/webhooks/{id}/deliveries/{deliveryId}/retry",
             (string id, string deliveryId, DeliveryService service) =>
                 ApiResults.Run(() => Results.Json(service.Retry(id, deliveryId),
                     IdeaJsonContext.Default.DeliveryDto)))
-            .Produces<DeliveryDto>(StatusCodes.Status200OK);
+            .Produces<DeliveryDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "webhook_not_found", "delivery_not_found")
+            .ProducesApiProblem(StatusCodes.Status503ServiceUnavailable, "delivery_queue_full");
 
         return app;
     }

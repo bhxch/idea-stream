@@ -70,7 +70,10 @@ public static class EventEndpoints
                 }
             })
             // 响应不是 JSON，是 SSE 帧流：内容类型写 text/event-stream。
-            .Produces<string>(StatusCodes.Status200OK, "text/event-stream");
+            .Produces<string>(StatusCodes.Status200OK, "text/event-stream")
+            // 响应已经开始之后就没法再改成 ProblemDetails 了 —— 只有「还没开始」
+            // 的那一次失败会走 ProblemDetails 分支，所以错误响应只在这里成立。
+            .ProducesApiProblem(StatusCodes.Status500InternalServerError, "internal_error");
 
         return app;
     }
