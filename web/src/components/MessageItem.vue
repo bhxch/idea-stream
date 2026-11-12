@@ -58,11 +58,69 @@ const editor = ref<HTMLTextAreaElement | null>(null);
 /** 是否在编辑标签。 */
 const tagEditing = ref(false);
 
-/** 标签草稿：保存失败时留着，用户能直接重试。 */
+/** 标签草稿：编辑器里正在显示的内容。 */
 const tagDraft = ref<string[]>([]);
 
+/**
+ * 服务端当前值（本地记一份）。
+ *
+ * 不直接读 `props.idea.tags`：父组件把服务端返回的想法覆盖本地要等下一次渲染，
+ * 刚存上的那一版短时间内对不上 —— 那时候会被误判成「还有未保存的改动」。
+ */
+const serverTags = ref<string[]>([]);
+
+/**
+ * 还没落库的那一版标签（null = 没有）。
+ *
+ * 收起编辑器时**不销毁**用户敲的东西：这一版留在这儿，下次打开标签编辑器
+ * 会捡回来（并再存一次），用户不用重敲一遍。
+ *
+ * 只在「收起的那一刻」写：编辑器开着的时候草稿本来就在 {@link tagDraft} 里，
+ * 不需要在这里存第二份。
+ */
+const unsavedTags = ref<string[] | null>(null);
 /** 攒着的标签（在飞时被挡下的那一版，等在飞结束再存）。 */
 const pendingTags = ref<string[] | null>(null);
+
+/**
+ * 标签集合的规范形式：去空白、丢空串、按大小写不敏感去重、再排序。
+ *
+ * 跟后端的口径一致（`NormalizeTags` 大小写不敏感去重，读回来按名称排序）：
+ * 服务端存的是「Python」、用户写的是「python」，在服务端这是同一个标签 ——
+ * 不按同一口径比较的话，用户刚存好就被问「还有未保存的改动吗」。
+ */
+function normalizeTags(tags: readonly string[]): string[] {
+  const names = new Set<string>();
+  for (const tag of tags) {
+    const name = tag.trim().toLowerCase();
+    if (name) {
+      names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * 两批标签是不是同一批（顺序、大小写、首尾空白都不算）。
+ *
+ * 必须按集合比，不能比数组：服务端存的是规范化的结果（去首尾空白、
+ * 大小写不敏感去重、按名称排序），用户草稿是按敲入顺序排的 ——
+ * 刚存好就比数组的话，每次都会被误判成「还有未保存的改动」。
+ */
+function sameTags(left: readonly string[], right: readonly string[]): boolean {
+  const a = normalizeTags(left);
+  const b = normalizeTags(right);
+  return a.length === b.length && a.every((name, index) => name === b[index]);
+}
+
+/** 父组件把服务端返回的想法覆盖本地时，同步一下「服务端当前值」。 */
+watch(
+  () => props.idea.tags,
+  (tags) => {
+    serverTags.value = [...tags];
+  },
+  { immediate: true },
+);
 
 /** 删除的二次确认。 */
 const confirmingDelete = ref(false);
@@ -174,12 +232,42 @@ function onEditorKeydown(event: KeyboardEvent): void {
 
 /** 进入标签编辑态。 */
 function startTagEdit(): void {
-  tagDraft.value = [...props.idea.tags];
+  // 上次收起时还没落库的那一版：捡回来（用户不用重敲一遍）。
+  const restored = unsavedTags.value;
+  unsavedTags.value = null;
+  // 服务端那边已经存上了（别处改的）就不用捡了。
+  const pending = restored !== null && !sameTags(restored, serverTags.value);
+  tagDraft.value = pending ? [...restored] : [...serverTags.value];
   tagEditing.value = true;
+  if (pending) {
+    // 捡回来的那版还没落库：再存一次（上次多半是网络断了）。
+    void onTagsChange(tagDraft.value);
+  }
 }
 
-/** 收起标签编辑器（改动都已经存过了，不丢）。 */
+/**
+ * 收起标签编辑器。
+ *
+ * 草稿跟服务端当前值不一致 = 还有没存上的改动（多半是上一次保存失败了）。
+ * 这时要**再问一句**才收起：保存失败只是一闪而过的提示，用户过会儿就忘了
+ * 刚才有东西没存上，直接收起就把那次改动静默丢了 —— 那是真丢，不是丢了个显示。
+ *
+ * 这一句不是为了拦住用户，是为了**不静默地丢东西**：
+ * - 用户不点头 → 不收起，草稿原样留着（可以直接再存一次）；
+ * - 用户点了「确定」→ 收起，但那份没存上的改动**不扔**：记在 {@link unsavedTags} 里，
+ *   下次打开标签编辑器会捡回来（并再存一次）。
+ */
 function closeTagEdit(): void {
+  if (!sameTags(tagDraft.value, serverTags.value)) {
+    const confirmed = window.confirm(
+      '还有未保存的改动，确定收起？改动会保留，重新打开标签时会再存一次。',
+    );
+    if (!confirmed) {
+      // 用户不点头：不收起，草稿还在（编辑器留着，可以直接再存一次）。
+      return;
+    }
+    unsavedTags.value = [...tagDraft.value];
+  }
   tagEditing.value = false;
   tagDraft.value = [];
 }
@@ -202,6 +290,9 @@ function toggleTagEdit(): void {
  *
  * 在飞时（自己的保存，或别的操作）先攒着，等在飞结束再存 ——
  * 用户连按两下回车，第二个标签不能因为快了一点就没了。
+ *
+ * 存上了就把「服务端当前值」更新成这一版：父组件覆盖 `props.idea` 要等下一次渲染，
+ * 那之前收起的判断会拿旧值跟新草稿比，误判成「还有未保存的改动」。
  */
 async function onTagsChange(next: string[]): Promise<void> {
   tagDraft.value = next;
@@ -209,7 +300,12 @@ async function onTagsChange(next: string[]): Promise<void> {
     pendingTags.value = next;
     return;
   }
-  await props.onSaveTags(props.idea.id, next).catch(() => false);
+  const saved = await props.onSaveTags(props.idea.id, next).catch(() => false);
+  if (saved) {
+    serverTags.value = [...next];
+    // 存上了，之前攒着的那一版（没落库的）就没意义了。
+    unsavedTags.value = null;
+  }
 }
 
 /**

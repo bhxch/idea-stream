@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import type { Idea } from '../api/types';
 import MessageItem from './MessageItem.vue';
@@ -30,6 +30,11 @@ function mountItem(overrides: Record<string, unknown> = {}) {
 }
 
 describe('MessageItem', () => {
+  // `window.confirm` 的替身别漏到别的用例去（每个用例都自己 mock 一次）。
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('请求在飞时禁用「标记完成」按钮', () => {
     const wrapper = mountItem({ busy: true });
 
@@ -289,6 +294,72 @@ describe('MessageItem', () => {
     await wrapper.get('button.action--tags').trigger('click');
     expect(wrapper.findAll('.tag-editor')).toHaveLength(0);
     expect(wrapper.get('button.action--tags').text()).toBe('🏷 标签');
+  });
+
+  it('草稿跟服务端不一致时收起会再问一次（不能静默丢掉未保存的改动）', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const onSaveTags = vi.fn(async () => false); // 保存失败：改动没落库
+    const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
+
+    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('乙');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+    expect(onSaveTags).toHaveBeenCalledWith('idea-1', ['甲', '乙']);
+
+    await wrapper.get('button.action--tags').trigger('click');
+
+    // 收起了要问一句：刚才那次保存失败了，用户可能没留意到。
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(String(confirmSpy.mock.calls[0][0])).toContain('未保存');
+    // 用户说「不」：不收起，草稿也没被静默丢掉（还在编辑器里）。
+    expect(wrapper.findAll('.tag-editor')).toHaveLength(1);
+    expect(wrapper.findAll('.chip__name').map((chip) => chip.text())).toEqual(['甲', '乙']);
+  });
+
+  it('用户确定收起后编辑器关掉，但没存上的改动没丢（下次打开还在）', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onSaveTags = vi.fn(async () => false);
+    const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
+
+    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('乙');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+
+    await wrapper.get('button.action--tags').trigger('click');
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.findAll('.tag-editor')).toHaveLength(0);
+
+    // 再打开：没存上的改动还在（并会再存一次），不用重敲一遍。
+    await wrapper.get('button.action--tags').trigger('click');
+    expect(wrapper.findAll('.chip__name').map((chip) => chip.text())).toEqual(['甲', '乙']);
+  });
+
+  it('草稿跟服务端一致时收起不打扰用户（不提示）', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] } });
+
+    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.action--tags').trigger('click');
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(wrapper.findAll('.tag-editor')).toHaveLength(0);
+  });
+
+  it('保存成功后服务端值已更新，收起时不再提示', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const onSaveTags = vi.fn(async () => true);
+    const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
+
+    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('乙');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+
+    await wrapper.get('button.action--tags').trigger('click');
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(wrapper.findAll('.tag-editor')).toHaveLength(0);
   });
 
   it('保存还在飞时再改标签，会等前一次结束再存（不能丢）', async () => {
