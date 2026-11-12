@@ -44,6 +44,17 @@ describe('matchesFilter', () => {
     expect(matchesFilter(idea, makeFilter({ status: 'open' }))).toBe(false);
   });
 
+  it('matchesFilter 状态过滤：done 排除未完成', () => {
+    const idea = makeIdea({ done: false });
+    expect(matchesFilter(idea, makeFilter({ status: 'done' }))).toBe(false);
+  });
+
+  it('matchesFilter 项目过滤：项目不匹配就出局', () => {
+    const idea = makeIdea({ projectId: 'project-1' });
+    expect(matchesFilter(idea, makeFilter({ projectId: 'project-2' }))).toBe(false);
+    expect(matchesFilter(idea, makeFilter({ projectId: 'project-1' }))).toBe(true);
+  });
+
   it('matchesFilter 标签比较大小写不敏感', () => {
     const idea = makeIdea({ tags: ['A'] });
     expect(matchesFilter(idea, makeFilter({ tags: ['a'], tagMode: 'or' }))).toBe(true);
