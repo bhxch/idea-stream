@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import type { Idea } from '../api/types';
 import { formatRelativeTime } from '../lib/format';
-import type { SaveOutcome } from '../lib/save';
+import type { SaveOptions, SaveOutcome } from '../lib/save';
 import TagEditor from './TagEditor.vue';
 
 const props = defineProps<{
@@ -28,8 +28,13 @@ const props = defineProps<{
    * 调用方得知道要重新入队等在飞结束再补存 —— 混在「失败」里的话那次改动就静默丢了。
    */
   onSaveContent: (id: string, content: string) => Promise<SaveOutcome>;
-  /** 保存标签：resolve 出保存结果（三态，同上）。 */
-  onSaveTags: (id: string, tags: string[]) => Promise<SaveOutcome>;
+  /**
+   * 保存标签：resolve 出保存结果（三态，同上）。
+   *
+   * `options.silent`：失败时不弹错误提示（自动补存用 —— 用户只是打开编辑器看看，
+   * 没改任何东西，不该看到「保存标签失败」）。
+   */
+  onSaveTags: (id: string, tags: string[], options?: SaveOptions) => Promise<SaveOutcome>;
 }>();
 
 const emit = defineEmits<{
@@ -71,10 +76,14 @@ const pendingContent = ref<{ seq: number; content: string } | null>(null);
 /**
  * 攒着的标签（被在飞保护挡下的那一版，等在飞结束再存）。
  *
+ * 带上 `silent`：这次补存是「自动」的还是「用户主动」的 ——
+ * 自动补存（捡回上次没存上的那版）失败时不弹提示，用户没改任何东西，
+ * 不该看到「保存标签失败」。
+ *
  * 带上 `seq`：改动序号，用来判断回来的保存结果是不是已经过时
  * （用户又改过了的话，回来的是旧的一版，不能覆盖新的）。
  */
-const pendingTags = ref<{ seq: number; tags: string[] } | null>(null);
+const pendingTags = ref<{ seq: number; tags: string[]; silent: boolean } | null>(null);
 
 /** 编辑框本身（进入编辑态后把焦点放进去）。 */
 const editor = ref<HTMLTextAreaElement | null>(null);
@@ -291,7 +300,7 @@ function startTagEdit(): void {
     // **静默**：用户只是打开编辑器看看、没改任何东西 ——
     // 失败不该弹「保存标签失败」，那会让人莫名其妙（他没保存过）。
     // （`unsavedTags` 不在这里清：存上了由 saveTags 清；没存上就留着，下次再捡。）
-    void onTagsChange(tagDraft.value);
+    void onTagsChange(tagDraft.value, { silent: true });
   }
 }
 
@@ -356,9 +365,13 @@ let savedTagSeq = 0;
  *   调用方要把它重新入队，等在飞结束再补存（不能当失败处理：
  *   失败有提示，用户知道没存上；被挡下若也当失败，这次改动就静默没了）。
  */
-async function saveTags(tags: string[], seq: number): Promise<SaveOutcome> {
+async function saveTags(
+  tags: string[],
+  options: SaveOptions,
+  seq: number,
+): Promise<SaveOutcome> {
   const outcome = await props
-    .onSaveTags(props.idea.id, tags)
+    .onSaveTags(props.idea.id, tags, options)
     .catch(() => 'failed' as SaveOutcome);
   if (outcome === 'saved') {
     // 乱序回来的旧一版不覆盖新的（后发的那次先到了）。
@@ -389,21 +402,23 @@ async function saveTags(tags: string[], seq: number): Promise<SaveOutcome> {
  * 存上了就把「服务端当前值」更新成这一版：父组件覆盖 `props.idea` 要等下一次渲染，
  * 那之前收起的判断会拿旧值跟新草稿比，误判成「还有未保存的改动」。
  *
+ * @param options.silent 失败时不弹提示（自动补存用：用户没改任何东西）。
  * @returns 保存结果（`'busy'` = 被在飞保护挡下，这次压根没发出去）。
  */
-async function onTagsChange(next: string[]): Promise<SaveOutcome> {
+async function onTagsChange(next: string[], options?: SaveOptions): Promise<SaveOutcome> {
   tagDraft.value = next;
   const seq = ++tagSeq;
+  const opts: SaveOptions = { silent: options?.silent ?? false };
   if (props.busy) {
     // 在飞：先攒着，等在飞结束再补存。
-    pendingTags.value = { seq, tags: next };
+    pendingTags.value = { seq, tags: next, silent: opts.silent };
     return 'busy';
   }
-  const outcome = await saveTags(next, seq);
+  const outcome = await saveTags(next, opts, seq);
   if (outcome === 'busy' && (!pendingTags.value || pendingTags.value.seq < seq)) {
     // 被在飞保护挡下了：这次压根没发出去 —— 攒着，等在飞结束再补存。
     // （期间用户又改过的话，攒着的该是更新的那一版。）
-    pendingTags.value = { seq, tags: next };
+    pendingTags.value = { seq, tags: next, silent: opts.silent };
   }
   return outcome;
 }
@@ -476,7 +491,7 @@ async function flushOnce(): Promise<void> {
     const tags = pendingTags.value;
     if (tags !== null) {
       pendingTags.value = null;
-      const outcome = await saveTags(tags.tags, tags.seq);
+      const outcome = await saveTags(tags.tags, { silent: tags.silent }, tags.seq);
       if (outcome === 'busy') {
         if (pendingTags.value === null) {
           pendingTags.value = tags;

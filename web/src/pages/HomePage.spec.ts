@@ -4,7 +4,7 @@ import { ApiError } from '../api/client';
 import type { Idea, Project } from '../api/types';
 import MessageList from '../components/MessageList.vue';
 import ToastHost from '../components/ToastHost.vue';
-import type { SaveOutcome } from '../lib/save';
+import type { SaveOptions, SaveOutcome } from '../lib/save';
 import { focusIdeaId } from '../stores/ideas';
 import { currentProjectId } from '../stores/projects';
 
@@ -554,6 +554,7 @@ describe('HomePage', () => {
     const onSaveTags = list.props('onSaveTags') as (
       id: string,
       tags: string[],
+      options?: SaveOptions,
     ) => Promise<SaveOutcome>;
 
     const first = onSaveContent('idea-1', '第一版');
@@ -568,6 +569,35 @@ describe('HomePage', () => {
     resolvePatch?.({ ...idea, content: '第一版' });
     expect(await first).toBe('saved');
     wrapper.unmount();
+  });
+
+  it('静默保存失败时不弹提示（自动补存用：用户没改任何东西）', async () => {
+    apiSend.mockImplementation((method: string) =>
+      method === 'PUT' ? Promise.reject(new Error('boom')) : Promise.resolve({ ...idea, done: true }),
+    );
+
+    const wrapper = mount(HomePage);
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    const list = wrapper.findComponent(MessageList);
+    const onSaveTags = list.props('onSaveTags') as (
+      id: string,
+      tags: string[],
+      options?: SaveOptions,
+    ) => Promise<SaveOutcome>;
+
+    // 用户主动保存：失败要提示。
+    expect(await onSaveTags('idea-1', ['新标签'])).toBe('failed');
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('保存标签失败');
+    const before = toastHost.findAll('.toast').length;
+
+    // 自动补存（捡回上次没存上的那版）：失败不提示（用户没主动保存过）。
+    expect(await onSaveTags('idea-1', ['新标签'], { silent: true })).toBe('failed');
+    expect(toastHost.findAll('.toast')).toHaveLength(before);
+
+    wrapper.unmount();
+    toastHost.unmount();
   });
 
   it('标签补全走 GET /tags/suggest，带上项目与前缀', async () => {

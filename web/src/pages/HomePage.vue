@@ -10,7 +10,7 @@ import MessageList from '../components/MessageList.vue';
 import { showToast } from '../components/ToastHost.vue';
 import { useTagMode } from '../composables/useTagMode';
 import { matchesFilter, sortIdeas, type IdeaFilter } from '../lib/filter';
-import type { SaveOutcome } from '../lib/save';
+import type { SaveOptions, SaveOutcome } from '../lib/save';
 import {
   applyLocalUpsert,
   focusIdeaId,
@@ -363,9 +363,15 @@ async function onSaveContent(id: string, content: string): Promise<SaveOutcome> 
 /**
  * 保存标签（覆盖式：给的就是全部标签）。
  *
+ * @param options.silent 失败时不弹提示（自动补存用：用户没改任何东西，
+ *   只是把上次没存上的那版捡回来再存一次，不该看到「保存标签失败」）。
  * @returns `'saved'` / `'failed'` / `'busy'`，同 {@link onSaveContent}。
  */
-async function onSaveTags(id: string, tags: string[]): Promise<SaveOutcome> {
+async function onSaveTags(
+  id: string,
+  tags: string[],
+  options?: SaveOptions,
+): Promise<SaveOutcome> {
   if (busyIds.value.has(id)) {
     return 'busy';
   }
@@ -375,7 +381,9 @@ async function onSaveTags(id: string, tags: string[]): Promise<SaveOutcome> {
     applyLocalUpsert(updated);
     return 'saved';
   } catch (error) {
-    reportError(error, '保存标签失败');
+    if (!options?.silent) {
+      reportError(error, '保存标签失败');
+    }
     return 'failed';
   } finally {
     release();

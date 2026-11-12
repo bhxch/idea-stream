@@ -245,7 +245,7 @@ describe('MessageItem', () => {
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
 
-    expect(onSaveTags).toHaveBeenCalledWith('idea-1', ['新标签']);
+    expect(onSaveTags).toHaveBeenCalledWith('idea-1', ['新标签'], { silent: false });
   });
 
   it('编辑标签保存失败时草稿不丢（编辑器留着，标签还在）', async () => {
@@ -270,7 +270,7 @@ describe('MessageItem', () => {
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
 
-    expect(onSaveTags).toHaveBeenCalledWith('idea-1', ['甲']);
+    expect(onSaveTags).toHaveBeenCalledWith('idea-1', ['甲'], { silent: false });
     // 编辑器还开着 —— 收起是用户自己的动作。
     expect(wrapper.findAll('.tag-editor')).toHaveLength(1);
 
@@ -279,7 +279,7 @@ describe('MessageItem', () => {
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
 
-    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲', '乙']);
+    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲', '乙'], { silent: false });
     expect(wrapper.findAll('.tag-editor')).toHaveLength(1);
     expect(wrapper.findAll('.chip__name').map((chip) => chip.text())).toEqual(['甲', '乙']);
   });
@@ -306,7 +306,7 @@ describe('MessageItem', () => {
     await wrapper.get('.tag-editor input').setValue('乙');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
-    expect(onSaveTags).toHaveBeenCalledWith('idea-1', ['甲', '乙']);
+    expect(onSaveTags).toHaveBeenCalledWith('idea-1', ['甲', '乙'], { silent: false });
 
     await wrapper.get('button.action--tags').trigger('click');
 
@@ -392,7 +392,7 @@ describe('MessageItem', () => {
     await flushPromises();
 
     expect(onSaveTags).toHaveBeenCalledTimes(2);
-    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲', '乙']);
+    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲', '乙'], { silent: false });
   });
 
   it('补存时正文与标签串行发：标签要等正文存完（并发会被在飞保护挡下，那次改动就没了）', async () => {
@@ -440,7 +440,7 @@ describe('MessageItem', () => {
     await flushPromises();
 
     expect(onSaveTags).toHaveBeenCalledTimes(1);
-    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲']);
+    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲'], { silent: false });
   });
 
   it('被在飞保护挡下时（父组件回 busy）改动会重新入队，在飞结束后再补存（不能静默丢掉）', async () => {
@@ -463,7 +463,27 @@ describe('MessageItem', () => {
     await flushPromises();
 
     expect(onSaveTags).toHaveBeenCalledTimes(2);
-    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲']);
+    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲'], { silent: false });
+  });
+
+  it('捡回上次没存上的标签后自动补存是静默的（用户没改任何东西，不该看到「保存标签失败」）', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onSaveTags = vi.fn(async () => 'failed' as const);
+    const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
+
+    // 先制造一份「没存上的改动」：保存失败 → 用户确认收起。
+    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('.tag-editor input').setValue('乙');
+    await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+    await wrapper.get('button.action--tags').trigger('click');
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+
+    // 再打开 → 捡回那版并自动补存：这次是静默的（用户没主动保存过）。
+    await wrapper.get('button.action--tags').trigger('click');
+    await flushPromises();
+
+    expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲', '乙'], { silent: true });
   });
 
   it('删除的二次确认条在请求在飞时禁用（点了会被在飞保护挡下，用户只看到「没反应」）', async () => {
