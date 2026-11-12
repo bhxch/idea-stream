@@ -296,8 +296,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 960px;
-  margin: 0 auto;
+  /* 宽度约束留给 F7 的两版布局（侧栏 + 内容），这里不写死居中容器。 */
   padding: 24px 16px;
 }
 
