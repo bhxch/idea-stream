@@ -1,8 +1,8 @@
-// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
 import App from './App.vue';
 import { router } from './router';
+import HomePage from './pages/HomePage.vue';
 
 describe('应用骨架', () => {
   it('App 挂载后渲染出当前路由的页面', async () => {
@@ -11,7 +11,9 @@ describe('应用骨架', () => {
 
     const wrapper = mount(App, { global: { plugins: [router] } });
 
-    expect(wrapper.html()).not.toBe('');
+    // 断言 RouterView 真的渲染出了首页组件，
+    // 而不是只断言 html 非空（App.vue 无条件渲染 ToastHost，那条断言恒真）。
+    expect(wrapper.findComponent(HomePage).exists()).toBe(true);
     wrapper.unmount();
   });
 

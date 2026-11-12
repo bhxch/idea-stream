@@ -19,6 +19,9 @@ export default defineConfig({
     },
   },
   test: {
-    environment: 'node',
+    // 全局 jsdom：vue-router 在模块求值时就解构 window（用 history 模式），
+    // 环境是 node 时只要有 spec import 了 router.ts 就会在收集阶段报
+    // "window is not defined"。单文件 pragma 容易漏，这里全局设死。
+    environment: 'jsdom',
   },
 });
