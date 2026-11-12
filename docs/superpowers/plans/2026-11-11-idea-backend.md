@@ -1276,10 +1276,12 @@ bash server/scripts/aot-smoke.sh
 - Consumes: Task 11 的 `WebhookService`/`WebhookRepository`、Task 12 的 `TemplateRenderer`/`EventPlaceholders`/`HmacSigner`、Task 8 的 `IEventHandler`。
 - Produces:
   - `public sealed record WebhookDeliveryJob(Webhook Webhook, IdeaEvent Event, string Payload);`
-  - `public sealed class DeliveryRepository(SqliteDatabase db)`
-    - `DeliveryRecord Insert(WebhookDeliveryJob job)`
+  - `public sealed class DeliveryRepository(SqliteDatabase db)` —— **方法表已被 Task 14 的并发修复改过**（整行覆盖的 `Update` 被删，换成四个定向原子方法；这是修「手动重投与在途投递并发丢更新」的必要代价）：
+    - `DeliveryRecord Insert(WebhookDeliveryJob job)` —— `INSERT OR IGNORE` + 读回（配合唯一索引 `(webhook_id, event_id)`）
     - `DeliveryRecord? Get(string id)`
-    - `void Update(DeliveryRecord record)`
+    - `void RecordAttempt(string id, bool succeeded, string? lastError)` —— **SQL 侧原子**：`attempts = attempts + 1` 与状态跃迁同一条 UPDATE，`CASE WHEN` 带前置条件
+    - `void MarkFailed(string id, string? lastError)` —— `WHERE status='pending'`
+    - `bool MarkPending(string id, string expectedStatus, int expectedAttempts)` —— 重投置 pending + 清 `last_error`，带「状态与 attempts 都未变」的前置条件
     - `IReadOnlyList<DeliveryRecord> ListForWebhook(string webhookId, int limit)`
     - `void Trim(string webhookId, int keep)`
   - `public sealed record DeliveryRecord(string Id, string WebhookId, string EventId, string EventType, string Payload, string Status, int Attempts, string? LastError, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);`（放 `Domain/Delivery.cs`）
@@ -1352,99 +1354,21 @@ bash server/scripts/aot-smoke.sh
 - Consumes: 全部前置 task 的端点。
 - Produces: `dotnet run --project tools/ExportOpenApi` 在仓库根生成 `openapi/idea-v1.json`。
 
-- [ ] **Step 1: 接线组合根**
+- [ ] **Step 1: 接线组合根（增量添加，不要整体替换）**
 
-`Program.cs` **整体替换**为下面这份最终形态。**注意**：Task 2 已经加过 `builder.Services.Configure<AppOptions>(...)`、`builder.Services.AddSingleton(sp => new SqliteDatabase(...))` 和 `SqliteDatabase.Initialize()` 的调用 —— 替换时要保留它们，**不要重复注册**（重复注册 `Configure<AppOptions>` 会导致配置被绑定两次，重复注册 `SqliteDatabase` 会造出两个实例、指向两个不同的库文件）。
+**现有 `Program.cs` 已经是完整形态**（Task 1~14 累积出来的：14 个服务注册、2 个 `IEventHandler`、2 个 hosted service、`TypeInfoResolver` 直接赋值、`ApiResults.UseLogger`、Testing 环境的条件注册、`SqliteDatabase.Initialize()`、10 个 `MapXxx`）。**Task 15 只在它上面增量加 OpenAPI 的两行**，**不要照抄任何「最终形态」的代码块去整体替换** —— 替换会静默丢掉前 14 个 task 累积的注册，而丢注册不会编译报错，只在运行时炸（或者更糟：某个端点根本没被映射）。
+
+**必须新增的两行**：
 
 ```csharp
-var builder = WebApplication.CreateBuilder(args);
-builder.Configuration.AddEnvironmentVariables("IDEA_");   // IDEA_ 前缀；双下划线表示层级
-builder.Services.Configure<AppOptions>(builder.Configuration);
-builder.Services.AddSingleton(sp =>
-    new SqliteDatabase(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AppOptions>>().Value.Database.Path));
-builder.Services.AddSingleton<ProjectRepository>();
-builder.Services.AddSingleton<IdeaRepository>();
-builder.Services.AddSingleton<TagRepository>();
-builder.Services.AddSingleton<WebhookRepository>();
-builder.Services.AddSingleton<DeliveryRepository>();
-builder.Services.AddSingleton<SettingRepository>();
-builder.Services.AddSingleton<ProjectService>();
-builder.Services.AddSingleton<IdeaService>();
-builder.Services.AddSingleton<TagService>();
-builder.Services.AddSingleton<WebhookService>();
-builder.Services.AddSingleton<DeliveryService>();
-builder.Services.AddSingleton<TrashService>();
-builder.Services.AddSingleton(sp =>
-    new SseBroadcaster(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AppOptions>>().Value.Sse.BufferSize));
-builder.Services.AddSingleton<IEventHandler, SseEventHandler>();
-builder.Services.AddSingleton<IEventHandler, WebhookEventHandler>();
-// EventBus 必须用工厂：它要在所有 IEventHandler 注册完成后再构造
-builder.Services.AddSingleton(sp => new EventBus(
-    sp.GetServices<IEventHandler>(),
-    sp.GetRequiredService<ILogger<EventBus>>()));
-builder.Services.AddSingleton<WebhookDeliveryWorker>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<WebhookDeliveryWorker>());
-// Testing 环境不注册清理 worker：它启动即跑一次清理写事务，会与测试请求并发争同一个
-// SQLite 文件（SQLITE_BUSY 抖动窗口 → flaky 测试）。要测清理逻辑时直接调 TrashCleanupWorker.Cleanup()。
-if (!builder.Environment.IsEnvironment("Testing"))
-    builder.Services.AddHostedService<TrashCleanupWorker>();
-builder.Services.AddHttpClient();
-builder.Services.AddOpenApi();
-
-var app = builder.Build();
-app.UseForwardedHeaders();
-app.UseStaticFiles();                 // Vite 产物在 wwwroot/assets/，没有它静态资源 404
-
-// 建库必须在 Run 之前，且不能被这段替换丢掉
-app.Services.GetRequiredService<SqliteDatabase>().Initialize();
-
-// ApiResults 若用静态日志器（Task 8 建的），必须在这里注入，否则未预期异常不记日志
-ApiResults.UseLogger(app.Logger);
-
-app.MapOpenApi("/openapi/{documentName}.json");
-app.MapHealthEndpoints();
-app.MapProjectEndpoints();
-app.MapIdeaEndpoints();
-app.MapBulkIdeaEndpoints();
-app.MapTrashEndpoints();
-app.MapTagEndpoints();
-app.MapWebhookEndpoints();
-app.MapSettingsEndpoints();
-app.MapEventEndpoints();
-app.MapFallbackToFile("index.html");
-app.Run();
-public partial class Program;
+builder.Services.AddOpenApi();          // 在 builder.Build() 之前
+app.MapOpenApi("/openapi/{documentName}.json");   // 在 app.Run() 之前，与其它 MapXxx 并列
 ```
 
-> **验收这一段**：`dotnet run` 后库文件必须存在且 7 张表齐全 —— 少一次 `Initialize()` 调用，spec §16.2 的「首次启动自动建库」就失效，后续所有仓储的集成测试会集体报 `no such table: project`。写完这一段后跑一次 `dotnet run` + `curl /api/health`，并确认数据文件已建出来。
+**验收**：改完之后 `app.MapXxx` 的行数必须**一件不少**（对照改前的 `Program.cs`：Health / Project / Settings / Idea / BulkIdea / Tag / Event / Trash / Webhook 共 9 个，加新增的 OpenApi）。`server/scripts/aot-smoke.sh` 会逐个打这些端点 —— 少映射一个，冒烟就会红。**注意**：Task 2 已经加过 `builder.Services.Configure<AppOptions>(...)`、`builder.Services.AddSingleton(sp => new SqliteDatabase(...))` 和 `SqliteDatabase.Initialize()` 的调用 —— 替换时要保留它们，**不要重复注册**（重复注册 `Configure<AppOptions>` 会导致配置被绑定两次，重复注册 `SqliteDatabase` 会造出两个实例、指向两个不同的库文件）。
 
-- [ ] **Step 2: 写导出工具**
-
-`tools/ExportOpenApi/Program.cs`：用 `WebApplication.CreateBuilder` + `AddOpenApi` + 挂同样的端点映射，然后 `app.Services.GetRequiredService<DocumentService>()` 取文档并写入 `openapi/idea-v1.json`。
-
-- [ ] **Step 3: 生成并核对**
-
-Run: `dotnet run --project tools/ExportOpenApi` → Expected: 仓库根出现 `openapi/idea-v1.json`
-Run: `python3 -c "import json;d=json.load(open('openapi/idea-v1.json'));print(d['openapi']);print(len(d['paths']))"` → Expected: `3.1.1` 与路径数 ≥ 25
-
-- [ ] **Step 4: 写部署文档**
-
-`docs/nginx/idea.conf` = spec §16.3 的完整配置（含 basic auth、`proxy_buffering off`）。
-`README.md` 写清：目录结构、前端构建命令、后端发布命令、运行命令（环境变量前缀 `IDEA_`、双下划线表示层级）、首次启动自动建库、nginx 配置位置、skill 安装方式。
-
-- [ ] **Step 5: 全量测试**
-
-Run: `dotnet test server/IdeaApp.Tests` → Expected: 全部 PASS
-
-- [ ] **Step 6: 验证 AOT 发布**
-
-Run: `dotnet publish server/IdeaApp -c Release -r linux-x64 -p:PublishAot=true -p:InvariantGlobalization=true` → Expected: 成功产出可执行文件
-Run: `bash server/scripts/aot-smoke.sh` → Expected: 退出码 0（脚本内部会 publish、启动、断言 `/api/health` 返回 200 而不是 500）
-
-> 这一步是整个后端**唯一**能发现「端点 JSON 序列化在 AOT 下失效」的验证。普通 `dotnet test` 全绿但 AOT 产物 500，是这个项目最可能踩的坑。
-
-- [ ] **Step 7: 提交**
-
+```
+（**不要照抄** —— 现有 `Program.cs` 已包含全部注册，见上。）
 ```bash
 git add openapi/ tools/ docs/nginx/ README.md server/IdeaApp/Program.cs server/IdeaApp/appsettings.json
 git commit -m "feat(server): 接线全部端点、导出 OpenAPI 文档与部署说明"
