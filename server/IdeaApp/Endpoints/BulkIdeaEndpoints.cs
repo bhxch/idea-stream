@@ -24,7 +24,8 @@ public static class BulkIdeaEndpoints
         app.MapPost("/api/ideas/bulk/complete", (BulkCompleteRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(
                 service.BulkSetDone(request.Ids ?? Array.Empty<string>(), request.Done).ToList(),
-                IdeaJsonContext.Default.ListIdeaDto)));
+                IdeaJsonContext.Default.ListIdeaDto)))
+            .Produces<List<IdeaDto>>(StatusCodes.Status200OK);
 
         // 批量设置标签：默认并集式追加，replace: true 时覆盖。
         app.MapPost("/api/ideas/bulk/tags", (BulkTagsRequest request, IdeaService service) =>
@@ -33,7 +34,8 @@ public static class BulkIdeaEndpoints
                     request.Ids ?? Array.Empty<string>(),
                     request.Tags ?? Array.Empty<string>(),
                     request.Replace ?? false).ToList(),
-                IdeaJsonContext.Default.ListIdeaDto)));
+                IdeaJsonContext.Default.ListIdeaDto)))
+            .Produces<List<IdeaDto>>(StatusCodes.Status200OK);
 
         // 批量删除：软删（进回收站），返回被删掉的那些想法。
         // spec §13.5 的「删除返回 204」只适用于 HTTP 方法 DELETE（DELETE /api/ideas/{id}），
@@ -41,13 +43,15 @@ public static class BulkIdeaEndpoints
         app.MapPost("/api/ideas/bulk/delete", (BulkDeleteRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(
                 service.BulkDelete(request.Ids ?? Array.Empty<string>()).ToList(),
-                IdeaJsonContext.Default.ListIdeaDto)));
+                IdeaJsonContext.Default.ListIdeaDto)))
+            .Produces<List<IdeaDto>>(StatusCodes.Status200OK);
 
         // 合并：多条想法 → 一条全新的想法，返回合并结果。
         app.MapPost("/api/ideas/merge", (MergeIdeasRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(
                 service.Merge(request.Ids ?? Array.Empty<string>(), request.Content, request.Title),
-                IdeaJsonContext.Default.IdeaDto)));
+                IdeaJsonContext.Default.IdeaDto)))
+            .Produces<IdeaDto>(StatusCodes.Status200OK);
 
         return app;
     }

@@ -18,12 +18,14 @@ public static class TagEndpoints
     {
         // 标签字典（含使用计数）。
         app.MapGet("/api/tags", (TagService service) =>
-            ApiResults.Run(() => Results.Json(service.List().ToList(), IdeaJsonContext.Default.ListTagDto)));
+            ApiResults.Run(() => Results.Json(service.List().ToList(), IdeaJsonContext.Default.ListTagDto)))
+            .Produces<List<TagDto>>(StatusCodes.Status200OK);
 
         // 输入补全：先列当前项目用过的标签，再列全局其它标签。
         app.MapGet("/api/tags/suggest", (string? projectId, string? prefix, TagService service) =>
             ApiResults.Run(() => Results.Json(service.Suggest(projectId, prefix ?? string.Empty).ToList(),
-                IdeaJsonContext.Default.ListString)));
+                IdeaJsonContext.Default.ListString)))
+            .Produces<List<string>>(StatusCodes.Status200OK);
 
         return app;
     }

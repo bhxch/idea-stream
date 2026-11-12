@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>ExportOpenApi</RootNamespace>
+    <AssemblyName>ExportOpenApi</AssemblyName>
+    <!--
+      这个工具只在开发时跑（生成 openapi/idea-v1.json），不需要 AOT 发布。
+      引用的 IdeaApp 项目开了 PublishAot，但那是它自己的发布设置，不影响本项目。
+    -->
+    <PublishAot>false</PublishAot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      引用应用本体：端点映射、JSON 源生成上下文、OpenAPI 配置全部来自 IdeaApp。
+      不引用的话，导出的文档就与应用实际暴露的端点无关了。
+    -->
+    <ProjectReference Include="..\..\server\IdeaApp\IdeaApp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      在进程里把应用本体起一个实例（WebApplicationFactory），
+      所以要测试宿主那套依赖：内容根解析、TestServer。
+    -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
+  </ItemGroup>
+
+</Project>

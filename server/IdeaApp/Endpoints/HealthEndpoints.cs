@@ -10,7 +10,8 @@ public static class HealthEndpoints
     public static IEndpointRouteBuilder MapHealthEndpoints(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapGet("/api/health", () =>
-            Results.Json(new HealthResponse("ok"), IdeaJsonContext.Default.HealthResponse));
+            Results.Json(new HealthResponse("ok"), IdeaJsonContext.Default.HealthResponse))
+            .Produces<HealthResponse>(StatusCodes.Status200OK);
         return endpoints;
     }
 }

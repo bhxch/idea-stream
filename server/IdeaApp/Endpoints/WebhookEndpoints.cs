@@ -27,42 +27,50 @@ public static class WebhookEndpoints
         // 带了 projectId 时只列绑定到该项目的。
         app.MapGet("/api/webhooks", (string? projectId, WebhookService service) =>
             ApiResults.Run(() => Results.Json(service.List(projectId).ToList(),
-                IdeaJsonContext.Default.ListWebhookDto)));
+                IdeaJsonContext.Default.ListWebhookDto)))
+            .Produces<List<WebhookDto>>(StatusCodes.Status200OK);
 
         app.MapPost("/api/webhooks", (WebhookCreateRequest request, WebhookService service) =>
             ApiResults.Run(() => Results.Json(service.Create(request),
-                IdeaJsonContext.Default.WebhookDto, statusCode: StatusCodes.Status201Created)));
+                IdeaJsonContext.Default.WebhookDto, statusCode: StatusCodes.Status201Created)))
+            .Produces<WebhookDto>(StatusCodes.Status201Created);
 
         // 模板预设：页面用它预填表单。放在 {id} 之前只是读起来顺，
         // 路由本身不冲突（字面量段优先于参数段，且段数也不同）。
         app.MapGet("/api/webhooks/templates/telegram", () =>
             ApiResults.Run(() => Results.Json(
                 new WebhookTemplateDto(TelegramTemplate.Url, TelegramTemplate.BodyTemplate),
-                IdeaJsonContext.Default.WebhookTemplateDto)));
+                IdeaJsonContext.Default.WebhookTemplateDto)))
+            .Produces<WebhookTemplateDto>(StatusCodes.Status200OK);
 
         app.MapGet("/api/webhooks/{id}", (string id, WebhookService service) =>
-            ApiResults.Run(() => Results.Json(service.Get(id), IdeaJsonContext.Default.WebhookDto)));
+            ApiResults.Run(() => Results.Json(service.Get(id), IdeaJsonContext.Default.WebhookDto)))
+            .Produces<WebhookDto>(StatusCodes.Status200OK);
 
         app.MapPatch("/api/webhooks/{id}", (string id, WebhookUpdateRequest request, WebhookService service) =>
-            ApiResults.Run(() => Results.Json(service.Update(id, request), IdeaJsonContext.Default.WebhookDto)));
+            ApiResults.Run(() => Results.Json(service.Update(id, request), IdeaJsonContext.Default.WebhookDto)))
+            .Produces<WebhookDto>(StatusCodes.Status200OK);
 
         app.MapDelete("/api/webhooks/{id}", (string id, WebhookService service) =>
             ApiResults.Run(() =>
             {
                 service.Delete(id);
                 return Results.NoContent();
-            }));
+            }))
+            .Produces(StatusCodes.Status204NoContent);
 
         // 投递记录：最近的在前。列表返回裸数组。
         app.MapGet("/api/webhooks/{id}/deliveries", (string id, DeliveryService service) =>
             ApiResults.Run(() => Results.Json(service.ListForWebhook(id).ToList(),
-                IdeaJsonContext.Default.ListDeliveryDto)));
+                IdeaJsonContext.Default.ListDeliveryDto)))
+            .Produces<List<DeliveryDto>>(StatusCodes.Status200OK);
 
         // 手动重投：重发记录里已渲染的 payload（不按当前模板重新渲染）。
         app.MapPost("/api/webhooks/{id}/deliveries/{deliveryId}/retry",
             (string id, string deliveryId, DeliveryService service) =>
                 ApiResults.Run(() => Results.Json(service.Retry(id, deliveryId),
-                    IdeaJsonContext.Default.DeliveryDto)));
+                    IdeaJsonContext.Default.DeliveryDto)))
+            .Produces<DeliveryDto>(StatusCodes.Status200OK);
 
         return app;
     }

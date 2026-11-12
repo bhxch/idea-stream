@@ -2,6 +2,7 @@ using IdeaApp.Application;
 using IdeaApp.Contracts;
 using IdeaApp.Infrastructure;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 
 namespace IdeaApp.Endpoints;
@@ -23,7 +24,8 @@ public static class SettingsEndpoints
     public static IEndpointRouteBuilder MapSettingsEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet("/api/settings", (SettingRepository settings) =>
-            ApiResults.Run(() => Results.Json(ReadAll(settings), IdeaJsonContext.Default.DictionaryStringString)));
+            ApiResults.Run(() => Results.Json(ReadAll(settings), IdeaJsonContext.Default.DictionaryStringString)))
+            .Produces<Dictionary<string, string>>(StatusCodes.Status200OK);
 
         app.MapPut("/api/settings/{key}", (string key, SetSettingRequest request,
                                            SettingRepository settings, ProjectService projects) =>
@@ -39,7 +41,8 @@ public static class SettingsEndpoints
                 projects.SetSortMode(request.Value ?? string.Empty);
 
                 return Results.Json(ReadAll(settings), IdeaJsonContext.Default.DictionaryStringString);
-            }));
+            }))
+            .Produces<Dictionary<string, string>>(StatusCodes.Status200OK);
 
         return app;
     }

@@ -7,6 +7,20 @@ using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// OpenAPI 文档：/openapi/v1.json。给 agent 一份可读的接口契约，
+// 提交进仓库的 openapi/idea-v1.json 就是它的快照。
+//
+// 用 IdeaOpenApi.Configure 固定标题与版本：不固定的话，框架拿
+// 「入口程序集名 | 文档名」当标题 —— 应用本体生成的是 "IdeaApp | v1"，
+// 导出工具进程里生成的是 "ExportOpenApi | v1"，同一个接口两种标题，
+// 契约文件和服务实际提供的就对不上了。
+//
+// 注册位置在下面那段 JSON 配置**之前**，是有意的：OpenAPI 的注册也会往
+// JSON 解析链里塞自己的上下文（IConfigureOptions<JsonOptions>），
+// 配置项按注册顺序执行 —— 后注册的「直接赋值源生成上下文」会把那条链整个换掉，
+// 保住「未登记的类型在开发期就抛 NoMetadataForType」这条 AOT 防线。
+builder.Services.AddOpenApi(IdeaOpenApi.Configure);
+
 // Native AOT 下没有反射式序列化：把源生成上下文直接设成 JSON 解析器，
 // 端点才能用 Results.Ok(dto) 返回已登记的 DTO，否则会 500。
 //
@@ -94,6 +108,12 @@ app.MapTagEndpoints();
 app.MapEventEndpoints();
 app.MapTrashEndpoints();
 app.MapWebhookEndpoints();
+
+// OpenAPI 文档端点：/openapi/v1.json（文档名不是 v1 时返回 404）。
+app.MapOpenApi("/openapi/{documentName}.json");
+
+// 导出 OpenAPI 文档到 IDEA_EXPORT_OPENAPI 指定的文件（没设这个环境变量就不导出）。
+OpenApiExporter.ExportIfRequested(app);
 
 app.Run();
 

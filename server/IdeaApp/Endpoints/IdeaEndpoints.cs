@@ -25,7 +25,8 @@ public static class IdeaEndpoints
                     var query = IdeaService.ParseQuery(projectId, status, tags, tagMode);
 
                     return Results.Json(service.List(query).ToList(), IdeaJsonContext.Default.ListIdeaDto);
-                }));
+                }))
+            .Produces<List<IdeaDto>>(StatusCodes.Status200OK);
 
         app.MapPost("/api/ideas", (CreateIdeaRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.Create(
@@ -33,29 +34,35 @@ public static class IdeaEndpoints
                     request.Content ?? string.Empty,
                     request.Title,
                     request.Tags ?? Array.Empty<string>()),
-                IdeaJsonContext.Default.IdeaDto, statusCode: StatusCodes.Status201Created)));
+                IdeaJsonContext.Default.IdeaDto, statusCode: StatusCodes.Status201Created)))
+            .Produces<IdeaDto>(StatusCodes.Status201Created);
 
         app.MapPatch("/api/ideas/{id}", (string id, UpdateIdeaRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.Update(id, request.Title, request.Content),
-                IdeaJsonContext.Default.IdeaDto)));
+                IdeaJsonContext.Default.IdeaDto)))
+            .Produces<IdeaDto>(StatusCodes.Status200OK);
 
         app.MapPut("/api/ideas/{id}/tags", (string id, SetTagsRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.SetTags(id, request.Tags ?? Array.Empty<string>()),
-                IdeaJsonContext.Default.IdeaDto)));
+                IdeaJsonContext.Default.IdeaDto)))
+            .Produces<IdeaDto>(StatusCodes.Status200OK);
 
         app.MapPost("/api/ideas/{id}/complete", (string id, SetDoneRequest request, IdeaService service) =>
-            ApiResults.Run(() => Results.Json(service.SetDone(id, request.Done), IdeaJsonContext.Default.IdeaDto)));
+            ApiResults.Run(() => Results.Json(service.SetDone(id, request.Done), IdeaJsonContext.Default.IdeaDto)))
+            .Produces<IdeaDto>(StatusCodes.Status200OK);
 
         app.MapDelete("/api/ideas/{id}", (string id, IdeaService service) =>
             ApiResults.Run(() =>
             {
                 service.Delete(id);
                 return Results.NoContent();
-            }));
+            }))
+            .Produces(StatusCodes.Status204NoContent);
 
         // 恢复语义归回收站管（见 TrashService）。
         app.MapPost("/api/ideas/{id}/restore", (string id, TrashService service) =>
-            ApiResults.Run(() => Results.Json(service.RestoreIdea(id), IdeaJsonContext.Default.IdeaDto)));
+            ApiResults.Run(() => Results.Json(service.RestoreIdea(id), IdeaJsonContext.Default.IdeaDto)))
+            .Produces<IdeaDto>(StatusCodes.Status200OK);
 
         return app;
     }

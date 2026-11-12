@@ -26,7 +26,8 @@ public static class TrashEndpoints
         // 回收站条目列表：容器（已删项目）+ 顶层想法，裸数组，不套信封。
         app.MapGet("/api/trash", (TrashService service) =>
             ApiResults.Run(() => Results.Json(service.List().ToList(),
-                IdeaJsonContext.Default.ListTrashEntryDto)));
+                IdeaJsonContext.Default.ListTrashEntryDto)))
+            .Produces<List<TrashEntryDto>>(StatusCodes.Status200OK);
 
         return app;
     }

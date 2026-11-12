@@ -68,7 +68,9 @@ public static class EventEndpoints
                         await result.ExecuteAsync(context);
                     }
                 }
-            });
+            })
+            // 响应不是 JSON，是 SSE 帧流：内容类型写 text/event-stream。
+            .Produces<string>(StatusCodes.Status200OK, "text/event-stream");
 
         return app;
     }
