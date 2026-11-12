@@ -376,6 +376,10 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ### Task 6 (F6): 多选批量操作与合并流程
 
+> **F6 实施后新增的契约（BatchBar 的 `add-tags` 带回执）**：`BatchBar` 的 `add-tags` 事件是
+> `add-tags: [tags: string[], ack: (ok: boolean) => void]` —— 父组件无论成败都要调 `ack`，
+> `BatchBar` 收到回执后才清草稿/收面板（**失败时草稿不丢**）。
+
 **Files:**
 - Create: `web/src/components/BatchBar.vue`、`web/src/components/MergeDialog.vue`
 - Modify: `web/src/pages/HomePage.vue`
