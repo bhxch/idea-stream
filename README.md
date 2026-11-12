@@ -26,20 +26,24 @@ tools/ExportOpenApi/       导出 OpenAPI 文档的小工具
 openapi/idea-v1.json       OpenAPI 3.1 契约快照（提交进仓库，给 agent 用）
 docs/nginx/idea.conf       nginx 反代配置
 docs/superpowers/          规格与计划
-web/                       前端（构建产物输出到 server/IdeaApp/wwwroot/）—— 前端计划产出
-skills/idea-manager/       agent skill（命令行封装 + 契约副本）—— skill 计划产出
 ```
+
+`web/`（前端）与 `skills/idea-manager/`（agent skill）**目前还不存在** ——
+它们分别由前端计划与 skill 计划产出。下面提到这两处的命令，都要等对应的计划落地后才能跑。
 
 ## 构建
 
 ### 前端
+
+前端计划落地后才有 `web/` 目录，届时构建命令是：
 
 ```bash
 cd web && npm ci && npm run build    # 产物输出到 server/IdeaApp/wwwroot/
 ```
 
 前端用 history 模式（`/projects`、`/trash`、`/webhooks` 等都是真实路径），
-服务端用 `MapFallbackToFile("index.html")` 兜底未匹配的 GET 请求。
+服务端用 `MapFallbackToFile("index.html")` 兜底未匹配的 GET 请求 ——
+**这两行接线由前端计划负责**（计划里的 F12），当前后端还没挂静态文件与 SPA 兜底。
 
 ### 后端
 
@@ -81,6 +85,9 @@ IDEA_PublicBaseUrl=https://ideas.example.com \
 配置写在 `server/IdeaApp/appsettings.json`，用环境变量覆盖：**前缀 `IDEA_`，双下划线表示层级**
 （`IDEA_Trash__RetentionDays` 对应 `Trash:RetentionDays`）。
 
+不带前缀的环境变量也认（`Urls=`、`Trash__RetentionDays=` 仍然生效）；两套并存，
+**带 `IDEA_` 前缀的优先**（后注册的 provider 赢）。
+
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `Urls` | `http://127.0.0.1:5080` | Kestrel 监听地址（只绑回环，对外走 nginx） |
@@ -112,11 +119,21 @@ nginx -t && systemctl reload nginx
 `docs/nginx/idea.conf` 里 SSE（`/api/events`）单独一段：`proxy_buffering off` +
 `X-Accel-Buffering: no`，否则实时推送会被 nginx 攒着不发。
 
+应用侧接了 `UseForwardedHeaders()`：`X-Forwarded-Proto` / `X-Forwarded-For` /
+`X-Forwarded-Host` 会被采信，**但只信回环地址来的代理**。nginx 与应用同机时直接可用；
+nginx 在别的机器上要在代码里显式加 `KnownProxies`，否则这些头不生效
+（应用会以为自己还在 http 上）。注意 .NET 10 的 `ForwardedHeadersOptions` 默认
+`ForwardedHeaders.None` —— 不显式点名要处理哪些头，中间件等于没挂。
+
 ## OpenAPI 文档
 
 - **契约文件**：[`openapi/idea-v1.json`](openapi/idea-v1.json)（OpenAPI 3.1，提交进仓库）。
   它是构建产物快照，**给 agent 读**用：路径、参数、请求体与响应体 schema、状态码都在里面。
   文件里没有 `servers` 段 —— 地址是运行期的事，对外地址由 nginx 决定，契约只管接口本身。
+- **错误响应也在契约里**：4xx / 5xx 一律是 RFC 9457 的 ProblemDetails
+  （内容类型 `application/problem+json`），带机器可读的扩展字段 `code`。
+  每个错误响应的描述里列了**这个端点**可能出现的 `code` 与含义，
+  `components.schemas.ProblemDetails` 的描述里是全部 `code` 的取值全集。
 - **运行时文档**：应用启动后可以访问 `/openapi/v1.json`，内容与契约文件一致。
 - **重新导出**（改了端点、DTO 或状态码之后要重跑）：
 
@@ -137,6 +154,7 @@ nginx -t && systemctl reload nginx
 
 `skills/idea-manager/` 是随项目交付的 agent skill：`SKILL.md` 是说明书，
 `scripts/idea.py` 是纯标准库的命令行封装，`references/openapi.json` 是上面那份契约的副本。
+**该目录由 skill 计划产出，目前还不存在** —— 下面的安装命令等它落地后再用。
 
 安装（软链即可，两种 agent 目录格式一致）：
 

@@ -235,6 +235,8 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 | `invalid_content` | 正文为空或全空白 | 补上正文再提交 |
 | `invalid_project_name` | 项目名为空或全空白 | 补上名字 |
 | `invalid_reorder_ids` | 重排的 ids 为空 | 别发空的 reorder |
+| `invalid_sort_mode` | 排序方式不是 `recent` / `manual` | 用这两个值之一 |
+| `setting_key_not_writable` | 该设置项不可经 API 修改 | 只能改 `project.sort_mode` |
 | `invalid_status` | `status` 参数不是 all/open/done | 用这三个值之一 |
 | `invalid_tag_mode` | `tagMode` 不是 or/and | 用这两个值之一 |
 | `invalid_merge_selection` | 合并时少于两条 | 至少选两条 |
@@ -251,7 +253,15 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 | `delivery_not_found` | 投递记录不存在 | 重新拉该 webhook 的投递列表 |
 | `delivery_queue_full` | 投递队列已满（503），**这次手动重投没排上** | 稍后重试；事件路径的队列满是静默丢弃 + 日志，不会返回 503 |
 
-（Task 11 的 webhook 相关 `code` 已补进这张表。）
+（Task 11 的 webhook 相关 `code` 已补进这张表；Task 15 复审又补了设置相关的两个
+`code` —— `invalid_sort_mode` 与 `setting_key_not_writable`。
+另外 500 的 `internal_error` 是服务端兜底码，含义是「未预期的异常，看服务端日志」，
+agent 侧只需当成「重试或报错」，不必分支处理。）
+
+**这张表的权威来源是 `server/IdeaApp/Contracts/ApiErrorCodes.cs`** ——
+OpenAPI 契约里的错误码说明也是从它生成的。改错误码时三处要一起改：
+`ApiErrorCodes.cs`、本表、以及后端实际抛错的地方
+（守卫测试 `ApiErrorCodeTests` 会核对「清单 = 代码里实际抛的」）。
 
 每个 code 一行：`code` → 含义 → agent 该怎么办。
 

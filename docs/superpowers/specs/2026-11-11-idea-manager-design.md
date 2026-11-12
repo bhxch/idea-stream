@@ -621,6 +621,7 @@ server {
   agent 走同一套凭证（见 §17 skill 的 `IDEA_USER` / `IDEA_PASS`）。若更希望「UI 要登录、API 对 agent 开放」，可以只给 `location /` 加 `auth_basic`，`location /api/` 另配 IP 白名单或 `map $http_x_api_key` 校验 —— 但那样 API 等于无保护，公网暴露时慎重。
 - Kestrel 只绑 `127.0.0.1`，直接对外暴露会绕过 nginx 的 TLS。
 - 应用侧启用 `UseForwardedHeaders()`。Kestrel 默认信任回环代理；nginx 在别的机器时必须在代码里显式配 `KnownProxies` / `KnownNetworks`，否则 `X-Forwarded-Proto` 不生效，HTTPS 重定向会循环。
+  注意 **.NET 10 的 `ForwardedHeadersOptions.ForwardedHeaders` 默认是 `None`** —— 不显式点名要处理哪些头（`XForwardedProto` / `XForwardedFor` / `XForwardedHost`），中间件等于没挂，`Request.Scheme` 仍然是 `http`。
 - 全局开了 gzip 时，对 `text/event-stream` 排除，否则事件会被压缩缓冲、推送延迟。
 - SSE 响应加 `X-Accel-Buffering: no`（应用侧设置，双保险）。
 
