@@ -64,6 +64,10 @@ CREATE TABLE IF NOT EXISTS webhook_delivery (
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_delivery_webhook ON webhook_delivery(webhook_id, created_at DESC);
+-- 一个 (webhook, 事件) 只允许有一行：手动重投与在途投递可能同时插同一行，
+-- 没有这个唯一索引就会插出两行 —— 列表出现重复条目，attempts 分散在两行，
+-- 手动重投只更新其中一行。
+CREATE UNIQUE INDEX IF NOT EXISTS ix_delivery_event ON webhook_delivery(webhook_id, event_id);
 
 CREATE TABLE IF NOT EXISTS setting (
     key   TEXT PRIMARY KEY,

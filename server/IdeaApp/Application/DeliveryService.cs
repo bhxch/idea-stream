@@ -52,6 +52,10 @@ public sealed class DeliveryService(
     /// 重投用的密钥、URL、请求头取**当前**的配置：
     /// 用户修好了填错的 URL，重投就该走新地址。
     /// </para>
+    /// <para>
+    /// 重投与在途投递可能**同时**改着同一行，所以这里只做「定向的状态改动」，
+    /// 不拿读出来的旧快照整行覆盖回去（那会把在途投递刚写的 attempts 抹掉）。
+    /// </para>
     /// </remarks>
     public DeliveryDto Retry(string webhookId, string deliveryId)
     {
@@ -65,12 +69,8 @@ public sealed class DeliveryService(
 
         // 先把状态改成「投递中」再入队：入队之后 worker 才会改它，
         // 顺序反了的话 worker 更快、状态会被改回「投递中」卡住。
-        var accepted = record with
-        {
-            Status = DeliveryStatuses.Pending,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
-        deliveries.Update(accepted);
+        // 同时清掉上次的错误 —— 「投递中」却挂着上次那个错，看的人会误解。
+        deliveries.MarkPending(record.Id);
 
         // 重发的是**已渲染的 payload**：这里不碰模板。
         var job = new WebhookDeliveryJob(webhook, SyntheticEvent(record), record.Payload);
@@ -79,12 +79,19 @@ public sealed class DeliveryService(
         {
             // 队列满了，这次重投没排上：把状态改回去，
             // 别让这条记录永远停在「投递中」（根本没有投递在跑）。
-            deliveries.Update(record);
+            // 只改 status —— 这一行上可能已经有在途投递写进去的新 attempts / last_error，
+            // 拿旧快照整行覆盖回去会把它们抹掉。
+            deliveries.RestoreStatus(record.Id, record.Status);
 
             throw new ApiException(503, "delivery_queue_full", "投递队列已满，请稍后重试");
         }
 
-        return ToDto(accepted);
+        return ToDto(record with
+        {
+            Status = DeliveryStatuses.Pending,
+            LastError = null,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
     }
 
     /// <summary>列表最多返回多少条（与每个 webhook 保留的记录数一致）。</summary>

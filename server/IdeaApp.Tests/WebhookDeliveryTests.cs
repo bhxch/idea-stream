@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 namespace IdeaApp.Tests;
 
@@ -208,6 +209,168 @@ public sealed class WebhookDeliveryTests
 
         Assert.Equal("delivered", after.GetProperty("status").GetString());
         Assert.Equal(deliveryId, after.GetProperty("id").GetString());
+    }
+
+    /// <summary>
+    /// 手动重投一条**失败**的投递：返回的记录是「投递中」，且**没有上次那个错误**。
+    /// </summary>
+    /// <remarks>
+    /// 「投递中」却挂着上次那个错，看的人会以为「还没重投成功、又要再点一次」。
+    /// 所以重投时要把错误清掉。
+    /// </remarks>
+    [Fact]
+    public async Task Manual_retry_clears_the_previous_error()
+    {
+        using var endpoint = new FakeEndpoint { StatusCodeProvider = _ => 500 };
+        using var factory = new TestAppFactory(webhookMaxAttempts: 1);
+        using var client = factory.CreateClient();
+
+        var webhookId = await CreateWebhookAsync(client, endpoint.Url, ["idea.created"]);
+
+        await client.PostAsJsonAsync("/api/ideas", new { content = "会失败的想法" });
+
+        var failed = await WaitForDeliveryAsync(client, webhookId, IsFailed, TimeSpan.FromSeconds(20));
+        Assert.False(string.IsNullOrEmpty(failed.GetProperty("lastError").GetString()));
+        var deliveryId = failed.GetProperty("id").GetString()!;
+
+        var retry = await client.PostAsync($"/api/webhooks/{webhookId}/deliveries/{deliveryId}/retry", null);
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+
+        using var document = JsonDocument.Parse(await retry.Content.ReadAsStringAsync());
+        Assert.Equal("pending", document.RootElement.GetProperty("status").GetString());
+        Assert.Null(document.RootElement.GetProperty("lastError").GetString());
+
+        // 重投**不重置** attempts：它接着上次的次数继续累加（口径 = 总尝试次数）。
+        // 这里目标端点还在 500，所以重投那次也失败 → 记录变成 attempts == 2。
+        var afterRetry = await WaitForDeliveryAsync(
+            client, webhookId, d => d.GetProperty("attempts").GetInt32() == 2, TimeSpan.FromSeconds(20));
+        Assert.Equal("failed", afterRetry.GetProperty("status").GetString());
+    }
+
+    /// <summary>
+    /// 手动重投与**在途投递**重叠时：<c>attempts</c> 不丢、终态不被改回。
+    /// </summary>
+    /// <remarks>
+    /// 这是投递记录并发安全的核心断言：
+    /// <list type="bullet">
+    /// <item>worker 的第一次投递**还在途**（请求卡在目标端点上）时，用户点了重投；</item>
+    /// <item>重投那条投递**成功**了（记录：attempts=1、delivered）；</item>
+    /// <item>在途的那次投递随后**失败**了。</item>
+    /// </list>
+    /// 这时那一行上已经有两次真实的 HTTP 请求，<c>attempts</c> 就该是 2；
+    /// 而且终态不能被后到的那次失败改回去（重投确实成功了）。
+    /// <para>
+    /// 旧实现（读出快照 → 整行覆盖写回）在这里会：
+    /// 用内存里的旧快照把记录写回 <c>attempts=1 / pending</c>，最后再标成 <c>failed</c> ——
+    /// 少记一次尝试，还把一次成功的投递判成了失败。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Manual_retry_during_an_in_flight_delivery_keeps_attempts_and_terminal_status()
+    {
+        using var endpoint = new FakeEndpoint();
+        using var factory = new TestAppFactory(webhookMaxAttempts: 1);
+        using var client = factory.CreateClient();
+
+        // 第 1 次请求（worker 发的那次）的**响应**卡住不放 ——
+        // 逼出「投递在途」这个状态：worker 还在等这次请求的结果。
+        var firstRequestArrived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstRequest = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        endpoint.OnRequestAsync = async index =>
+        {
+            if (index != 1)
+            {
+                return;
+            }
+
+            firstRequestArrived.TrySetResult(true);
+            await releaseFirstRequest.Task;
+        };
+
+        // 第 1 次（worker 的那次）失败；第 2 次（手动重投）成功。
+        endpoint.StatusCodeProvider = index => index == 1 ? 500 : 200;
+
+        var webhookId = await CreateWebhookAsync(client, endpoint.Url, ["idea.created"]);
+
+        var created = await client.PostAsJsonAsync("/api/ideas", new { content = "并发投递的想法" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        // 等 worker 把第一次请求发出去（响应还卡着）：此刻投递在途。
+        await firstRequestArrived.Task.WaitAsync(TimeSpan.FromSeconds(20));
+
+        // 投递记录已经落库了（worker 先插记录、再发请求）。
+        var record = Assert.Single(await ReadDeliveriesAsync(client, webhookId));
+        var deliveryId = record.GetProperty("id").GetString()!;
+        Assert.Equal("pending", record.GetProperty("status").GetString());
+        Assert.Equal(0, record.GetProperty("attempts").GetInt32());
+
+        // 用户在「第一次投递还在途」的时候点了重投。
+        var retry = await client.PostAsync($"/api/webhooks/{webhookId}/deliveries/{deliveryId}/retry", null);
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+
+        // 重投那条投递成功了：记录变成 attempts=1 / delivered。
+        // （重投不会插出第二行 —— 一个 (webhook, 事件) 只有一行。）
+        var afterRetry = await WaitForDeliveryAsync(
+            client, webhookId, d => d.GetProperty("status").GetString() == "delivered");
+        Assert.Equal(1, afterRetry.GetProperty("attempts").GetInt32());
+        Assert.Single(await ReadDeliveriesAsync(client, webhookId));
+
+        // 放行 worker 那次卡住的请求：它会失败。
+        releaseFirstRequest.TrySetResult(true);
+
+        // 等 worker 把那次失败的尝试写回去。
+        // （新实现：attempts 变成 2；旧实现：状态被改回 failed —— 两种都算「写完了」，
+        //   后面的断言会把旧实现顶出去。）
+        var settled = await WaitForDeliveryAsync(
+            client,
+            webhookId,
+            d => d.GetProperty("attempts").GetInt32() >= 2 || d.GetProperty("status").GetString() == "failed",
+            TimeSpan.FromSeconds(20));
+
+        // 两次真实的 HTTP 请求 → attempts 就是 2（一次都不能少记）。
+        Assert.Equal(2, settled.GetProperty("attempts").GetInt32());
+
+        // 终态不被后到的那次失败改回去：重投确实成功了。
+        Assert.Equal("delivered", settled.GetProperty("status").GetString());
+
+        // 已经 delivered 的记录不该挂上后来那次失败的错误。
+        Assert.Null(settled.GetProperty("lastError").GetString());
+
+        // 目标端点确实被打 2 次（不多不少）。
+        await endpoint.WaitForRequestsAsync(2, TimeSpan.FromSeconds(5));
+        Assert.Equal(2, endpoint.Requests.Count);
+    }
+
+    /// <summary>
+    /// 一个 (webhook, 事件) 在库里**只允许有一行**。
+    /// </summary>
+    /// <remarks>
+    /// 这条不能只靠代码里的「先查后插」：手动重投与在途投递撞在一起时，
+    /// 两边都可能在对方插之前查完（查的时候都还没插上）→ 插出两行同一事件的记录。
+    /// 库里有唯一索引才兜得住，所以这里直接往库里插一行重复的，验证它被挡下来。
+    /// </remarks>
+    [Fact]
+    public async Task One_delivery_row_per_webhook_and_event_is_enforced_by_the_database()
+    {
+        using var endpoint = new FakeEndpoint();
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var webhookId = await CreateWebhookAsync(client, endpoint.Url, ["idea.created"]);
+
+        await client.PostAsJsonAsync("/api/ideas", new { content = "唯一性检查的想法" });
+
+        var delivery = await WaitForDeliveryAsync(client, webhookId, IsDelivered);
+        var eventId = delivery.GetProperty("eventId").GetString()!;
+
+        // 直接往库里插第二行同样的 (webhook, 事件) → 唯一索引必须把它挡下来。
+        var error = Assert.Throws<SqliteException>(
+            () => InsertDuplicateDelivery(factory.DatabasePath, webhookId, eventId));
+        Assert.Contains("UNIQUE", error.Message, StringComparison.OrdinalIgnoreCase);
+
+        // 库里还是只有一行。
+        Assert.Single(await ReadDeliveriesAsync(client, webhookId));
     }
 
     /// <summary>只订阅 idea.created 的 webhook 收不到 idea.updated。</summary>
@@ -801,6 +964,28 @@ public sealed class WebhookDeliveryTests
         return $"sha256={Convert.ToHexString(hash).ToLowerInvariant()}";
     }
 
+    /// <summary>直接往应用的库里插一行重复的 (webhook, 事件)（用来撞唯一索引）。</summary>
+    private static void InsertDuplicateDelivery(string databasePath, string webhookId, string eventId)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWrite
+        }.ToString());
+
+        connection.Open();
+
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "INSERT INTO webhook_delivery(id, webhook_id, event_id, event_type, payload, status, " +
+            "attempts, last_error, created_at, updated_at) " +
+            "VALUES ('duplicate-delivery-row', $webhookId, $eventId, 'idea.created', '{}', 'pending', " +
+            "0, NULL, '2026-01-01T00:00:00.0000000Z', '2026-01-01T00:00:00.0000000Z');";
+        command.Parameters.AddWithValue("$webhookId", webhookId);
+        command.Parameters.AddWithValue("$eventId", eventId);
+        command.ExecuteNonQuery();
+    }
+
     /// <summary>假的目标端点：一个真的 HTTP 监听器，记录收到的请求。</summary>
     private sealed class FakeEndpoint : IDisposable
     {
@@ -828,9 +1013,19 @@ public sealed class WebhookDeliveryTests
         /// </summary>
         /// <param name="requestIndex">这是第几个请求（从 1 开始）。</param>
         /// <remarks>
-        /// 带上序号才能写出「第 1 次失败、第 2 次成功」这种按次变化的响应。
+        /// 带上序号才能写出「第 1 次失败、第 2 次成功」这种按次变化的响应，
+        /// 也才能把「投递在途」与「重投」这两条路径区分开。
         /// </remarks>
         public Func<int, int> StatusCodeProvider { get; set; } = _ => 200;
+
+        /// <summary>
+        /// 收到请求后、回应之前要跑的钩子（参数是第几个请求，从 1 开始）。
+        /// </summary>
+        /// <remarks>
+        /// 用来在测试里**卡住**某一次请求，逼出并发时序
+        /// （比如「投递还在途，用户就点了重投」）。
+        /// </remarks>
+        public Func<int, Task>? OnRequestAsync { get; set; }
 
         /// <summary>响应前的延迟（用来模拟慢目标端点）。</summary>
         public TimeSpan ResponseDelay { get; set; } = TimeSpan.Zero;
@@ -893,14 +1088,20 @@ public sealed class WebhookDeliveryTests
                     return;
                 }
 
-                try
+                // 每个请求单独一个任务：真实的 HTTP 服务端本来就是并发的。
+                // 串行处理的话，「上一次请求还在途」时新来的请求会被堵在后面 ——
+                // 而「投递在途时用户点了重投」这个场景正需要它们同时在场。
+                _ = Task.Run(async () =>
                 {
-                    await HandleAsync(context);
-                }
-                catch (Exception)
-                {
-                    // 客户端提前断开之类：忽略这一条，继续接下一条。
-                }
+                    try
+                    {
+                        await HandleAsync(context);
+                    }
+                    catch (Exception)
+                    {
+                        // 客户端提前断开之类：忽略这一条，继续接下一条。
+                    }
+                });
             }
         }
 
@@ -933,6 +1134,13 @@ public sealed class WebhookDeliveryTests
             {
                 _requests.Add(request);
                 index = _requests.Count;
+            }
+
+            // 钩子先跑：测试要在这里卡住某一次请求，逼出并发时序。
+            var hook = OnRequestAsync;
+            if (hook is not null)
+            {
+                await hook(index);
             }
 
             if (ResponseDelay > TimeSpan.Zero)

@@ -26,16 +26,22 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
     /// 覆盖 SSE 心跳间隔（秒）；不给就是应用默认值（25 秒）。
     /// 测心跳时用 1 秒 —— 25 秒的等待没法写测试。
     /// </param>
+    /// <param name="webhookMaxAttempts">
+    /// 覆盖 <c>Webhook:MaxAttempts</c>（投递尝试次数，含首次）；不给就是应用默认值（4）。
+    /// 测「重试到上限」时用小值 —— 默认值下要走满 1s/5s/30s 三段退避，太慢。
+    /// </param>
     public TestAppFactory(
         int? maxIdeasPerResponse = null,
         IEventPublisher? publisher = null,
-        int? sseHeartbeatSeconds = null)
+        int? sseHeartbeatSeconds = null,
+        int? webhookMaxAttempts = null)
     {
         _tempDirectory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
         DatabasePath = Path.Combine(_tempDirectory, "idea.db");
         MaxIdeasPerResponse = maxIdeasPerResponse;
         Publisher = publisher;
         SseHeartbeatSeconds = sseHeartbeatSeconds;
+        WebhookMaxAttempts = webhookMaxAttempts;
     }
 
     /// <summary>本次测试实例使用的 SQLite 文件路径。</summary>
@@ -50,6 +56,9 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
     /// <summary>本次测试实例覆盖的 SSE 心跳间隔（秒，null = 用应用默认值）。</summary>
     public int? SseHeartbeatSeconds { get; }
 
+    /// <summary>本次测试实例覆盖的投递尝试次数上限（null = 用应用默认值）。</summary>
+    public int? WebhookMaxAttempts { get; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -58,7 +67,8 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
             {
                 ["Database:Path"] = DatabasePath,
                 ["Api:MaxIdeasPerResponse"] = MaxIdeasPerResponse?.ToString(CultureInfo.InvariantCulture),
-                ["Sse:HeartbeatSeconds"] = SseHeartbeatSeconds?.ToString(CultureInfo.InvariantCulture)
+                ["Sse:HeartbeatSeconds"] = SseHeartbeatSeconds?.ToString(CultureInfo.InvariantCulture),
+                ["Webhook:MaxAttempts"] = WebhookMaxAttempts?.ToString(CultureInfo.InvariantCulture)
             }));
 
         var publisher = Publisher;

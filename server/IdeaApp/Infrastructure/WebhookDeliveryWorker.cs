@@ -147,6 +147,12 @@ public sealed class WebhookDeliveryWorker(
     /// </summary>
     /// <remarks>
     /// 公开出来是为了能直接调用它做测试（不必先经过队列）。
+    /// <para>
+    /// <b>投递记录只往里「加」，不整行覆盖</b>：计数与状态跃迁都在
+    /// <see cref="DeliveryRepository"/> 那边原子完成。
+    /// 这一行同时可能被用户的手动重投改着 —— 拿内存里的旧快照整行写回去，
+    /// 会把旁边那次写入抹掉（尝试次数少记、已经成功的投递被改回失败）。
+    /// </para>
     /// </remarks>
     public async ValueTask DeliverAsync(WebhookDeliveryJob job, CancellationToken ct)
     {
@@ -171,54 +177,40 @@ public sealed class WebhookDeliveryWorker(
 
         var maxAttempts = Math.Max(1, options.Value.Webhook.MaxAttempts);
 
+        // 最近一次尝试的错误（记日志用）。库里那一行的 last_error 由仓储管。
+        string? lastError = null;
+
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             var error = await PostAsync(webhook, job.Payload, ct);
+            lastError = error;
 
-            // attempts 的口径是**总尝试次数（含首次）**：手动重投也从上一行的次数继续加。
-            var attempts = record.Attempts + 1;
-            var updatedAt = DateTimeOffset.UtcNow;
+            // 记这一次尝试：attempts 加 1 与状态跃迁在 SQL 侧原子完成。
+            // 成功 → 这一行还是 pending 就落 delivered；失败 → 记下错误、留在 pending。
+            deliveries.RecordAttempt(record.Id, error is null, error);
 
             if (error is null)
             {
-                deliveries.Update(record with
-                {
-                    Status = DeliveryStatuses.Delivered,
-                    Attempts = attempts,
-                    LastError = null,
-                    UpdatedAt = updatedAt
-                });
-
                 return;
             }
 
-            record = record with
-            {
-                Status = DeliveryStatuses.Pending,
-                Attempts = attempts,
-                LastError = error,
-                UpdatedAt = updatedAt
-            };
-            deliveries.Update(record);
-
             if (attempt < maxAttempts)
             {
+                // 退避：第 1 次重试等 1 秒，第 2 次等 5 秒，第 3 次等 30 秒。
                 await Task.Delay(Backoff[Math.Min(attempt - 1, Backoff.Length - 1)], ct);
             }
         }
 
         // 重试到上限仍然失败：记死信。
-        deliveries.Update(record with
-        {
-            Status = DeliveryStatuses.Failed,
-            UpdatedAt = DateTimeOffset.UtcNow
-        });
+        // 只在这一行还是「投递中」时才改 —— 旁边那次手动重投可能已经成功了，
+        // 后到的这次失败不能把它改判成失败。
+        deliveries.MarkFailed(record.Id);
 
         logger.LogWarning(
             "webhook {WebhookId} 投递失败（事件 {EventId}）：{Error}",
             webhook.Id,
             job.Event.Id,
-            record.LastError);
+            lastError);
     }
 
     /// <summary>
