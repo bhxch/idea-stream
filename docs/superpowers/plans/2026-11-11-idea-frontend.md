@@ -570,6 +570,11 @@ export default defineConfig({
 前端产物落在 `server/IdeaApp/wwwroot/`，**后端要能把它发出去**。在 `server/IdeaApp/Program.cs` 里加两行（**增量加，不要整体替换组合根** —— 它含前 14 个 task 累积的注册）：
 
 ```csharp
+// wwwroot 是前端构建产物的落点，而它被 .gitignore 排除（git 不跟踪空目录）
+// —— 新克隆的仓库里它不存在，静态文件中间件会抛 DirectoryNotFoundException。
+// 先确保它在，再挂中间件。
+Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "wwwroot"));
+
 app.UseStaticFiles();                 // 必须在 MapFallbackToFile 之前
 app.MapFallbackToFile("index.html");  // history 模式的深链兜底
 ```
