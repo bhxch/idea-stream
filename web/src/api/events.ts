@@ -12,6 +12,11 @@ import type { IdeaEvent } from './types';
  * ① 重连时 `Last-Event-ID` 在缓冲里补发不到；② 某个订阅者太慢、
  * 它的通道被挤掉了一条事件。两种场合的共同点是「客户端可能漏了事件」，
  * 所以客户端只遵守一条规则：**收到 resync 就重新拉一次当前列表**。
+ *
+ * <p>收到 resync 时还要把记住的事件 id **清零**：那个 id 是服务端用来定位
+ * 补发位置的，服务端既然发了 resync 就说明它**已经补不到**了。再带着它重连，
+ * 服务端只会再回一帧 resync —— 每一次重连都白白多一轮「整表重拉」。
+ * 清零之后下次重连按「全新订阅」处理，正确性由「重连后整表重拉」兜住。
  */
 
 /** SSE 端点。 */
@@ -43,6 +48,15 @@ export const EVENT_TYPES = [
 /** 业务事件的回调。 */
 export type EventListener = (e: IdeaEvent) => void;
 
+/**
+ * 坏帧的可观测出口。
+ *
+ * 单帧坏掉无所谓（丢掉这一帧即可），但**持续性**的协议错配
+ * （服务端改了 `data` 的结构）如果完全没有出口，表现就只是
+ * 「列表不更新」——没有任何线索可查。这个回调就是那个线索。
+ */
+export type EventErrorListener = (error: Error) => void;
+
 /** `connectEvents` 返回的连接句柄。 */
 export interface EventStream {
   /** 断开连接，并且不再重连。 */
@@ -59,24 +73,66 @@ export interface EventHandlers {
   onResync: () => void;
   /** 连接状态变化：连上了 true，断开了 false。 */
   onStatus?: (connected: boolean) => void;
+  /**
+   * 收到坏帧时报出来（**可选**，不传就不调用）。
+   *
+   * 坏帧本身已经被丢掉、不会流进 `onEvent`；这个回调只是把
+   * 「丢了什么、为什么丢」报出去，免得协议错配完全隐形。
+   */
+  onError?: EventErrorListener;
+}
+
+/**
+ * 校验一帧报文的形状。
+ *
+ * 返回 `null` 表示通过；返回字符串表示坏在哪（会写进报给 `onError` 的消息里）。
+ *
+ * <p>为什么不能只判「是不是对象」：`JSON.parse('[]')` 解析出来也是对象
+ * （数组），不排掉的话一帧数组会被当成事件交给 `onEvent`。
+ * 这里是把服务端报文送进应用的**唯一入口**，未经校验的报文不能进。
+ */
+function validatePayload(value: unknown): string | null {
+  if (value === null || typeof value !== 'object') {
+    return 'data 不是对象';
+  }
+  if (Array.isArray(value)) {
+    return 'data 是数组，不是事件对象';
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.type !== 'string') {
+    return 'type 缺失或不是字符串';
+  }
+  // changed / mergedFrom 后端恒定写出，值要么是 null、要么是字符串数组。
+  // 键整个缺失（undefined）也算坏帧：那是协议错配，不是「没有这个概念」。
+  if (!(record.changed === null || Array.isArray(record.changed))) {
+    return 'changed 缺失，或既不是 null 也不是数组';
+  }
+  if (!(record.mergedFrom === null || Array.isArray(record.mergedFrom))) {
+    return 'mergedFrom 缺失，或既不是 null 也不是数组';
+  }
+  return null;
 }
 
 /**
  * 解析一帧的 `data`。
  *
- * 解析不了就丢掉这一帧：坏帧不该把整条流搞崩，
- * 后面的事件照样要能收。
+ * 解析不了或形状不对就丢掉这一帧：坏帧不该把整条流搞崩，
+ * 后面的事件照样要能收。但坏帧**不能静默** —— 持续性的协议错配
+ * （服务端改了 `data` 的结构）如果完全看不出来，表现就只是「列表不更新」。
+ * 所以坏帧会带着原因报给 `onError`（不传 `onError` 就只丢掉）。
  */
-function parseEvent(data: string): IdeaEvent | null {
+function parseEvent(data: string): { event: IdeaEvent | null; error: string | null } {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(data);
-    if (parsed && typeof parsed === 'object') {
-      return parsed as IdeaEvent;
-    }
+    parsed = JSON.parse(data);
   } catch {
-    // 不是 JSON：丢掉这一帧。
+    return { event: null, error: 'data 不是合法 JSON' };
   }
-  return null;
+  const reason = validatePayload(parsed);
+  if (reason !== null) {
+    return { event: null, error: reason };
+  }
+  return { event: parsed as IdeaEvent, error: null };
 }
 
 /**
@@ -86,14 +142,15 @@ function parseEvent(data: string): IdeaEvent | null {
  * 才会自动带 `Last-Event-ID`；我们重建连接时只能把最后的事件 id 放进
  * 查询参数（`?lastEventId=<id>`）。
  *
- * <p>后端目前只读 `Last-Event-ID` **请求头**
- * （`EventEndpoints` 里是 `context.Request.Headers["Last-Event-ID"]`），
- * 查询参数它不认 —— 也就是说这条补发链路目前**并不生效**，
- * 断线期间的事件会漏掉。事件 id 是单调 UUIDv7、不是连续序号，
- * 客户端自己检不出这个空洞（这正是服务端要发 resync 的原因）。
- * 所以重连成功后统一触发一次 `onResync`：用「整表重拉」换掉「补发」，
- * 宁可多拉一次列表，也不能静默漏数据。
- * 后端一旦认了 `?lastEventId=`，这里不用改，补发与重拉会同时生效。
+ * <p>后端**两种都收**（`EventEndpoints.ResolveLastEventId`）：
+ * `Last-Event-ID` **请求头优先**、`?lastEventId=` **查询参数兜底**。
+ * 所以浏览器重建连接时带的这个查询参数是**能生效**的 ——
+ * 断线期间的事件会被补发回来。
+ *
+ * <p>即便如此，重连成功后仍然统一触发一次 `onResync`（整表重拉），
+ * 当**冗余安全网**：补发可能失败（服务端重启过、缓冲里已经没有那个 id），
+ * 而事件 id 是单调 UUIDv7、不是连续序号，客户端自己检不出这个空洞
+ * （这正是服务端要发 resync 的原因）。宁可多拉一次列表，也不能静默漏数据。
  */
 export function connectEvents(handlers: EventHandlers): EventStream {
   let source: EventSource | null = null;
@@ -118,11 +175,13 @@ export function connectEvents(handlers: EventHandlers): EventStream {
     if (ev.lastEventId) {
       lastEventId = ev.lastEventId;
     }
-    const payload = parseEvent(ev.data);
-    if (!payload) {
+    const { event, error } = parseEvent(ev.data);
+    if (event === null) {
+      // 坏帧丢掉，但要让调用方看得见：否则协议错配完全隐形。
+      handlers.onError?.(new Error(`SSE 坏帧已丢弃：${error}`));
       return;
     }
-    handlers.onEvent(payload);
+    handlers.onEvent(event);
   }
 
   /** 断开并安排重连。 */
@@ -177,6 +236,10 @@ export function connectEvents(handlers: EventHandlers): EventStream {
 
     // resync 是控制帧：它不是业务事件，不能进 onEvent。
     current.addEventListener('resync', () => {
+      // 把记住的事件 id 清零：服务端发了 resync 就说明它补不到那个 id 了，
+      // 再带着它重连只会再要一帧 resync（于是每次重连都多一轮整表重拉）。
+      // 清零之后按「全新订阅」重连，正确性由 open 时的整表重拉兜住。
+      lastEventId = null;
       handlers.onResync();
     });
   }

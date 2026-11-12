@@ -83,8 +83,9 @@ function setup() {
   const onEvent = vi.fn();
   const onResync = vi.fn();
   const onStatus = vi.fn();
-  const stream = connectEvents({ onEvent, onResync, onStatus });
-  return { onEvent, onResync, onStatus, stream };
+  const onError = vi.fn();
+  const stream = connectEvents({ onEvent, onResync, onStatus, onError });
+  return { onEvent, onResync, onStatus, onError, stream };
 }
 
 beforeEach(() => {
@@ -152,6 +153,24 @@ describe('connectEvents', () => {
     expect(stream.lastEventId).toBeNull();
   });
 
+  it('收到 resync 后清掉记住的事件 id，下次重连不再带上它', () => {
+    const { onResync, stream } = setup();
+    const source = FakeEventSource.instances[0];
+    source.emit('idea.updated', JSON.stringify(makeEvent('idea.updated', 'e1')), 'e1');
+    expect(stream.lastEventId).toBe('e1');
+
+    source.emit('resync', '{}');
+
+    expect(onResync).toHaveBeenCalledTimes(1);
+    // 服务端补不到这个 id 了：再带着它重连只会再要一帧 resync。
+    expect(stream.lastEventId).toBeNull();
+
+    source.emitError();
+    vi.advanceTimersByTime(2000);
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[1].url).toBe('/api/events');
+  });
+
   it('数据不是合法 JSON 时丢掉这一帧，后续事件照常处理', () => {
     const { onEvent } = setup();
     const source = FakeEventSource.instances[0];
@@ -161,6 +180,62 @@ describe('connectEvents', () => {
 
     source.emit('idea.created', JSON.stringify(makeEvent('idea.created', 'e2')), 'e2');
     expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('形状不对的帧一律丢掉，不进 onEvent', () => {
+    const { onEvent } = setup();
+    const source = FakeEventSource.instances[0];
+
+    // 未经校验的报文不能进应用：数组、缺 type、changed/mergedFrom 不合约定
+    // 全都要当坏帧丢掉。
+    const badPayloads = [
+      '[]', // 数组：typeof 也是 'object'
+      'null',
+      '"just-a-string"',
+      JSON.stringify({ id: 'e1', changed: null, mergedFrom: null }), // 缺 type
+      JSON.stringify({ id: 'e1', type: 42, changed: null, mergedFrom: null }), // type 不是字符串
+      JSON.stringify({ id: 'e1', type: 'idea.updated', mergedFrom: null }), // 缺 changed
+      JSON.stringify({ id: 'e1', type: 'idea.updated', changed: null }), // 缺 mergedFrom
+      JSON.stringify({
+        id: 'e1',
+        type: 'idea.updated',
+        changed: 'title',
+        mergedFrom: null,
+      }), // changed 不是数组
+      JSON.stringify({
+        id: 'e1',
+        type: 'idea.updated',
+        changed: null,
+        mergedFrom: 42,
+      }), // mergedFrom 不是数组
+    ];
+
+    badPayloads.forEach((payload) => {
+      source.emit('idea.updated', payload, 'e1');
+    });
+
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it('坏帧会报给 onError', () => {
+    const { onEvent, onError } = setup();
+
+    FakeEventSource.instances[0].emit('idea.created', '[]', 'e1');
+
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toBeInstanceOf(Error);
+  });
+
+  it('不传 onError 时坏帧只是被丢掉，不会抛异常', () => {
+    const onEvent = vi.fn();
+    const onResync = vi.fn();
+    connectEvents({ onEvent, onResync });
+
+    expect(() => {
+      FakeEventSource.instances[0].emit('idea.created', '[]', 'e1');
+    }).not.toThrow();
+    expect(onEvent).not.toHaveBeenCalled();
   });
 
   it('断线后关闭当前连接，按 2 秒退避重连，重连的 URL 带上最后的事件 id', () => {
@@ -216,6 +291,19 @@ describe('connectEvents', () => {
 
     stream.close();
     FakeEventSource.instances[0].emitError();
+    vi.advanceTimersByTime(60_000);
+
+    expect(FakeEventSource.instances).toHaveLength(1);
+  });
+
+  it('退避等待期间 close() 会取消那次待执行的重连', () => {
+    const { stream } = setup();
+
+    FakeEventSource.instances[0].emitError();
+    // 第一次重连要等 2 秒：现在还在退避窗口里。
+    vi.advanceTimersByTime(1000);
+    stream.close();
+
     vi.advanceTimersByTime(60_000);
 
     expect(FakeEventSource.instances).toHaveLength(1);
