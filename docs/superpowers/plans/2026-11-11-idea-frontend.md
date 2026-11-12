@@ -482,6 +482,8 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ### Task 11 (F11): SSE 接线、事件合并、滚动跟随与深链定位
 
+> **⚠️ 在飞保护的雷（F5+F6 实施者发现，控制器裁定写进计划）**：`HomePage` 的 `busyIds` **每次 `markBusy`/`release` 都必须造一个全新的 `Set`** —— Vue 的 `Set` 响应式只追踪 `has`，**不追踪 `add`/`delete`**；若有人改成原地 `add`/`delete`，整条在飞保护会静默失效（按钮不禁用、补存不再重入队）。F11 若要动 `HomePage` 的 `busyIds`，请保留这个约定并加注释。
+>
 > **F5+F6 已建、F11 要消费的既有契约**：
 > - `MessageList` 与 `MessageItem` 的编辑/标签保存是**回调 prop**（`onSaveContent`/`onSaveTags`，返回 `Promise<SaveOutcome>`，三态 `'saved' | 'failed' | 'busy'`），**不是 emit** —— F3 骨架里的占位 emit `edit`/`edit-tags` 已在 F5 删除（没有承载者，且 emit 拿不到返回值）。`'busy'` 表示**压根没发出去**（被同一条目上的在飞保护挡下）：调用方要能分清它和 `'failed'`，否则被挡下的那次改动会静默丢掉。
 > - `stores/ideas.ts` 的 `focusIdeaId`（合并后新条目的 id）**不会自动复位** —— F11 消费时必须能容忍「id 不在列表里」（例如该条目已被删或不在当前过滤结果内）。
