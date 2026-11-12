@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using IdeaApp.Contracts;
 
@@ -21,17 +23,66 @@ namespace IdeaApp.Tests;
 /// 且声明的状态码与清单一致。</item>
 /// </list>
 /// </para>
+///
+/// <para>
+/// <b>扫描必须认全所有写法</b>。状态码既可能是字面量 <c>400</c>，
+/// 也可能是常量 <c>StatusCodes.Status400BadRequest</c>；错误码必须是字符串字面量。
+/// 扫不出来（状态码从常量/变量来、错误码不是字面量、错误码不符合 <c>[a-z0-9_]+</c>）
+/// 的抛出点一律**报错**而不是跳过 —— 跳过就等于让守卫对这个码失明：
+/// 码没进 <c>ApiErrorCodes.All</c>，契约的 ProblemDetails 取值全集里也就没有它，
+/// 而测试全绿，没人会发现。
+/// </para>
 /// </summary>
 public sealed class ApiErrorCodeTests
 {
-    /// <summary>实际抛出的错误码：new ApiException(400, "invalid_content", …)。</summary>
-    private static readonly Regex ThrownPattern = new(
-        "ApiException\\(\\s*(\\d{3})\\s*,\\s*\"([a-z0-9_]+)\"",
+    /// <summary>
+    /// 抛出点：<c>new ApiException(…)</c>。
+    /// </summary>
+    /// <remarks>
+    /// 必须带 <c>new</c>：注释里写着 <c>catch (...) =&gt; ApiException(400, "x", …)</c>
+    /// 这种示例，那不是真的抛出点。
+    /// </remarks>
+    private static readonly Regex CallSitePattern = new(
+        @"\bnew\s+[\w.]*ApiException\s*\(",
         RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// 端点声明的错误响应：ProducesApiProblem(StatusCodes.Status400BadRequest, "a", "b")。
+    /// 抛出点的参数：状态码 + 错误码。
     /// </summary>
+    /// <remarks>
+    /// 状态码先整个抓下来再单独解析（见 <see cref="LiteralStatusPattern"/> 与
+    /// <see cref="ConstantStatusPattern"/>），而不是在一条正则里分两支：
+    /// <c>StatusCodes.Status400BadRequest</c> 的数字后面还跟着名字后缀
+    /// （<c>BadRequest</c>），写成 <c>Status(\d{3})\s*,</c> 是匹配不上的。
+    /// 错误码捕获的是任意引号里的内容（不预筛 <c>[a-z0-9_]+</c>），
+    /// 不合约定时单独报错，不能让它整个匹配不上。
+    /// </remarks>
+    private static readonly Regex ThrownPattern = new(
+        @"\bnew\s+[\w.]*ApiException\s*\(\s*(?<status>[^,]+?)\s*,\s*""(?<code>[^""]*)""",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>状态码字面量：400。</summary>
+    private static readonly Regex LiteralStatusPattern = new(
+        @"^\d{3}$",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// 状态码常量：StatusCodes.Status400BadRequest → 400。
+    /// </summary>
+    /// <remarks>
+    /// 数字后面那截名字（<c>BadRequest</c>）只是常量名的一部分，忽略掉；
+    /// 前面也允许带命名空间（<c>Microsoft.AspNetCore.Http.StatusCodes.Status400BadRequest</c>）。
+    /// </remarks>
+    private static readonly Regex ConstantStatusPattern = new(
+        @"^(?:[\w.]+\.)?StatusCodes\s*\.\s*Status(\d{3})",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>错误码的约定：只允许小写字母、数字与下划线。</summary>
+    private static readonly Regex CodeConventionPattern = new(
+        "^[a-z0-9_]+$",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>端点声明的错误响应：ProducesApiProblem(StatusCodes.Status400BadRequest, "a", "b")。</summary>
     /// <remarks>
     /// 前面的点号是必须的：没有它会连辅助方法自己的**声明**一起扫到
     /// （那里没有状态码）。参数里也没有嵌套的括号（状态码是
@@ -57,33 +108,140 @@ public sealed class ApiErrorCodeTests
     public void Documented_codes_match_the_ones_actually_thrown()
     {
         var thrown = ScanThrownCodes();
-        var documented = ApiErrorCodes.All.ToDictionary(
-            code => code.Code,
-            code => code.Status,
-            StringComparer.Ordinal);
+        var documented = DocumentedCodes();
 
-        var missing = thrown.Keys
-            .Where(code => !documented.ContainsKey(code))
-            .OrderBy(code => code, StringComparer.Ordinal)
-            .ToList();
+        var missing = MissingFromManifest(thrown.Codes, documented);
 
         Assert.True(
             missing.Count == 0,
             $"代码里抛了但 ApiErrorCodes.All 里没登记：{string.Join("、", missing)}");
 
-        foreach (var (code, status) in thrown)
+        foreach (var (code, status) in thrown.Codes)
         {
             Assert.Equal(status, documented[code]);
         }
 
         var stale = documented.Keys
-            .Where(code => !thrown.ContainsKey(code))
+            .Where(code => !thrown.Codes.ContainsKey(code))
             .OrderBy(code => code, StringComparer.Ordinal)
             .ToList();
 
         Assert.True(
             stale.Count == 0,
             $"ApiErrorCodes.All 里登记了但已经没人抛：{string.Join("、", stale)}");
+    }
+
+    /// <summary>
+    /// 每一个抛出点都得扫得出来。
+    /// </summary>
+    /// <remarks>
+    /// 扫不出来（状态码从常量/变量来、错误码不是字面量、错误码不符合约定）
+    /// 的抛出点如果被跳过，守卫就对这个码失明了 —— 那才是真正的静默漏洞。
+    /// </remarks>
+    [Fact]
+    public void Every_throw_site_can_be_read_by_the_guard()
+    {
+        var scan = ScanThrownCodes();
+
+        Assert.True(
+            scan.Problems.Count == 0,
+            "有抛出点扫不出来（守卫会对它们失明）："
+            + string.Join("；", scan.Problems));
+    }
+
+    /// <summary>
+    /// 用常量状态码（<c>StatusCodes.Status400BadRequest</c>）抛出的码也要被扫到。
+    /// </summary>
+    /// <remarks>
+    /// 这就是原来那个静默洞：正则只认字面量三位数，
+    /// <c>new ApiException(StatusCodes.Status400BadRequest, "brand_new_code", …)</c>
+    /// 扫不到 → 守卫全绿 → 而这个码并不会进契约的 ProblemDetails 取值全集
+    /// （那里由 <c>ApiErrorCodes.All</c> 生成）→ 契约与代码就此不一致且无人报警。
+    /// </remarks>
+    [Fact]
+    public void Thrown_codes_are_found_even_when_the_status_is_a_StatusCodes_constant()
+    {
+        const string source = """
+            throw new ApiException(StatusCodes.Status400BadRequest, "brand_new_code", "消息");
+            """;
+
+        var scan = ScanThrownCodes(source, "片段");
+
+        Assert.Empty(scan.Problems);
+        Assert.True(
+            scan.Codes.ContainsKey("brand_new_code"),
+            "用常量状态码抛出的码没被扫到");
+        Assert.Equal(400, scan.Codes["brand_new_code"]);
+
+        // 扫到了还不够：它没登记在清单里，所以真这么抛的话守卫会红。
+        Assert.Null(ApiErrorCodes.Find("brand_new_code"));
+
+        // 端到端：清单核对这一步也得把它算成「漏登记」，守卫才是真的会报警。
+        var missing = MissingFromManifest(scan.Codes, DocumentedCodes());
+
+        Assert.Contains("brand_new_code", missing);
+    }
+
+    /// <summary>
+    /// 带命名空间前缀的状态码常量也要认得出。
+    /// </summary>
+    /// <remarks>
+    /// <c>Microsoft.AspNetCore.Http.StatusCodes.Status400BadRequest</c>
+    /// 与 <c>StatusCodes.Status400BadRequest</c> 是同一个常量，
+    /// 认不出带前缀的那种就又是一个静默洞。
+    /// </remarks>
+    [Fact]
+    public void Thrown_codes_are_found_even_when_the_status_constant_is_namespace_qualified()
+    {
+        const string source = """
+            throw new ApiException(Microsoft.AspNetCore.Http.StatusCodes.Status400BadRequest, "brand_new_code", "消息");
+            """;
+
+        var scan = ScanThrownCodes(source, "片段");
+
+        Assert.Empty(scan.Problems);
+        Assert.True(
+            scan.Codes.ContainsKey("brand_new_code"),
+            "带命名空间前缀的状态码常量没被扫到");
+        Assert.Equal(400, scan.Codes["brand_new_code"]);
+    }
+
+    /// <summary>
+    /// 状态码或错误码不是字面量的抛出点要报错，不能被跳过。
+    /// </summary>
+    /// <remarks>
+    /// 提示里要带上**认不出来的那个表达式**，否则改的人还得自己回去找。
+    /// </remarks>
+    [Fact]
+    public void A_throw_site_the_guard_cannot_read_is_reported()
+    {
+        const string source = """
+            throw new ApiException(ErrorCodes.BadRequest, "brand_new_code", "消息");
+            """;
+
+        var scan = ScanThrownCodes(source, "片段");
+
+        Assert.Empty(scan.Codes);
+        Assert.NotEmpty(scan.Problems);
+        Assert.Contains(
+            scan.Problems,
+            problem => problem.Contains("ErrorCodes.BadRequest", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// 错误码字面量不符合 <c>[a-z0-9_]+</c> 约定要报错，不能被跳过。
+    /// </summary>
+    [Fact]
+    public void A_code_that_does_not_follow_the_convention_is_reported()
+    {
+        const string source = """
+            throw new ApiException(400, "not-found", "消息");
+            """;
+
+        var scan = ScanThrownCodes(source, "片段");
+
+        Assert.Empty(scan.Codes);
+        Assert.NotEmpty(scan.Problems);
     }
 
     /// <summary>端点声明的错误码必须在清单里，且状态码一致。</summary>
@@ -106,33 +264,290 @@ public sealed class ApiErrorCodeTests
         }
     }
 
+    /// <summary>清单里的错误码 → 状态码。</summary>
+    private static Dictionary<string, int> DocumentedCodes() =>
+        ApiErrorCodes.All.ToDictionary(
+            code => code.Code,
+            code => code.Status,
+            StringComparer.Ordinal);
+
+    /// <summary>抛了但清单里没登记的错误码（守卫就是靠这个报错）。</summary>
+    private static List<string> MissingFromManifest(
+        IReadOnlyDictionary<string, int> thrown,
+        IReadOnlyDictionary<string, int> documented) =>
+        thrown.Keys
+            .Where(code => !documented.ContainsKey(code))
+            .OrderBy(code => code, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>扫描结果：错误码 → 状态码，外加「扫不出来 / 不合约定」的问题清单。</summary>
+    private sealed record ScanResult(
+        IReadOnlyDictionary<string, int> Codes,
+        IReadOnlyList<string> Problems);
+
     /// <summary>扫源码：实际抛出的错误码 → 状态码。</summary>
-    private static Dictionary<string, int> ScanThrownCodes()
+    private static ScanResult ScanThrownCodes()
     {
-        var result = new Dictionary<string, int>(StringComparer.Ordinal);
+        var codes = new Dictionary<string, int>(StringComparer.Ordinal);
+        var problems = new List<string>();
 
         foreach (var file in RepoPaths.SourceFiles(RepoPaths.AppSource))
         {
-            var text = File.ReadAllText(file);
+            var origin = Path.GetRelativePath(RepoPaths.Root, file);
+            var scan = ScanThrownCodes(File.ReadAllText(file), origin);
 
-            foreach (Match match in ThrownPattern.Matches(text))
+            problems.AddRange(scan.Problems);
+
+            foreach (var (code, status) in scan.Codes)
             {
-                var status = int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
-                var code = match.Groups[2].Value;
-
-                if (result.TryGetValue(code, out var existing))
+                if (codes.TryGetValue(code, out var existing))
                 {
-                    Assert.True(
-                        existing == status,
-                        $"错误码 {code} 在源码里对应了两个状态码（{existing} 与 {status}）");
+                    if (existing != status)
+                    {
+                        problems.Add(
+                            $"错误码 {code} 在源码里对应了两个状态码（{existing} 与 {status}）");
+                    }
+
                     continue;
                 }
 
-                result[code] = status;
+                codes[code] = status;
             }
         }
 
-        return result;
+        return new ScanResult(codes, problems);
+    }
+
+    /// <summary>扫一段源码：实际抛出的错误码 → 状态码。</summary>
+    /// <param name="text">源码文本。</param>
+    /// <param name="origin">出处（文件路径或「片段」），只用来拼报错信息。</param>
+    private static ScanResult ScanThrownCodes(string text, string origin)
+    {
+        var codes = new Dictionary<string, int>(StringComparer.Ordinal);
+        var problems = new List<string>();
+
+        var source = StripComments(text);
+
+        foreach (Match callSite in CallSitePattern.Matches(source))
+        {
+            var match = ThrownPattern.Match(source, callSite.Index);
+
+            // 匹配不到（或匹配到的不是当前这个抛出点）说明这个抛出点写法是扫不出来的：
+            // 状态码不是字面量、错误码不是字面量。报出来，不跳过。
+            if (!match.Success || match.Index != callSite.Index)
+            {
+                problems.Add(
+                    $"{origin}:{LineNumber(source, callSite.Index)} 的 ApiException 抛出点扫不出来"
+                    + "（状态码必须是 400 或 StatusCodes.Status400BadRequest 这样的字面量/常量，"
+                    + "错误码必须是字符串字面量）");
+                continue;
+            }
+
+            // 状态码两个分支都要认：字面量 400，或者常量 StatusCodes.Status400BadRequest。
+            var statusText = match.Groups["status"].Value.Trim();
+            var code = match.Groups["code"].Value;
+
+            int status;
+
+            if (LiteralStatusPattern.IsMatch(statusText))
+            {
+                status = int.Parse(statusText, CultureInfo.InvariantCulture);
+            }
+            else
+            {
+                var constant = ConstantStatusPattern.Match(statusText);
+
+                if (!constant.Success)
+                {
+                    problems.Add(
+                        $"{origin}:{LineNumber(source, callSite.Index)} 的状态码 {statusText} 认不出来"
+                        + "（只认 400 这样的字面量，或 StatusCodes.Status400BadRequest 这样的常量）");
+                    continue;
+                }
+
+                status = int.Parse(constant.Groups[1].Value, CultureInfo.InvariantCulture);
+            }
+
+            if (!CodeConventionPattern.IsMatch(code))
+            {
+                problems.Add(
+                    $"{origin}:{LineNumber(source, callSite.Index)} 的错误码 {code} "
+                    + "不符合 [a-z0-9_]+ 约定");
+                continue;
+            }
+
+            if (codes.TryGetValue(code, out var existing))
+            {
+                if (existing != status)
+                {
+                    problems.Add(
+                        $"错误码 {code} 在源码里对应了两个状态码（{existing} 与 {status}）");
+                }
+
+                continue;
+            }
+
+            codes[code] = status;
+        }
+
+        return new ScanResult(codes, problems);
+    }
+
+    /// <summary>
+    /// 去掉源码里的注释（字符串/字符字面量的内容原样保留）。
+    /// </summary>
+    /// <remarks>
+    /// 注释里常写着示例代码（<c>/// catch (...) =&gt; ApiException(400, "x", …)</c>），
+    /// 不去掉的话守卫会把它当成真的抛出点；反过来，被注释掉的抛出点
+    /// 也不该算数。字面量里的 <c>//</c> 不是注释，所以不能简单按行首砍。
+    /// </remarks>
+    private static string StripComments(string text)
+    {
+        var builder = new StringBuilder(text.Length);
+        var index = 0;
+
+        while (index < text.Length)
+        {
+            var current = text[index];
+
+            if (current == '"')
+            {
+                var end = SkipStringLiteral(text, index);
+                builder.Append(text, index, end - index);
+                index = end;
+                continue;
+            }
+
+            if (current == '\'')
+            {
+                var end = SkipCharLiteral(text, index);
+                builder.Append(text, index, end - index);
+                index = end;
+                continue;
+            }
+
+            if (current == '/' && index + 1 < text.Length && text[index + 1] == '/')
+            {
+                while (index < text.Length && text[index] != '\n')
+                {
+                    builder.Append(' ');
+                    index++;
+                }
+
+                continue;
+            }
+
+            if (current == '/' && index + 1 < text.Length && text[index + 1] == '*')
+            {
+                builder.Append("  ");
+                index += 2;
+
+                while (index < text.Length
+                    && !(text[index] == '*' && index + 1 < text.Length && text[index + 1] == '/'))
+                {
+                    builder.Append(text[index] == '\n' ? '\n' : ' ');
+                    index++;
+                }
+
+                if (index < text.Length)
+                {
+                    builder.Append("  ");
+                    index += 2;
+                }
+
+                continue;
+            }
+
+            builder.Append(current);
+            index++;
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>跳过一个字符串字面量，返回它结束后的下标。</summary>
+    /// <remarks>
+    /// 三种写法都要认：普通 <c>"…"</c>（<c>\</c> 转义）、逐字 <c>@"…"</c>（<c>""</c> 转义）、
+    /// 原始 <c>"""…"""</c>。
+    /// </remarks>
+    private static int SkipStringLiteral(string text, int index)
+    {
+        if (index + 2 < text.Length && text[index + 1] == '"' && text[index + 2] == '"')
+        {
+            var closing = text.IndexOf("\"\"\"", index + 3, StringComparison.Ordinal);
+            return closing < 0 ? text.Length : closing + 3;
+        }
+
+        var verbatim = index > 0 && text[index - 1] == '@';
+        var cursor = index + 1;
+
+        while (cursor < text.Length)
+        {
+            var current = text[cursor];
+
+            if (!verbatim && current == '\\')
+            {
+                cursor += 2;
+                continue;
+            }
+
+            if (current == '"')
+            {
+                if (verbatim && cursor + 1 < text.Length && text[cursor + 1] == '"')
+                {
+                    cursor += 2;
+                    continue;
+                }
+
+                return cursor + 1;
+            }
+
+            cursor++;
+        }
+
+        return text.Length;
+    }
+
+    /// <summary>跳过一个字符字面量，返回它结束后的下标。</summary>
+    private static int SkipCharLiteral(string text, int index)
+    {
+        var cursor = index + 1;
+
+        while (cursor < text.Length)
+        {
+            var current = text[cursor];
+
+            if (current == '\\')
+            {
+                cursor += 2;
+                continue;
+            }
+
+            if (current == '\'')
+            {
+                return cursor + 1;
+            }
+
+            cursor++;
+        }
+
+        return text.Length;
+    }
+
+    /// <summary>下标所在行（从 1 开始）。</summary>
+    private static int LineNumber(string text, int index)
+    {
+        var line = 1;
+
+        for (var cursor = 0; cursor < index && cursor < text.Length; cursor++)
+        {
+            if (text[cursor] == '\n')
+            {
+                line++;
+            }
+        }
+
+        return line;
     }
 
     /// <summary>扫端点源码：声明的错误码 → 状态码。</summary>
