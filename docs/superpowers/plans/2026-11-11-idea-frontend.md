@@ -265,7 +265,7 @@ git commit -m "feat(web): 初始化 Vue3+Vite 骨架、路由、主题与 API �
     —— **注意签名只有 `projectId`，没有 `filter`**：过滤在客户端做（AND/OR 偏好在各设备自己的 localStorage 里，服务端按它自己的 `or` 处理，与本机选的 `and` 会打架）。把 `filter` 传给后端会让用户看到的 AND 语义失效。
   - `web/src/lib/format.ts`：`formatRelativeTime(iso: string, now?: Date): string` —— 输出 `刚刚` / `N 分钟前` / `N 小时前` / `N 天前` / `M月D日`。
   - 组件 props：`MessageList` 收 `ideas: Idea[]`、`selectedIds: Set<string>`、`atBottom: boolean`，emit `toggle-select`、`delete`、`toggle-done`。
-    **F5 之后新增（都是必填 prop 回调，不是 emit）**：`suggest(prefix: string, projectId: string | null): Promise<string[]>`（标签补全）、`onSaveContent(id: string, content: string): Promise<boolean>`（保存正文，**返回成败** —— emit 拿不到父组件处理器的返回值，而「存好了才退出编辑态、失败留在里面」必须有返回值）、`onSaveTags(id: string, tags: string[]): Promise<boolean>`、`busyIds: Set<string>`（在飞保护）。`MessageItem` 同理：`busy?: boolean` + `onSaveContent` / `onSaveTags` 回调 prop。
+    **F5 之后新增（都是必填 prop 回调，不是 emit）**：`suggest(prefix: string, projectId: string | null): Promise<string[]>`（标签补全）、`onSaveContent(id: string, content: string): Promise<SaveOutcome>`（保存正文，**返回三态** `'saved' | 'failed' | 'busy'` —— emit 拿不到父组件处理器的返回值，而「存好了才退出编辑态、失败留在里面」必须有返回值；三态是因为 `'busy'`（**压根没发出去**，被同一条目上的在飞保护挡下）必须跟 `'failed'`（请求发出去了、失败了）分开：混成一个 false 的话，被挡下的那次改动就既没落库也没提示 —— 静默丢）、`onSaveTags(id: string, tags: string[], options?: SaveOptions): Promise<SaveOutcome>`（`options.silent` = 失败时不弹提示，给「捡回上次没存上的那版后自动补存」用：用户只是打开编辑器看看，不该看到「保存标签失败」）、`busyIds: Set<string>`（在飞保护）。`SaveOutcome` / `SaveOptions` 定义在 `web/src/lib/save.ts`。`MessageItem` 同理：`busy?: boolean` + `onSaveContent` / `onSaveTags` 回调 prop。
   - 组件 props：`Composer` 收 **`onSubmit: (content: string) => Promise<boolean>`**（**不是 emit**）。
     —— 提交回调返回 Promise 表示成败：**成功之后才清空输入框并保持焦点**；失败时内容原样留在框里（用户刚敲的正文不能因为一次网络失败就没了）。
     `Composer` 内部另有 `submitting` 标志防重复提交。
@@ -483,7 +483,7 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 ### Task 11 (F11): SSE 接线、事件合并、滚动跟随与深链定位
 
 > **F5+F6 已建、F11 要消费的既有契约**：
-> - `MessageList` 与 `MessageItem` 的编辑/标签保存是**回调 prop**（`onSaveContent`/`onSaveTags`，返回 `Promise<boolean>`），**不是 emit** —— F3 骨架里的占位 emit `edit`/`edit-tags` 已在 F5 删除（没有承载者，且 emit 拿不到返回值）。
+> - `MessageList` 与 `MessageItem` 的编辑/标签保存是**回调 prop**（`onSaveContent`/`onSaveTags`，返回 `Promise<SaveOutcome>`，三态 `'saved' | 'failed' | 'busy'`），**不是 emit** —— F3 骨架里的占位 emit `edit`/`edit-tags` 已在 F5 删除（没有承载者，且 emit 拿不到返回值）。`'busy'` 表示**压根没发出去**（被同一条目上的在飞保护挡下）：调用方要能分清它和 `'failed'`，否则被挡下的那次改动会静默丢掉。
 > - `stores/ideas.ts` 的 `focusIdeaId`（合并后新条目的 id）**不会自动复位** —— F11 消费时必须能容忍「id 不在列表里」（例如该条目已被删或不在当前过滤结果内）。
 
 **Files:**
