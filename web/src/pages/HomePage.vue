@@ -102,8 +102,10 @@ function onFilterUpdate(next: IdeaFilter): void {
  *
  * 提交的是纯正文（标题留空）；「全部项目」视图下不指定项目，
  * 后端会把它落到内置收件箱。
+ *
+ * @returns true 表示存好了（输入框据此清空），false 表示失败（内容保留在框里）。
  */
-async function onSubmit(content: string): Promise<void> {
+async function onSubmit(content: string): Promise<boolean> {
   try {
     const created = await apiSend<Idea>('POST', '/ideas', {
       projectId: currentProjectId.value,
@@ -112,8 +114,10 @@ async function onSubmit(content: string): Promise<void> {
       tags: [],
     });
     applyLocalUpsert(created);
+    return true;
   } catch (error) {
     reportError(error, '保存失败');
+    return false;
   }
 }
 
@@ -159,7 +163,7 @@ onMounted(() => {
       @toggle-select="onToggleSelect"
     />
 
-    <Composer @submit="onSubmit" />
+    <Composer :on-submit="onSubmit" />
   </main>
 </template>
 
