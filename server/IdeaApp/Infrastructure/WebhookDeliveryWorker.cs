@@ -34,7 +34,8 @@ public sealed class WebhookDeliveryWorker(
     ILogger<WebhookDeliveryWorker> logger) : BackgroundService
 {
     /// <summary>投递队列的容量。满了就丢新任务（写路径不能等）。</summary>
-    private const int QueueCapacity = 1000;
+    /// <remarks>公开出来是为了让测试能算出「塞多少任务才满得下」。</remarks>
+    public const int QueueCapacity = 1000;
 
     /// <summary>同时投递的最大条数。</summary>
     private const int MaxParallelism = 8;
@@ -186,7 +187,8 @@ public sealed class WebhookDeliveryWorker(
             lastError = error;
 
             // 记这一次尝试：attempts 加 1 与状态跃迁在 SQL 侧原子完成。
-            // 成功 → 这一行还是 pending 就落 delivered；失败 → 记下错误、留在 pending。
+            // 成功 → 这一行还是 pending / failed 就落 delivered；
+            // 失败 → 记下错误、留在 pending（等下一段退避）。
             deliveries.RecordAttempt(record.Id, error is null, error);
 
             if (error is null)

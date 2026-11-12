@@ -5,7 +5,10 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using IdeaApp.Domain;
+using IdeaApp.Infrastructure;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace IdeaApp.Tests;
 
@@ -245,6 +248,111 @@ public sealed class WebhookDeliveryTests
         var afterRetry = await WaitForDeliveryAsync(
             client, webhookId, d => d.GetProperty("attempts").GetInt32() == 2, TimeSpan.FromSeconds(20));
         Assert.Equal("failed", afterRetry.GetProperty("status").GetString());
+    }
+
+    /// <summary>
+    /// 手动重投**排不进队列**（队列满）时：那一行**原封不动** ——
+    /// 还是 <c>failed</c>，而且**保留原来的 <c>last_error</c></c>。
+    /// </summary>
+    /// <remarks>
+    /// 这条钉的是「入队失败不改那一行」：
+    /// 用户看到的仍然是**上次失败的原因**，而不是一条没有理由的 failed。
+    /// <para>
+    /// 队列怎么塞满的：worker 的队列容量是
+    /// <see cref="WebhookDeliveryWorker.QueueCapacity"/>，并发位是 8。
+    /// 这里直接往 worker 的队列里投够任务（目标端点把请求全卡住 → 并发位全占住
+    /// → 队列只进不出），下一次入队就必然失败。
+    /// <b>断言仍然走 HTTP 契约</b>；用到的后台类型只用来准备这个前置条件。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Manual_retry_that_cannot_be_queued_keeps_the_failed_record_and_its_error()
+    {
+        using var failingEndpoint = new FakeEndpoint { StatusCodeProvider = _ => 500 };
+        using var blockingEndpoint = new FakeEndpoint
+        {
+            // 收到请求就不回：worker 的并发位全卡在这儿，队列只进不出。
+            OnRequestAsync = _ => Task.Delay(Timeout.Infinite)
+        };
+        using var factory = new TestAppFactory(webhookMaxAttempts: 1);
+        using var client = factory.CreateClient();
+
+        var webhookId = await CreateWebhookAsync(client, failingEndpoint.Url, ["idea.created"]);
+        var fillerWebhookId = await CreateWebhookAsync(client, blockingEndpoint.Url, ["idea.updated"]);
+
+        // 第 1 次投递失败 → 死信：failed + last_error。
+        await client.PostAsJsonAsync("/api/ideas", new { content = "会失败的想法" });
+
+        var failed = await WaitForDeliveryAsync(client, webhookId, IsFailed, TimeSpan.FromSeconds(20));
+        var deliveryId = failed.GetProperty("id").GetString()!;
+        var originalError = failed.GetProperty("lastError").GetString();
+        Assert.False(string.IsNullOrEmpty(originalError));
+
+        // 把投递队列塞满。
+        var worker = factory.Services.GetRequiredService<WebhookDeliveryWorker>();
+        var filler = factory.Services.GetRequiredService<WebhookRepository>().Get(fillerWebhookId)!;
+        FillDeliveryQueue(worker, filler);
+
+        // 等 worker 的 8 个并发位全卡在目标端点上：队列不会再被消费，「满」是稳的。
+        await blockingEndpoint.WaitForRequestsAsync(8, TimeSpan.FromSeconds(10));
+
+        // 再塞一次：这一次队列确实是满的。
+        FillDeliveryQueue(worker, filler);
+
+        // 重投 → 排不进队列 → 503 + code=delivery_queue_full。
+        var retry = await client.PostAsync(
+            $"/api/webhooks/{webhookId}/deliveries/{deliveryId}/retry", null);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, retry.StatusCode);
+
+        using var document = JsonDocument.Parse(await retry.Content.ReadAsStringAsync());
+        Assert.Equal("delivery_queue_full", document.RootElement.GetProperty("code").GetString());
+
+        // 那一行原封不动：还是 failed，last_error 还是原来那个，attempts 也没动。
+        var after = Assert.Single(await ReadDeliveriesAsync(client, webhookId));
+        Assert.Equal(deliveryId, after.GetProperty("id").GetString());
+        Assert.Equal("failed", after.GetProperty("status").GetString());
+        Assert.Equal(originalError, after.GetProperty("lastError").GetString());
+        Assert.Equal(1, after.GetProperty("attempts").GetInt32());
+    }
+
+    /// <summary>
+    /// 一次**成功**的投递能把死信改成 <c>delivered</c>（并清掉那个错误）。
+    /// </summary>
+    /// <remarks>
+    /// 手动重投一条死信时，这一行在重投那一刻可能**还是 <c>failed</c>**：
+    /// 重投要先入队、入队之后才置 pending，而 worker 可能已经把这次投递投完了。
+    /// 这次投递**确实成功了**，记录就该是 delivered ——
+    /// 否则用户重投成功了，看到的还是一条 failed。
+    /// <para>
+    /// 「worker 的这一次写入落在死信上」这个瞬间没法从 HTTP 那一侧排出来
+    /// （入队与置 pending 之间只隔一条语句），所以这里直接调仓储的方法；
+    /// <b>断言仍然走 HTTP 契约</b>：读回来看列表里那一条。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task A_successful_attempt_turns_a_dead_letter_into_delivered()
+    {
+        using var endpoint = new FakeEndpoint { StatusCodeProvider = _ => 500 };
+        using var factory = new TestAppFactory(webhookMaxAttempts: 1);
+        using var client = factory.CreateClient();
+
+        var webhookId = await CreateWebhookAsync(client, endpoint.Url, ["idea.created"]);
+
+        await client.PostAsJsonAsync("/api/ideas", new { content = "会失败的想法" });
+
+        var failed = await WaitForDeliveryAsync(client, webhookId, IsFailed, TimeSpan.FromSeconds(20));
+        var deliveryId = failed.GetProperty("id").GetString()!;
+        Assert.False(string.IsNullOrEmpty(failed.GetProperty("lastError").GetString()));
+
+        // 模拟「worker 把这次投递投完了，而这一行还挂着死信」：记一次成功的尝试。
+        var deliveries = factory.Services.GetRequiredService<DeliveryRepository>();
+        deliveries.RecordAttempt(deliveryId, succeeded: true, lastError: null);
+
+        // 那一行现在是 delivered，上次那个错也没了。
+        var after = Assert.Single(await ReadDeliveriesAsync(client, webhookId));
+        Assert.Equal("delivered", after.GetProperty("status").GetString());
+        Assert.Null(after.GetProperty("lastError").GetString());
+        Assert.Equal(2, after.GetProperty("attempts").GetInt32());
     }
 
     /// <summary>
@@ -984,6 +1092,37 @@ public sealed class WebhookDeliveryTests
         command.Parameters.AddWithValue("$webhookId", webhookId);
         command.Parameters.AddWithValue("$eventId", eventId);
         command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 把投递队列塞满，让下一次入队必然失败。
+    /// </summary>
+    /// <remarks>
+    /// 一直塞到塞不进去为止（队列容量是 <see cref="WebhookDeliveryWorker.QueueCapacity"/>）。
+    /// 目标端点把请求全卡住 → worker 的 8 个并发位全被占住 → 队列不会再被消费，
+    /// 「满」这个状态是稳的。
+    /// </remarks>
+    private static void FillDeliveryQueue(WebhookDeliveryWorker worker, Webhook webhook)
+    {
+        while (worker.Enqueue(NewFillerJob(webhook)))
+        {
+            // 一直塞到塞不进去为止。
+        }
+    }
+
+    /// <summary>造一个「占位」的投递任务（只用来把队列塞满）。</summary>
+    private static WebhookDeliveryJob NewFillerJob(Webhook webhook)
+    {
+        var evt = new IdeaEvent(
+            Id: Guid.NewGuid().ToString("N"),
+            Type: "idea.updated",
+            Timestamp: DateTimeOffset.UtcNow,
+            Project: null,
+            Idea: null,
+            Changed: null,
+            MergedFrom: null);
+
+        return new WebhookDeliveryJob(webhook, evt, "{}");
     }
 
     /// <summary>假的目标端点：一个真的 HTTP 监听器，记录收到的请求。</summary>

@@ -67,31 +67,33 @@ public sealed class DeliveryService(
             throw new ApiException(404, "delivery_not_found", $"投递记录不存在：{deliveryId}");
         }
 
-        // 先把状态改成「投递中」再入队：入队之后 worker 才会改它，
-        // 顺序反了的话 worker 更快、状态会被改回「投递中」卡住。
-        // 同时清掉上次的错误 —— 「投递中」却挂着上次那个错，看的人会误解。
-        deliveries.MarkPending(record.Id);
-
         // 重发的是**已渲染的 payload**：这里不碰模板。
         var job = new WebhookDeliveryJob(webhook, SyntheticEvent(record), record.Payload);
 
+        // **先入队**：入队失败时这一行压根没被碰过 ——
+        // 还是原来的 failed + 原来的 last_error，用户看得到上次失败的原因。
+        // （反过来先置 pending 的话，清掉的 last_error 就找不回来了：
+        //   入队失败还原成 failed 时，那条记录会**没有错误原因**。）
         if (!worker.Enqueue(job))
         {
-            // 队列满了，这次重投没排上：把状态改回去，
-            // 别让这条记录永远停在「投递中」（根本没有投递在跑）。
-            // 只改 status —— 这一行上可能已经有在途投递写进去的新 attempts / last_error，
-            // 拿旧快照整行覆盖回去会把它们抹掉。
-            deliveries.RestoreStatus(record.Id, record.Status);
-
             throw new ApiException(503, "delivery_queue_full", "投递队列已满，请稍后重试");
         }
 
-        return ToDto(record with
-        {
-            Status = DeliveryStatuses.Pending,
-            LastError = null,
-            UpdatedAt = DateTimeOffset.UtcNow
-        });
+        // 入队成功 → 把这一行置回「投递中」并清掉上次的错误。
+        // 带前置条件：只有这一行还是我们读到时的样子（状态与尝试次数都没变）才改 ——
+        // 入队之后 worker 可能已经把这次投递投完了，那边的结果比我们的重投更该算数。
+        var rearmed = deliveries.MarkPending(record.Id, record.Status, record.Attempts);
+
+        // 没置成（那一行在我们读它之后被改过）就如实返回我们读到的那份：
+        // 与其报一个假的「投递中」，不如把这一行现在的样子给出去。
+        return ToDto(rearmed
+            ? record with
+            {
+                Status = DeliveryStatuses.Pending,
+                LastError = null,
+                UpdatedAt = DateTimeOffset.UtcNow
+            }
+            : record);
     }
 
     /// <summary>列表最多返回多少条（与每个 webhook 保留的记录数一致）。</summary>

@@ -17,7 +17,8 @@ namespace IdeaApp.Infrastructure;
 /// 后台 worker 的投递尝试，和用户点的手动重投。
 /// 所以这里**没有**「读出来算好再整行覆盖写回」的方法：
 /// 计数（<c>attempts = attempts + 1</c>）与状态跃迁都在 SQL 侧原子完成，
-/// 状态跃迁还带前置条件（只允许 <c>pending → delivered / failed</c>）。
+/// 状态跃迁还带前置条件（只允许 <c>pending / failed → delivered</c>，
+/// 以及「行还是我们读到时的样子」才置 pending）。
 /// 拿旧快照整行覆盖回去会把旁边那次写入抹掉：
 /// 「记录只记了 2 次尝试，实际发了 3 次」，或者「已经成功的投递被改回失败」。
 /// </para>
@@ -105,10 +106,15 @@ public sealed class DeliveryRepository(SqliteDatabase db)
     /// <list type="bullet">
     /// <item><c>attempts</c> **总是**加 1 —— 每真的发出去一次 HTTP 就该记一次，
     /// 哪怕这一行已经是终态（那次请求确实发出去了，不能不认账）。</item>
-    /// <item>状态只允许 <c>pending → delivered / failed</c>：已经是终态的行不动它，
-    /// 后到的旧结果不能把终态改回 pending。</item>
-    /// <item><c>last_error</c> 只在这一行还是 pending 时才更新：
-    /// 已经 delivered 的记录不该挂着一个后来那次失败的错误。</item>
+    /// <item>成功：<c>pending / failed → delivered</c>。
+    /// <c>failed</c> 也让成功改写是**必须的**：手动重投一条死信时，
+    /// 这一行在重投那一刻可能还是 <c>failed</c>（重投要先入队、入队之后才置 pending，
+    /// worker 可能已经把这次投递投完了）。这次投递**确实成功了**，
+    /// 记录就该是 delivered —— 否则用户重投成功了却还是看到一条 failed。</item>
+    /// <item>失败：状态不动（还是 pending，等着重试；还是 failed，就是死信），
+    /// 但 <c>last_error</c> 会更新成**这次**的错误。</item>
+    /// <item>已经是 <c>delivered</c> 的行：什么都不动 ——
+    /// 后到的失败不能把一次成功的投递改判成失败。</item>
     /// </list>
     /// </remarks>
     public void RecordAttempt(string id, bool succeeded, string? lastError)
@@ -117,16 +123,23 @@ public sealed class DeliveryRepository(SqliteDatabase db)
         using var command = connection.CreateCommand();
 
         // CASE 里的 status 取的是**这一行的旧值**（UPDATE 的右值一律按更新前的行求值），
-        // 所以「还是 pending 才改状态」这条前置条件是原子的。
+        // 所以「还是 pending / failed 才改状态」这条前置条件是原子的。
         command.CommandText =
             "UPDATE webhook_delivery SET " +
             "attempts = attempts + 1, " +
-            "status = CASE WHEN status = 'pending' THEN $status ELSE status END, " +
-            "last_error = CASE WHEN status = 'pending' THEN $lastError ELSE last_error END, " +
+            "status = CASE " +
+            "WHEN $succeeded = 1 AND status IN ($pending, $failed) THEN $delivered " +
+            "ELSE status END, " +
+            "last_error = CASE " +
+            "WHEN $succeeded = 1 AND status IN ($pending, $failed) THEN NULL " +
+            "WHEN $succeeded = 0 AND status IN ($pending, $failed) THEN $lastError " +
+            "ELSE last_error END, " +
             "updated_at = $updatedAt " +
             "WHERE id = $id;";
-        command.Parameters.AddWithValue("$status",
-            succeeded ? DeliveryStatuses.Delivered : DeliveryStatuses.Pending);
+        command.Parameters.AddWithValue("$succeeded", succeeded ? 1 : 0);
+        command.Parameters.AddWithValue("$pending", DeliveryStatuses.Pending);
+        command.Parameters.AddWithValue("$failed", DeliveryStatuses.Failed);
+        command.Parameters.AddWithValue("$delivered", DeliveryStatuses.Delivered);
         command.Parameters.AddWithValue("$lastError", (object?)lastError ?? DBNull.Value);
         command.Parameters.AddWithValue("$updatedAt",
             SqliteDatabase.FormatTimestamp(DateTimeOffset.UtcNow));
@@ -147,8 +160,10 @@ public sealed class DeliveryRepository(SqliteDatabase db)
         using var connection = db.Open();
         using var command = connection.CreateCommand();
         command.CommandText =
-            "UPDATE webhook_delivery SET status = 'failed', updated_at = $updatedAt " +
-            "WHERE id = $id AND status = 'pending';";
+            "UPDATE webhook_delivery SET status = $failed, updated_at = $updatedAt " +
+            "WHERE id = $id AND status = $pending;";
+        command.Parameters.AddWithValue("$failed", DeliveryStatuses.Failed);
+        command.Parameters.AddWithValue("$pending", DeliveryStatuses.Pending);
         command.Parameters.AddWithValue("$updatedAt",
             SqliteDatabase.FormatTimestamp(DateTimeOffset.UtcNow));
         command.Parameters.AddWithValue("$id", id);
@@ -159,44 +174,46 @@ public sealed class DeliveryRepository(SqliteDatabase db)
     /// <summary>
     /// 手动重投：把记录置成「投递中」，并**清掉上次的错误**。
     /// </summary>
+    /// <param name="id">投递记录 id。</param>
+    /// <param name="expectedStatus">
+    /// 前置条件：这一行现在得是**这个状态**（调用方读到的那份快照里的状态）。
+    /// </param>
+    /// <param name="expectedAttempts">
+    /// 前置条件：这一行的尝试次数得是**这个数**。
+    /// </param>
+    /// <returns>true = 置成「投递中」了；false = 这一行在调用方读它之后被别人改过，没动。</returns>
     /// <remarks>
+    /// <para>
     /// 清错误是语义要求：一条「投递中」却挂着上次那个错的记录会误导用户
     /// （看着像还没重投成功、又要再点一次）。
+    /// </para>
+    /// <para>
+    /// <b>前置条件是必须的</b>：入队之后、置 pending 之前，
+    /// worker 可能已经把这次投递投完了（写成 delivered / failed）。
+    /// 这时候再无条件置 pending，就是把**终态改回投递中** ——
+    /// 那一行会永远停在「投递中」，因为已经没有投递在跑了。
+    /// </para>
+    /// <para>
+    /// 前置条件为什么是「状态 + 尝试次数」两个：
+    /// <c>attempts</c> 只增不减，每记一次尝试就 +1 ——
+    /// 它变了就说明「这一行在我们读它之后被人动过」。
+    /// 只看状态不够：一次**成功**的投递落在已经是 <c>delivered</c> 的行上时，
+    /// 状态不变、只有 attempts 变了 —— 那一次投递同样已经发生过了。
+    /// </para>
     /// </remarks>
-    public void MarkPending(string id)
+    public bool MarkPending(string id, string expectedStatus, int expectedAttempts)
     {
         using var connection = db.Open();
         using var command = connection.CreateCommand();
         command.CommandText =
-            "UPDATE webhook_delivery SET status = 'pending', last_error = NULL, updated_at = $updatedAt " +
-            "WHERE id = $id;";
+            "UPDATE webhook_delivery SET status = $pending, last_error = NULL, updated_at = $updatedAt " +
+            "WHERE id = $id AND status = $expectedStatus AND attempts = $expectedAttempts;";
+        command.Parameters.AddWithValue("$pending", DeliveryStatuses.Pending);
         command.Parameters.AddWithValue("$updatedAt",
             SqliteDatabase.FormatTimestamp(DateTimeOffset.UtcNow));
         command.Parameters.AddWithValue("$id", id);
-        command.ExecuteNonQuery();
-    }
-
-    /// <summary>
-    /// 还原状态（手动重投没排上队时用）：**只改 status**，而且只在这一行还是「投递中」时才改。
-    /// </summary>
-    /// <param name="id">投递记录 id。</param>
-    /// <param name="status">要还原成的状态（重投之前的状态）。</param>
-    /// <returns>true = 还原了；false = 这一行已经不是「投递中」了（有别人改过），没动。</returns>
-    /// <remarks>
-    /// 不能拿旧快照整行覆盖回去：那一行上可能已经有在途投递写进去的新 attempts / last_error，
-    /// 覆盖回去就把它们抹掉了。
-    /// </remarks>
-    public bool RestoreStatus(string id, string status)
-    {
-        using var connection = db.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText =
-            "UPDATE webhook_delivery SET status = $status, updated_at = $updatedAt " +
-            "WHERE id = $id AND status = 'pending';";
-        command.Parameters.AddWithValue("$status", status);
-        command.Parameters.AddWithValue("$updatedAt",
-            SqliteDatabase.FormatTimestamp(DateTimeOffset.UtcNow));
-        command.Parameters.AddWithValue("$id", id);
+        command.Parameters.AddWithValue("$expectedStatus", expectedStatus);
+        command.Parameters.AddWithValue("$expectedAttempts", expectedAttempts);
 
         return command.ExecuteNonQuery() > 0;
     }
