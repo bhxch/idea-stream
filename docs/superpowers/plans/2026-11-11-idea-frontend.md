@@ -113,7 +113,7 @@ web/
 
 ---
 
-### Task F1: Vite + Vue 3 骨架、路由、主题与 API 客户端
+### Task 1 (F1): Vite + Vue 3 骨架、路由、主题与 API 客户端
 
 **Files:**
 - Create: `web/package.json`、`web/vite.config.ts`、`web/tsconfig.json`、`web/tsconfig.node.json`、`web/index.html`
@@ -209,7 +209,7 @@ git commit -m "feat(web): 初始化 Vue3+Vite 骨架、路由、主题与 API �
 
 ---
 
-### Task F2: SSE 客户端（重连、Last-Event-ID、resync）
+### Task 2 (F2): SSE 客户端（重连、Last-Event-ID、resync）
 
 **Files:**
 - Create: `web/src/api/events.ts`
@@ -241,7 +241,7 @@ git commit -m "feat(web): 初始化 Vue3+Vite 骨架、路由、主题与 API �
 
 ---
 
-### Task F3: 项目状态、想法状态与消息流主页面骨架
+### Task 3 (F3): 项目状态、想法状态与消息流主页面骨架
 
 **Files:**
 - Create: `web/src/stores/projects.ts`、`web/src/stores/ideas.ts`、`web/src/stores/settings.ts`
@@ -283,7 +283,7 @@ it('formatRelativeTime', () => {
 
 ---
 
-### Task F4: 过滤逻辑（状态、标签、AND/OR）与过滤栏
+### Task 4 (F4): 过滤逻辑（状态、标签、AND/OR）与过滤栏
 
 **Files:**
 - Create: `web/src/lib/filter.ts`
@@ -336,7 +336,7 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ---
 
-### Task F5: 条目交互（编辑、标签、完成、删除）
+### Task 5 (F5): 条目交互（编辑、标签、完成、删除）
 
 **Files:**
 - Create: `web/src/components/TagEditor.vue`
@@ -359,7 +359,7 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ---
 
-### Task F6: 多选批量操作与合并流程
+### Task 6 (F6): 多选批量操作与合并流程
 
 **Files:**
 - Create: `web/src/components/BatchBar.vue`、`web/src/components/MergeDialog.vue`
@@ -381,7 +381,7 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ---
 
-### Task F7: 响应式两版布局
+### Task 7 (F7): 响应式两版布局
 
 **Files:**
 - Create: `web/src/components/ProjectSidebar.vue`、`web/src/components/ProjectTabs.vue`
@@ -402,7 +402,7 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ---
 
-### Task F8: 项目管理页
+### Task 8 (F8): 项目管理页
 
 **Files:**
 - Create: `web/src/pages/ProjectsPage.vue`
@@ -422,7 +422,7 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ---
 
-### Task F9: 回收站页
+### Task 9 (F9): 回收站页
 
 **Files:**
 - Create: `web/src/pages/TrashPage.vue`
@@ -438,7 +438,7 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ---
 
-### Task F10: Webhook 配置页与投递记录
+### Task 10 (F10): Webhook 配置页与投递记录
 
 **Files:**
 - Create: `web/src/pages/WebhooksPage.vue`、`web/src/pages/ProjectWebhooksPage.vue`
@@ -460,7 +460,7 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 ---
 
-### Task F11: SSE 接线、事件合并、滚动跟随与深链定位
+### Task 11 (F11): SSE 接线、事件合并、滚动跟随与深链定位
 
 **Files:**
 - Modify: `web/src/lib/merge.ts`（从占位改为实现）
@@ -524,7 +524,7 @@ it('距底 32px 以内视为贴底', () => { /* scrollTop=568（距底 32）→ 
 
 ---
 
-### Task F12: 构建集成与整体冒烟
+### Task 12 (F12): 构建集成与整体冒烟
 
 **Files:**
 - Modify: `web/vite.config.ts`（确认 outDir）
