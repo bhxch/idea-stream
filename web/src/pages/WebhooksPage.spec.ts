@@ -1,0 +1,182 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { config, flushPromises, mount } from '@vue/test-utils';
+import { createMemoryHistory, createRouter, type Router } from 'vue-router';
+import type { Webhook } from '../api/types';
+import ToastHost from '../components/ToastHost.vue';
+
+const { apiGet, apiSend } = vi.hoisted(() => ({ apiGet: vi.fn(), apiSend: vi.fn() }));
+
+vi.mock('../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/client')>();
+  return { ...actual, apiGet, apiSend };
+});
+
+import WebhooksPage from './WebhooksPage.vue';
+
+/** 两个全局 webhook。 */
+const webhooks: Webhook[] = [
+  {
+    id: 'wh-1',
+    name: '全局通知',
+    url: 'https://example.com/hook',
+    method: 'POST',
+    headers: {},
+    bodyTemplate: '{"text":"{{idea.content}}"}',
+    events: ['idea.created'],
+    scope: 'global',
+    projectId: null,
+    enabled: true,
+    hasSecret: false,
+    createdAt: '2026-11-01T10:00:00Z',
+    updatedAt: '2026-11-01T10:00:00Z',
+  },
+  {
+    id: 'wh-2',
+    name: '另一个',
+    url: 'https://example.com/hook2',
+    method: 'POST',
+    headers: {},
+    bodyTemplate: '{"text":"x"}',
+    events: [],
+    scope: 'global',
+    projectId: null,
+    enabled: false,
+    hasSecret: true,
+    createdAt: '2026-11-01T10:00:00Z',
+    updatedAt: '2026-11-01T10:00:00Z',
+  },
+];
+
+/** 这一轮测试用的路由。 */
+let router: Router;
+
+/** 装页面。 */
+function mountPage(): ReturnType<typeof mount> {
+  return mount(WebhooksPage);
+}
+
+beforeEach(async () => {
+  apiGet.mockReset();
+  apiSend.mockReset();
+  apiGet.mockImplementation((path: string) => {
+    if (path === '/webhooks') {
+      return Promise.resolve(webhooks);
+    }
+    if (path.startsWith('/webhooks/') && path.endsWith('/deliveries')) {
+      return Promise.resolve([]);
+    }
+    return Promise.resolve([]);
+  });
+  apiSend.mockResolvedValue(webhooks[0]);
+
+  router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { template: '<div />' } },
+      { path: '/projects', component: { template: '<div />' } },
+      { path: '/trash', component: { template: '<div />' } },
+      { path: '/webhooks', component: { template: '<div />' } },
+      { path: '/projects/:id/webhooks', component: { template: '<div />' } },
+    ],
+  });
+  await router.push('/webhooks');
+  await router.isReady();
+  config.global.plugins = [router];
+});
+
+describe('WebhooksPage', () => {
+  it('列出全局作用域的 webhook（列表请求不带 projectId）', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(apiGet).toHaveBeenCalledWith('/webhooks');
+    const items = wrapper.findAll('.webhooks__item');
+    expect(items).toHaveLength(2);
+    expect(items[0].text()).toContain('全局通知');
+    wrapper.unmount();
+  });
+
+  it('新建：表单存的是全局作用域', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('.webhooks__new').trigger('click');
+    await wrapper.get('.webhook-form__name').setValue('新 hook');
+    await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
+    await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('POST', '/webhooks', {
+      name: '新 hook',
+      url: 'https://example.com/x',
+      method: 'POST',
+      headers: {},
+      bodyTemplate: '{"text":"x"}',
+      events: [],
+      scope: 'global',
+      projectId: null,
+      secret: null,
+    });
+    wrapper.unmount();
+  });
+
+  it('点「编辑」打开表单，表单里是这个 webhook 的配置', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('[data-webhook-id="wh-1"] .webhooks__edit').trigger('click');
+
+    const name = wrapper.get('.webhook-form__name').element as HTMLInputElement;
+    expect(name.value).toBe('全局通知');
+    wrapper.unmount();
+  });
+
+  it('启用/禁用：PATCH 只带 enabled', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('[data-webhook-id="wh-2"] .webhooks__toggle').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('PATCH', '/webhooks/wh-2', { enabled: true });
+    wrapper.unmount();
+  });
+
+  it('删除：DELETE /webhooks/{id}', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('[data-webhook-id="wh-1"] .webhooks__delete').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('DELETE', '/webhooks/wh-1');
+    wrapper.unmount();
+  });
+
+  it('点「投递记录」列出这个 webhook 的投递记录', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('[data-webhook-id="wh-1"] .webhooks__deliveries').trigger('click');
+    await flushPromises();
+
+    expect(apiGet).toHaveBeenCalledWith('/webhooks/wh-1/deliveries');
+    expect(wrapper.find('.delivery-list').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('列表加载失败时给提示（不静默吞掉）', async () => {
+    apiGet.mockImplementation((path: string) =>
+      path === '/webhooks' ? Promise.reject(new Error('boom')) : Promise.resolve([]),
+    );
+
+    const wrapper = mountPage();
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('加载 webhook 列表失败');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+});

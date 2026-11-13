@@ -66,6 +66,16 @@ export interface Delivery {
   updatedAt: string;
 }
 
+/**
+ * webhook 的模板预设（`GET /api/webhooks/templates/telegram`）。
+ *
+ * 页面用它在表单里预填 URL 与 Body 模板。
+ */
+export interface WebhookTemplate {
+  url: string;
+  bodyTemplate: string;
+}
+
 /** 回收站里的一条条目：`kind` 为 `project` 是容器，为 `idea` 是顶层单条。 */
 export interface TrashEntry {
   kind: 'project' | 'idea';
