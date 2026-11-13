@@ -14,11 +14,22 @@ var builder = WebApplication.CreateBuilder(args);
 //
 // 光 Directory.CreateDirectory 还不够：WebRootFileProvider 是在
 // WebApplication.CreateBuilder() 里就定下来的，那一刻目录不存在，
-// 框架会把它留成 null（只打一条 "The WebRootPath was not found" 警告，
-// 不抛异常）—— 那个 provider 是进程内固定的，后面再把目录与产物补上，
+// 框架会装上一个 NullFileProvider（查不到任何文件；只打一条
+// "The WebRootPath was not found" 警告，**不抛异常**）——
+// 那个 provider 是进程内固定的，后面再把目录与产物补上，
 // 静态文件照样 404（/ 一律 404，页面白屏）。
 // 目录建出来之后自己显式指一个 PhysicalFileProvider，这条路才真的通。
-var webRoot = Path.Combine(builder.Environment.ContentRootPath, "wwwroot");
+//
+// ⚠️ 这一行把框架可能装上的 StaticWebAssets 复合 provider 整个换掉了：
+// 今天没有引用带 wwwroot 资产的包（provider 本来就是空的），所以无影响；
+// 将来引入了那样的包，那些资产会 404 —— 到时改成把两个 provider 复合起来。
+//
+// 目录取自 WebRootPath（有人用 WebRootPath 配过别的目录时以它为准），
+// 取不到再回落 "wwwroot"。WebRootPath 是相对路径时与 ContentRootPath 拼，
+// 是绝对路径时 Path.Combine 直接返回它。
+var webRoot = Path.Combine(
+    builder.Environment.ContentRootPath,
+    builder.Environment.WebRootPath ?? "wwwroot");
 Directory.CreateDirectory(webRoot);
 builder.Environment.WebRootFileProvider = new PhysicalFileProvider(webRoot);
 
@@ -165,8 +176,30 @@ app.MapOpenApi("/openapi/{documentName}.json");
 // 导出 OpenAPI 文档到 IDEA_EXPORT_OPENAPI 指定的文件（没设这个环境变量就不导出）。
 OpenApiExporter.ExportIfRequested(app);
 
+// 未匹配的 /api/** 要按 API 契约回 404 ProblemDetails，不能落到下面的 SPA 兜底：
+// 那个 catch-all 会把「路径打错」变成 200 + HTML，而这个 API 是给 agent 读的
+// （契约在 openapi/idea-v1.json）—— agent 只看状态码会把「路径打错」当成成功。
+//
+// ⚠️ 这里用 **Map** 而不是 **MapFallback**：.NET 10 的
+// MapFallback(string pattern, Delegate handler) 会**丢弃 pattern 参数**，
+// 无条件注册默认的 "{*path:nonfile}"（实测：传 "/api/{**rest}" 进去，
+// 注册出来的仍是 "{*path:nonfile}"）—— 那它就是个全局兜底，
+// 会把 /projects、/trash 这些前端路由也吃掉，SPA 直接废掉。
+//
+// Map 的字面量段 "api" 让路由优先走字面量转移（胜过 catch-all），
+// 于是 "/api/**" 归这里，其余路径落到下面的 SPA 兜底。
+// 实测（.NET 10）：/api/nonexistent → 这里；/projects、/trash → SPA 兜底；
+// 显式端点（/api/health 等）不受影响。
+//
+// 显式端点不受影响：它们有更具体的路由模板，优先级高于 catch-all。
+// 资源级的 404（webhook 不存在……）也保持原样 ——
+// 那是端点自己抛的，走的是各自的错误码，不是这个兜底。
+app.Map("/api/{**rest}", () => ApiResults.Run(() =>
+    throw new ApiException(404, "api_not_found", "请求的接口不存在。")));
+
 // SPA 兜底：前端用 history 模式，/projects、/trash、/webhooks、/projects/{id}/webhooks
-// 都是真实路径。MapFallbackToFile("index.html") 兜住所有没匹配到端点的 GET。
+// 都是真实路径。MapFallbackToFile("index.html") 兜住所有没匹配到端点的 GET
+// （/api/** 由上面那层兜底先接走了 —— 路由的字面量段 "api" 优先）。
 //
 // 必须是**最后**一个映射 —— 它是 catch-all，放在它后面的 MapXxxEndpoints() 永远不会命中。
 app.MapFallbackToFile("index.html");

@@ -70,6 +70,7 @@ public static class ApiErrorCodes
         new("too_many_ideas", 400, "命中数超过单次返回上限，请收窄过滤条件"),
 
         // 404：东西不存在。
+        new("api_not_found", 404, "请求的接口不存在（路径打错或接口已下线）"),
         new("delivery_not_found", 404, "投递记录不存在"),
         new("idea_not_found", 404, "想法不存在"),
         new("project_not_found", 404, "项目不存在"),
