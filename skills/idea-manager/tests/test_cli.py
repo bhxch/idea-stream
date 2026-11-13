@@ -231,13 +231,25 @@ class LocalServerTest(unittest.TestCase):
         return "http://127.0.0.1:{}".format(server.server_address[1])
 
     def _static_handler(self, status, content_type, body):
+        """打一个「固定状态码 + 固定响应体」的桩。
+
+        ``content_type`` 传 None 表示**不发 Content-Type 头** ——
+        Kestrel 直接拒收超大请求体时回的就是这种 413：
+        没有 Content-Type、Content-Length: 0、响应体为空。
+        """
+
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(status)
-                self.send_header("Content-Type", content_type)
+                if content_type is not None:
+                    self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            # POST 也回同一个固定响应：413 本来就是「请求体太大」时服务端回的，
+            # 那种场景 CLI 发的是 POST。
+            do_POST = do_GET
 
             def log_message(self, *args):
                 pass
@@ -268,6 +280,47 @@ class LocalServerTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("响应不是 JSON", err)
         self.assertIn("200", err)
+
+    def test_empty_body_413_reports_http_413_code(self):
+        """钉住「非 2xx + **空响应体**」这一条 CLI 行为。
+
+        SKILL.md 的「CLI 自己的错误码」清单里写着 ``http_<状态码>``，
+        413 的说明里也写着「响应体是空的 → ``http_413: HTTP 413``」——
+        但这条此前**没有用例钉着**：文档说一套、代码做另一套也发现不了。
+
+        场景：Kestrel 在读 body 阶段就拒收超大请求体，回的是
+        413 + **空的响应体**（没有 Content-Type、没有 ProblemDetails、没有 code），
+        见 ``server/IdeaApp.Tests/PayloadTooLargeTests.cs`` 的实测锚点。
+        CLI 拿不到业务错误码，只能按状态码自己造一个 ``http_413``。
+
+        关键：**不能**报成 ``invalid_response`` —— 那是「响应体不是 JSON」
+        的另一条分支（body 非空但解析不了），两条分支互斥。
+        """
+        # 没有 Content-Type 头（Kestrel 的 413 就是这样），响应体为空。
+        url = self._serve(self._static_handler(413, None, b""))
+
+        # 用「POST + 请求体」的命令：413 本来就是「请求体太大」时服务端回的。
+        code, out, err = run_cli(["add", "一条会撑爆上限的想法"], base_url=url)
+        self.assertEqual(code, 1)
+        self.assertIn("http_413: HTTP 413", err)
+        self.assertNotIn("invalid_response", err)
+        self.assertNotIn("响应不是 JSON", err)
+        self.assertEqual(out, "")
+
+    def test_empty_body_502_reports_http_502_code(self):
+        """``http_<状态码>`` 是通用形态，不是只对 413 成立。
+
+        上一条钉的是 413；这一条换个状态码，确认 CLI 是**按状态码机械地造码**
+        （502 → ``http_502: HTTP 502``），而不是把 413 写死在一个分支里。
+        """
+        url = self._serve(self._static_handler(502, None, b""))
+
+        code, out, err = run_cli(["list"], base_url=url)
+        self.assertEqual(code, 1)
+        self.assertIn("http_502: HTTP 502", err)
+        self.assertNotIn("invalid_response", err)
+        self.assertNotIn("响应不是 JSON", err)
+        self.assertEqual(out, "")
 
     def test_webhook_url_and_headers_are_redacted(self):
         webhook = {
