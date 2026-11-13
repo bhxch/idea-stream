@@ -142,24 +142,32 @@ describe('ProjectsPage', () => {
     toastHost.unmount();
   });
 
-  it('切到手动排序：先用当前显示顺序初始化 sort_order，再切设置', async () => {
+  it('切到手动排序：只调设置，不自己再发 reorder', async () => {
     const wrapper = mountPage();
     await flushPromises();
 
     await wrapper.get('.projects__mode--manual').trigger('click');
     await flushPromises();
 
-    // 顺序很重要：先把当前显示顺序写进 sort_order，切过去后顺序才不会跳位。
-    expect(apiSend.mock.calls[0]).toEqual([
-      'POST',
-      '/projects/reorder',
-      { ids: ['project-1', 'project-2', 'project-3'] },
-    ]);
-    expect(apiSend.mock.calls[1]).toEqual([
-      'PUT',
-      '/settings/project.sort_mode',
-      { value: 'manual' },
-    ]);
+    expect(apiSend).toHaveBeenCalledWith('PUT', '/settings/project.sort_mode', {
+      value: 'manual',
+    });
+    // 初始化 sort_order 是**后端**的事：它切到 manual 时会自己用当前显示顺序重排一遍。
+    // 前端再发一次 reorder 用的是本地缓存的列表 —— 别的设备新建的项目不在里面，
+    // 会被后端「没被列出的接在后面」挪到末尾去，把顺序改坏。
+    expect(apiSend).not.toHaveBeenCalledWith('POST', '/projects/reorder', expect.anything());
+    wrapper.unmount();
+  });
+
+  it('拖拽说明与实现一致（方向性：往下拖落到目标后面，往上拖落到前面）', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const hint = wrapper.get('.projects__hint').text();
+    expect(hint).toContain('往下');
+    expect(hint).toContain('往上');
+    // 旧文案说「正上方」，与方向性实现相反（往下拖恰恰落在目标的下面）。
+    expect(hint).not.toContain('正上方');
     wrapper.unmount();
   });
 

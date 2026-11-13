@@ -145,8 +145,8 @@ function onDragStart(project: Project, event: DragEvent): void {
 /**
  * 拖到某个项目上：放下时按落点重排。
  *
- * 落点语义是「顶替目标的位置」（见 {@link reorderToTarget}），
- * 与项目侧栏是同一套语义 —— 同一个动作在两个界面里结果必须一样。
+ * 落点语义见 {@link reorderToTarget} —— 项目侧栏用的是同一份实现，
+ * 同一个动作在两个界面里结果必须一样。
  */
 async function onDrop(target: Project, event: DragEvent): Promise<void> {
   event.preventDefault();
@@ -183,9 +183,14 @@ function onDragEnd(): void {
 /**
  * 切换排序方式。
  *
- * 切到「手动排序」时**先重排、后切设置**：手动排序用的是 `sort_order`，
- * 而 recent 排出来的顺序跟库里原来的 `sort_order` 没关系 ——
- * 不先用当前显示顺序初始化一遍，用户切过去会看到顺序乱跳。
+ * **只调设置**：初始化 `sort_order` 是后端的事 ——
+ * `ProjectService.SetSortMode` 切到 `manual` 时会自己用当前显示顺序
+ * （此刻 `List()` 给出的顺序，也就是用户正看到的顺序）重排一遍，
+ * 再写设置，所以切过去后顺序与切换前一致，不会跳位。
+ *
+ * 前端**不要**自己再发一次 `POST /projects/reorder`：它用的是本地缓存的
+ * 项目列表，别的设备新建的项目不在里面，而后端的 `Reorder` 规定
+ * 「没被列出的接在后面」—— 那会把顺序真的改坏。
  */
 async function onChangeMode(next: ProjectSortMode): Promise<void> {
   if (next === projectSortMode.value || switchingMode.value) {
@@ -193,12 +198,6 @@ async function onChangeMode(next: ProjectSortMode): Promise<void> {
   }
   switchingMode.value = true;
   try {
-    if (next === 'manual') {
-      const ids = projects.value.map((project) => project.id);
-      if (ids.length > 0) {
-        await apiSend<Project[]>('POST', '/projects/reorder', { ids });
-      }
-    }
     await saveSortMode(next);
     // 两种方式下后端给的顺序不一样：重新拉一次。
     await loadProjects();
@@ -254,7 +253,7 @@ onMounted(() => {
     </form>
 
     <p class="projects__hint">
-      手动排序模式下可以直接拖动项目：拖到谁头上，你就落到谁的正上方。
+      手动排序模式下可以直接拖动项目：往下拖落到目标的后面，往上拖落到目标的前面。
     </p>
 
     <ul class="projects__list">

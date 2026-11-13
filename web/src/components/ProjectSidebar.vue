@@ -63,8 +63,7 @@ function onDragStart(id: string, event: DragEvent): void {
 /**
  * 拖到某个项目上：放下时按落点重排。
  *
- * 落点语义是「顶替目标的位置」（见 {@link reorderToTarget}）：
- * 拖到谁头上，谁就让位 —— 与项目管理页用的是同一套语义。
+ * 落点语义见 {@link reorderToTarget} —— 项目管理页用的是同一份实现。
  */
 function onDrop(targetId: string, event: DragEvent): void {
   event.preventDefault();

@@ -59,13 +59,36 @@ watch(
       : [];
     bodyTemplate.value = webhook?.bodyTemplate ?? '';
     events.value = webhook ? [...webhook.events] : [];
-    enabled.value = webhook?.enabled ?? true;
+    // 新建时的初值按**作用域**给（后端也是按作用域定默认值的）：
+    // 全局默认禁用、项目级默认启用 —— 开关虽然锁着（新建不传 enabled），
+    // 显示的值也得跟实际创建出来的结果一致。
+    enabled.value = webhook?.enabled ?? props.scope === 'project';
     // 密钥明文不回传：每次编辑都从空开始。
     secret.value = '';
     clearSecret.value = false;
   },
   { immediate: true },
 );
+
+/**
+ * 「清除密钥」与「新填的密钥」**互斥**。
+ *
+ * 两者同时成立时，保存会以「清除」为准（后端三态里 `""` 优先于非空），
+ * 新填的密钥就被静默丢掉了 —— 用户不会知道。两个方向都要管：
+ * - 勾上「清除密钥」→ 输入框里的内容清掉；
+ * - 输入框里填了内容 → 「清除密钥」自动取消勾选。
+ */
+watch(secret, (value) => {
+  if (value.length > 0 && clearSecret.value) {
+    clearSecret.value = false;
+  }
+});
+
+watch(clearSecret, (checked) => {
+  if (checked) {
+    secret.value = '';
+  }
+});
 
 /** 自定义 Header 收成后端要的对象（空键的行忽略）。 */
 function buildHeaders(): Record<string, string> {
@@ -89,13 +112,18 @@ function buildHeaders(): Record<string, string> {
  * - 非空 = 替换成新密钥。
  *
  * 新建时 `null` 与 `""` 都表示「不设密钥」。
+ *
+ * ⚠️ **值不 trim**：密钥首尾的空白是有意义的，trim 会静默改掉用户填的东西。
+ * 只用 trim 判断「是不是留空了」（留空 → `null` = 不改）。
  */
 function secretValue(): string | null {
   if (clearSecret.value) {
     return '';
   }
-  const trimmed = secret.value.trim();
-  return trimmed ? trimmed : null;
+  if (secret.value.trim().length === 0) {
+    return null;
+  }
+  return secret.value;
 }
 
 /** 加一行 Header。 */

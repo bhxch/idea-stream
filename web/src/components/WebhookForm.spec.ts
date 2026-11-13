@@ -152,6 +152,53 @@ describe('WebhookForm', () => {
     wrapper.unmount();
   });
 
+  it('Secret 的值原样发送（首尾的空白是有意义的，不能 trim）', async () => {
+    const wrapper = mountForm({ webhook });
+    await wrapper.get('.webhook-form__secret').setValue('  abc  ');
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    const body = apiSend.mock.calls[0][2] as Record<string, unknown>;
+    expect(body.secret).toBe('  abc  ');
+    wrapper.unmount();
+  });
+
+  it('填了新密钥就取消「清除密钥」（两者互斥，新填的不能被静默丢掉）', async () => {
+    const withSecret: Webhook = { ...webhook, hasSecret: true };
+    const wrapper = mountForm({ webhook: withSecret });
+
+    // 勾上「清除密钥」：输入框里的内容被清掉（两者互斥）。
+    await wrapper.get('.webhook-form__clear-secret').setValue(true);
+    expect(valueOf(wrapper, '.webhook-form__secret')).toBe('');
+
+    // 又填了新密钥：「清除密钥」自动取消勾选 —— 否则新填的会被静默丢掉。
+    await wrapper.get('.webhook-form__secret').setValue('新密钥');
+    expect(
+      (wrapper.get('.webhook-form__clear-secret').element as HTMLInputElement).checked,
+    ).toBe(false);
+
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    const body = apiSend.mock.calls[0][2] as Record<string, unknown>;
+    expect(body.secret).toBe('新密钥');
+    wrapper.unmount();
+  });
+
+  it('新建时启用开关按作用域给预期初值（全局不勾、项目级勾上）', () => {
+    const global = mountForm({ scope: 'global' });
+    expect(
+      (global.get('.webhook-form__enabled').element as HTMLInputElement).checked,
+    ).toBe(false);
+    global.unmount();
+
+    const project = mountForm({ scope: 'project', projectId: 'project-1' });
+    expect(
+      (project.get('.webhook-form__enabled').element as HTMLInputElement).checked,
+    ).toBe(true);
+    project.unmount();
+  });
+
   it('编辑时勾「清除密钥」就发空串（后端的三态：null 不改、"" 清空）', async () => {
     const withSecret: Webhook = { ...webhook, hasSecret: true };
     const wrapper = mountForm({ webhook: withSecret });
