@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import type { Project } from '../api/types';
 import { formatRelativeTime } from '../lib/format';
+import { reorderToTarget } from '../lib/reorder';
 import type { ProjectSortMode } from '../stores/projects';
 
 /**
@@ -59,7 +60,12 @@ function onDragStart(id: string, event: DragEvent): void {
   event.dataTransfer?.setData('text/plain', id);
 }
 
-/** 拖到某个项目上：放下时按落点重排。 */
+/**
+ * 拖到某个项目上：放下时按落点重排。
+ *
+ * 落点语义是「顶替目标的位置」（见 {@link reorderToTarget}）：
+ * 拖到谁头上，谁就让位 —— 与项目管理页用的是同一套语义。
+ */
 function onDrop(targetId: string, event: DragEvent): void {
   event.preventDefault();
   const sourceId = draggingId.value ?? event.dataTransfer?.getData('text/plain') ?? '';
@@ -68,14 +74,12 @@ function onDrop(targetId: string, event: DragEvent): void {
     return;
   }
   const ids = props.projects.map((project) => project.id);
-  const from = ids.indexOf(sourceId);
-  const to = ids.indexOf(targetId);
-  if (from < 0 || to < 0) {
+  const next = reorderToTarget(ids, sourceId, targetId);
+  if (next.length !== ids.length || next.every((id, index) => id === ids[index])) {
+    // 顺序没变：不用发请求（后端会白白重写一遍 sort_order）。
     return;
   }
-  ids.splice(from, 1);
-  ids.splice(to, 0, sourceId);
-  emit('reorder', ids);
+  emit('reorder', next);
 }
 
 /** 拖完了（不管落在哪）。 */

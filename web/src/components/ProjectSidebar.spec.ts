@@ -3,7 +3,13 @@ import { mount } from '@vue/test-utils';
 import type { Project } from '../api/types';
 import ProjectSidebar from './ProjectSidebar.vue';
 
-/** 两个项目。 */
+/**
+ * 三个项目。
+ *
+ * 第三个项目的想法数是 0：「全部项目」的条数之和仍是 10（别的断言不受影响），
+ * 而三个项目才分得出拖拽落点的两种语义 ——
+ * 两条项目时「顶替目标」与「插到目标后面」的结果一模一样。
+ */
 const projects: Project[] = [
   {
     id: 'project-1',
@@ -19,6 +25,15 @@ const projects: Project[] = [
     name: '新项目',
     sortOrder: 1,
     ideaCount: 7,
+    lastActivityAt: '2026-11-10T10:00:00Z',
+    createdAt: '2026-11-01T10:00:00Z',
+    updatedAt: '2026-11-10T10:00:00Z',
+  },
+  {
+    id: 'project-3',
+    name: '第三个项目',
+    sortOrder: 2,
+    ideaCount: 0,
     lastActivityAt: '2026-11-10T10:00:00Z',
     createdAt: '2026-11-01T10:00:00Z',
     updatedAt: '2026-11-10T10:00:00Z',
@@ -90,13 +105,45 @@ describe('ProjectSidebar', () => {
     const wrapper = mountSidebar({ mode: 'manual' });
 
     const first = wrapper.get('[data-project-id="project-1"]');
-    const second = wrapper.get('[data-project-id="project-2"]');
+    const third = wrapper.get('[data-project-id="project-3"]');
     expect(first.classes()).toContain('is-draggable');
 
     await first.trigger('dragstart');
-    await second.trigger('drop');
+    await third.trigger('drop');
 
-    expect(wrapper.emitted('reorder')).toEqual([[['project-2', 'project-1']]]);
+    // 拖 project-1 到 project-3 上：project-1 落到 project-3 的正上方。
+    expect(wrapper.emitted('reorder')).toEqual([[['project-2', 'project-1', 'project-3']]]);
+  });
+
+  it('拖到谁头上就顶替谁（不是插到它后面）', async () => {
+    const wrapper = mountSidebar({ mode: 'manual' });
+
+    // 拖 project-1 到 project-3 上（中间隔着一个）：
+    // project-1 落到 project-3 的正上方（第二位），不是排到它后面。
+    await wrapper.get('[data-project-id="project-1"]').trigger('dragstart');
+    await wrapper.get('[data-project-id="project-3"]').trigger('drop');
+
+    expect(wrapper.emitted('reorder')).toEqual([[['project-2', 'project-1', 'project-3']]]);
+  });
+
+  it('往后拖也是顶替目标的位置', async () => {
+    const wrapper = mountSidebar({ mode: 'manual' });
+
+    // 拖 project-3 到 project-1 上：project-3 落到 project-1 的正上方（第一位）。
+    await wrapper.get('[data-project-id="project-3"]').trigger('dragstart');
+    await wrapper.get('[data-project-id="project-1"]').trigger('drop');
+
+    expect(wrapper.emitted('reorder')).toEqual([[['project-3', 'project-1', 'project-2']]]);
+  });
+
+  it('拖到紧邻的项目上顺序没变，不白发重排请求', async () => {
+    const wrapper = mountSidebar({ mode: 'manual' });
+
+    // project-1 已经在 project-2 的正上方了：拖过去顺序不变。
+    await wrapper.get('[data-project-id="project-1"]').trigger('dragstart');
+    await wrapper.get('[data-project-id="project-2"]').trigger('drop');
+
+    expect(wrapper.emitted('reorder')).toBeUndefined();
   });
 
   it('最近活动排序模式下不能拖动（顺序由后端定）', async () => {

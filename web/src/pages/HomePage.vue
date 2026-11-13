@@ -16,6 +16,7 @@ import { useDeepLink } from '../composables/useDeepLink';
 import { useScrollFollow } from '../composables/useScrollFollow';
 import { useTagMode } from '../composables/useTagMode';
 import { matchesFilter, sortIdeas, type IdeaFilter } from '../lib/filter';
+import { reportError } from '../lib/errors';
 import { applyEvent, applyResync, findAnchorIndex } from '../lib/merge';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
 import {
@@ -139,12 +140,6 @@ const { highlightedId, locateAnchor } = useDeepLink({
   isVisible: (id) => findAnchorIndex(visibleIdeas.value, id) >= 0,
   watchSources: [focusIdeaId, visibleIdeas, () => route.query.idea],
 });
-
-/** 把后端的错误变成一条提示。 */
-function reportError(error: unknown, fallback: string): void {
-  const message = error instanceof ApiError ? (error.detail ?? fallback) : fallback;
-  showToast(message, 'error');
-}
 
 /**
  * 首屏加载。
