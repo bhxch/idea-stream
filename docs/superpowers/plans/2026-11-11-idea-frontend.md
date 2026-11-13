@@ -646,6 +646,32 @@ app.MapFallbackToFile("index.html");  // history 模式的深链兜底
 
 **`MapFallbackToFile` 必须是最后一个映射** —— 它是 catch-all，放在它后面的 `MapXxxEndpoints()` 永远不会命中。
 
+**未匹配的 `/api/**` 不能被它吞掉（R163，2026-11-13，评审裁定）**：
+`MapFallbackToFile` 兜的是**所有**没匹配到端点的 GET —— 包括 `/api/xxx`。
+在本 task 之前（没有静态文件中间件、也没有这个 catch-all），未匹配路径回的是 404；
+接上之后变成 **200 + index.html**，而这个 API 是**给 agent 读的**（契约在
+`openapi/idea-v1.json`，agent 只看状态码会把「路径打错」当成成功）。
+
+修法：**在 `MapFallbackToFile` 之前**先注册一个只管 `/api` 的兜底，让未匹配的
+API 路径回 **404 + `application/problem+json`**（带 `code`），而不是 HTML：
+
+```csharp
+// 未匹配的 /api/** 要按 API 契约回 404 ProblemDetails，不能落到下面的 SPA 兜底：
+// 那个 catch-all 会把「路径打错」变成 200 + HTML，而这个 API 是给 agent 读的。
+app.MapFallback("/api/{**rest}", () => ApiResults.Run(() =>
+    throw new ApiException(404, "api_not_found", "请求的接口不存在。")));
+
+app.MapFallbackToFile("index.html");
+```
+
+配套：
+- 新错误码 `api_not_found` 要登记进 `server/IdeaApp/Contracts/ApiErrorCodes.cs`
+  （**必须**用 `ApiException` 抛 —— 守卫测试 `ApiErrorCodeTests` 扫的是 `ApiException` 调用点，
+  用别的办法产出会被当成「登记了却没人抛」）；
+- 登记之后要**重新导出 `openapi/idea-v1.json`**（契约里的错误码全集从 `ApiErrorCodes` 生成），
+  并同步 skill 计划的错误码对照表；
+- 补一条**hermetic** 的后端测试：「未匹配的 `/api/**` 回 404 + ProblemDetails，不是 HTML」。
+
 - [ ] **Step 2: 构建并检查产物**
 
 Run: `cd web && npm run build` → Expected: `server/IdeaApp/wwwroot/index.html` 与 `assets/` 存在
@@ -671,5 +697,5 @@ git commit -m "chore(web): 集成 Vite 构建产物到后端 wwwroot 并补齐�
 
 > ⚠️ **`server/IdeaApp/wwwroot/` 被 `.gitignore` 排除**（git 不跟踪空目录）——
 > 构建产物**不进仓库**，新克隆的仓库里要先 `npm run build` 才有产物。
-> `Program.cs` 里要**先 `Directory.CreateDirectory` 确保它存在**再挂 `UseStaticFiles` ——
-> 否则新克隆的仓库里静态文件中间件会抛 `DirectoryNotFoundException`（R114 已实测过这个坑）。
+> `Program.cs` 里要**先 `Directory.CreateDirectory` 确保它存在**、并**显式指一个
+> `PhysicalFileProvider`**，再挂 `UseStaticFiles` —— 只建目录不够，原因见 Step 1b。
