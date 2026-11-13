@@ -185,6 +185,28 @@ describe('WebhookForm', () => {
     wrapper.unmount();
   });
 
+  it('只填了空白时「清除密钥」的勾选不被取消（判空口径与保存时一致）', async () => {
+    const withSecret: Webhook = { ...webhook, hasSecret: true };
+    const wrapper = mountForm({ webhook: withSecret });
+
+    await wrapper.get('.webhook-form__clear-secret').setValue(true);
+    // 只输入一个空格：这不是「填了内容」，勾选不该被静默取消 ——
+    // 取消之后保存时又因 trim 后为空而发 null（= 不改），用户明确要的「清除」
+    // 就被丢掉了，两个控件都没起作用。
+    await wrapper.get('.webhook-form__secret').setValue(' ');
+    expect(
+      (wrapper.get('.webhook-form__clear-secret').element as HTMLInputElement).checked,
+    ).toBe(true);
+
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    const body = apiSend.mock.calls[0][2] as Record<string, unknown>;
+    // 明确要的「清除」发空串，不是 null（null = 不改）。
+    expect(body.secret).toBe('');
+    wrapper.unmount();
+  });
+
   it('新建时启用开关按作用域给预期初值（全局不勾、项目级勾上）', () => {
     const global = mountForm({ scope: 'global' });
     expect(

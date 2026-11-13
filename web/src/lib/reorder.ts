@@ -22,7 +22,7 @@
  *
  * @param ids 当前顺序（项目 id 列表）。
  * @param sourceId 被拖动的那个 id。
- * @param targetId 落点（被顶替的那个 id）。
+ * @param targetId 落点那个 id（规则见文件头部：往下拖落到它之后，往上拖落到它之前）。
  * @returns 新的顺序。源与目标相同、或有一个不在 `ids` 里时原样返回。
  */
 export function reorderToTarget(
