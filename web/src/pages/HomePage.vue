@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ApiError, apiGet, apiSend } from '../api/client';
 import { connectEvents, type EventStream } from '../api/events';
@@ -12,6 +12,7 @@ import MessageList from '../components/MessageList.vue';
 import ProjectSidebar from '../components/ProjectSidebar.vue';
 import ProjectTabs from '../components/ProjectTabs.vue';
 import { showToast } from '../components/ToastHost.vue';
+import { useDeepLink } from '../composables/useDeepLink';
 import { useScrollFollow } from '../composables/useScrollFollow';
 import { useTagMode } from '../composables/useTagMode';
 import { matchesFilter, sortIdeas, type IdeaFilter } from '../lib/filter';
@@ -96,20 +97,6 @@ const scrollContainer = ref<HTMLElement | null>(null);
  */
 const { atBottom, onNewContent, scrollToBottom, pendingCount } = useScrollFollow(scrollContainer);
 
-/** 要高亮的条目 id（深链定位或合并结果）。 */
-const highlightedId = ref<string | null>(null);
-
-/** 高亮多久之后去掉（毫秒）。 */
-const HIGHLIGHT_MS = 1500;
-
-/**
- * 已经定位过的条目 id：同一条不重复定位。
- *
- * `focusIdeaId` 不会自动复位（合并之后一直记着新条目的 id），
- * 所以这里自己记一份「定位过了」，列表再变也不会反复滚过去。
- */
-let locatedId: string | null = null;
-
 /** 真正生效的过滤条件：模式以 localStorage 里的为准。 */
 const activeFilter = computed<IdeaFilter>(() => ({ ...filter.value, tagMode: tagMode.value }));
 
@@ -122,6 +109,36 @@ const activeFilter = computed<IdeaFilter>(() => ({ ...filter.value, tagMode: tag
 const visibleIdeas = computed(() =>
   sortIdeas(ideas.value.filter((idea) => matchesFilter(idea, activeFilter.value))),
 );
+
+/**
+ * **数据集**维度的过滤条件：只有项目维度。
+ *
+ * 状态与标签的过滤交给显示层（`visibleIdeas`）做。
+ *
+ * 为什么不能把显示层的过滤条件直接交给事件合并（`applyEvent`）：
+ * 合并是作用在**数据集**（`ideas.value`）上的 —— 用显示层的条件合并，
+ * 会把「改成不符合当前过滤」的条目从数据集里**彻底删掉**，
+ * 用户切回别的过滤条件时那条就找不回来了（得整表重拉才回来）。
+ * 这与「过滤在客户端做」的前提冲突。
+ */
+const datasetFilter = computed<IdeaFilter>(() => ({
+  ...activeFilter.value,
+  status: 'all',
+  tags: [],
+}));
+
+/**
+ * 深链定位：`?idea=<id>` 打开后滚到那条并高亮。
+ *
+ * 合并出来的新条目也走这一套（`focusIdeaId`）。
+ * 定位发生在 DOM 更新之后（见 `useDeepLink` 的说明）。
+ */
+const { highlightedId, locateAnchor } = useDeepLink({
+  container: scrollContainer,
+  anchorIds: () => [focusIdeaId.value, deepLinkId()],
+  isVisible: (id) => findAnchorIndex(visibleIdeas.value, id) >= 0,
+  watchSources: [focusIdeaId, visibleIdeas, () => route.query.idea],
+});
 
 /** 把后端的错误变成一条提示。 */
 function reportError(error: unknown, fallback: string): void {
@@ -160,7 +177,11 @@ async function init(): Promise<void> {
   // 打开页面就看到最新的一条（列表是从上往下长的，底部才是当下）。
   // 等一拍再滚：内容这时才刚进 DOM。
   await nextTick();
-  scrollToBottom();
+  // 有深链锚点时**不能**滚到底：那会把刚定位到的那条挤出视野。
+  // 定位由深链逻辑负责（它也在 DOM 更新之后才动手）。
+  if (!locateAnchor()) {
+    scrollToBottom();
+  }
 }
 
 /** 拉取全部标签。 */
@@ -246,7 +267,12 @@ async function onReorderProjects(ids: string[]): Promise<void> {
   } catch (error) {
     reportError(error, '重排项目失败');
     // 顺序没改成功，本地显示的顺序可能已经跟后端对不上了：拉回来。
-    await loadProjects();
+    // 拉取也可能失败 —— 那就再报一条，别让它变成没人管的 rejection。
+    try {
+      await loadProjects();
+    } catch (reloadError) {
+      reportError(reloadError, '加载项目失败');
+    }
   }
 }
 
@@ -369,7 +395,8 @@ async function onSubmit(content: string): Promise<boolean> {
     applyLocalUpsert(created);
     if (visibleIdeas.value.length > before) {
       // 自己刚记的那条：贴底就跟着滚（不然它落在屏幕外），没贴底就只记一笔。
-      onNewContent();
+      // 滚动在 DOM 更新之后才做（`onNewContent` 内部会等）。
+      void onNewContent();
     }
     return true;
   } catch (error) {
@@ -691,8 +718,8 @@ const queuedEvents: IdeaEvent[] = [];
 /**
  * 把一条事件合并进列表。
  *
- * 想法事件走 {@link applyEvent}（按当前过滤条件决定显不显示）；
- * 项目事件归项目列表管（这里只更新项目，不动想法）。
+ * 想法事件走 {@link applyEvent}（按**数据集**的过滤条件决定显不显示 ——
+ * 只有项目维度，状态/标签留给显示层）；项目事件归项目列表管（这里只更新项目，不动想法）。
  */
 function applyEventToList(event: IdeaEvent): void {
   if (event.type.startsWith('project.')) {
@@ -702,10 +729,11 @@ function applyEventToList(event: IdeaEvent): void {
   // 想法变了，它所属项目的条数也跟着变：事件快照里没有条数，只能自己加减。
   adjustProjectCount(event.project?.id, countDelta(event));
   const before = visibleIdeas.value.length;
-  ideas.value = applyEvent(ideas.value, event, activeFilter.value);
+  ideas.value = applyEvent(ideas.value, event, datasetFilter.value);
   if (visibleIdeas.value.length > before) {
     // 有新条目进来了：贴底就跟着滚，没贴底就只记一笔（「↓ 有 N 条新内容」）。
-    onNewContent();
+    // 滚动在 DOM 更新之后才做（`onNewContent` 内部会等）。
+    void onNewContent();
   }
 }
 
@@ -784,8 +812,20 @@ async function reloadList(load: () => Promise<void>): Promise<void> {
  *
  * 快照里只有 id、名字与排序位置（没有想法计数与最近活动时间），
  * 所以能就地更新的就地更新，剩下的重新拉一次项目列表。
+ *
+ * 这一层**兜住所有失败**：事件是异步送来的，抛出去就变成没人管的
+ * Promise rejection（页面上什么也看不到），失败必须给一条提示。
  */
 async function onProjectEvent(event: IdeaEvent): Promise<void> {
+  try {
+    await applyProjectEvent(event);
+  } catch (error) {
+    reportError(error, '处理项目变更失败');
+  }
+}
+
+/** 项目事件的真正处理（失败由 {@link onProjectEvent} 兜底）。 */
+async function applyProjectEvent(event: IdeaEvent): Promise<void> {
   const snapshot = event.project;
   if (!snapshot) {
     return;
@@ -795,14 +835,22 @@ async function onProjectEvent(event: IdeaEvent): Promise<void> {
     projects.value = projects.value.filter((project) => project.id !== snapshot.id);
     if (currentProjectId.value === snapshot.id) {
       // 当前就在这个项目里：切回「全部项目」，范围变了要重新拉列表。
-      await switchProject(null);
+      // 切不过去时列表还停在已删项目的旧数据上 —— 得告诉用户，别静默停在错的数据上。
+      const result = await switchProject(null);
+      if (!result.ok) {
+        reportError(result.error, '切换项目失败');
+      }
     }
     return;
   }
   const index = projects.value.findIndex((project) => project.id === snapshot.id);
   if (index < 0) {
     // 本地没有这个项目（新建的，或从回收站恢复的）：拉一次完整的列表。
-    await loadProjects();
+    try {
+      await loadProjects();
+    } catch (error) {
+      reportError(error, '加载项目失败');
+    }
     return;
   }
   // 就地更新：名字与排序位置快照里都有。
@@ -843,58 +891,6 @@ function deepLinkId(): string | null {
   const value = route.query.idea;
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
-
-/** 在滚动容器里找到那条想法的 DOM 元素。 */
-function findIdeaElement(id: string): HTMLElement | null {
-  const container = scrollContainer.value;
-  if (!container) {
-    return null;
-  }
-  // 不用选择器拼 id（深链里的 id 是用户可控的，拼进选择器可能抛异常）：
-  // 直接比属性值。
-  for (const element of container.querySelectorAll<HTMLElement>('[data-idea-id]')) {
-    if (element.dataset.ideaId === id) {
-      return element;
-    }
-  }
-  return null;
-}
-
-/** 滚到那条想法并高亮它。 */
-function scrollToIdea(id: string): void {
-  highlightedId.value = id;
-  findIdeaElement(id)?.scrollIntoView?.({ block: 'center' });
-  window.setTimeout(() => {
-    if (highlightedId.value === id) {
-      highlightedId.value = null;
-    }
-  }, HIGHLIGHT_MS);
-}
-
-/**
- * 定位要滚动过去的那条：合并出来的新条目优先，其次是深链。
- *
- * 找不到就**静默忽略**：那条可能已经被删了，或者被当前过滤条件挡住了 ——
- * 不报错、不白屏（深链是别人发过来的链接，不该因此把页面搞坏）。
- */
-function locateAnchor(): void {
-  for (const id of [focusIdeaId.value, deepLinkId()]) {
-    if (!id || id === locatedId) {
-      continue;
-    }
-    if (findAnchorIndex(visibleIdeas.value, id) < 0) {
-      continue;
-    }
-    locatedId = id;
-    scrollToIdea(id);
-    return;
-  }
-}
-
-// 列表变了就重新看一眼要不要定位（深链要等列表加载完才知道那条在不在）。
-watch([focusIdeaId, visibleIdeas], () => {
-  locateAnchor();
-});
 
 onMounted(() => {
   void init();

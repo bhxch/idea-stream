@@ -6,7 +6,7 @@ import type { Idea, IdeaEvent, Project } from '../api/types';
 import MessageList from '../components/MessageList.vue';
 import ToastHost from '../components/ToastHost.vue';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
-import { focusIdeaId } from '../stores/ideas';
+import { focusIdeaId, ideas } from '../stores/ideas';
 import { currentProjectId } from '../stores/projects';
 
 /**
@@ -135,6 +135,10 @@ beforeEach(async () => {
   vi.stubGlobal('EventSource', FakeEventSource);
   currentProjectId.value = null;
   focusIdeaId.value = null;
+  // 想法列表是模块级单例（跨用例共享）：不清的话，上一个用例留下的数据
+  // 会让下一个用例一上来就渲染出条目 —— 深链定位那种「等 DOM 更新」的用例
+  // 会被这个残留状态掩盖（元素一开始就在 DOM 里，定位自然「成功」）。
+  ideas.value = [];
   apiGet.mockImplementation((path: string) => {
     switch (path) {
       case '/projects':
@@ -202,11 +206,69 @@ function makeEvent(type: string, overrides: Partial<IdeaEvent> = {}): IdeaEvent 
  *
  * jsdom 不做布局：scrollHeight/clientHeight 永远是 0，
  * 滚动跟随会以为一直贴着底部。这里自己钉上这几个属性。
+ *
+ * 内容高度**跟着 DOM 里已有的条目数走**：真实浏览器就是这样 ——
+ * 条目渲染出来之后内容才变高。所以「滚到底」必须发生在渲染之后，
+ * 否则算出来的位置是旧的（新条目落在视野外）。
  */
 function makeScrollable(element: HTMLElement, scrollTop: number): void {
-  Object.defineProperty(element, 'scrollHeight', { value: 1000, configurable: true });
+  Object.defineProperty(element, 'scrollHeight', {
+    configurable: true,
+    get: () => 400 + element.querySelectorAll('.idea').length * 300,
+  });
   Object.defineProperty(element, 'clientHeight', { value: 400, configurable: true });
   Object.defineProperty(element, 'scrollTop', { value: scrollTop, writable: true, configurable: true });
+}
+
+/**
+ * 把「滚动盒子」钉在原型上。
+ *
+ * 首屏的滚动发生在挂载后不久，那时元素上还没来得及打桩 ——
+ * 只有原型级的桩才能从头就生效（用来断言「有没有滚到底」）。
+ */
+function stubLayout(): { restore: () => void } {
+  const originalHeight = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+  const originalClient = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+  Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, get: () => 1000 });
+  Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, get: () => 400 });
+  return {
+    restore(): void {
+      if (originalHeight) {
+        Object.defineProperty(Element.prototype, 'scrollHeight', originalHeight);
+      }
+      if (originalClient) {
+        Object.defineProperty(Element.prototype, 'clientHeight', originalClient);
+      }
+    },
+  };
+}
+
+/**
+ * jsdom 里没有 `scrollIntoView`（浏览器才有）：打一个桩，
+ * 才能断言「确实滚到那条去了」。
+ */
+function stubScrollIntoView(): ReturnType<typeof vi.fn> {
+  const spy = vi.fn();
+  Object.defineProperty(Element.prototype, 'scrollIntoView', {
+    configurable: true,
+    writable: true,
+    value: spy,
+  });
+  return spy;
+}
+
+/** 摘掉 `scrollIntoView` 的桩。 */
+function restoreScrollIntoView(): void {
+  Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+}
+
+/** 点状态过滤按钮（全部 / 未完成 / 已完成）。 */
+async function clickStatus(wrapper: VueWrapper, label: string): Promise<void> {
+  const button = wrapper
+    .findAll('.filter-bar__status-button')
+    .find((item) => item.text() === label);
+  expect(button, `找不到状态过滤按钮「${label}」`).toBeTruthy();
+  await button!.trigger('click');
 }
 
 describe('HomePage', () => {
@@ -1209,5 +1271,185 @@ describe('HomePage', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('深链 ?idea=<id> 打开后会滚到那条（scrollIntoView 真的被调用）', async () => {
+    // 回归用例：定位发生在重渲染之前时，条目还没进 DOM，
+    // 按 id 找元素根本找不到 —— 深链看起来就是「只高亮、不滚动」。
+    const scrollIntoView = stubScrollIntoView();
+    try {
+      await router.push('/?idea=idea-1');
+      const wrapper = mount(HomePage);
+      await flushPromises();
+
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      // 滚的正是那一条。
+      expect(scrollIntoView.mock.instances[0]).toBe(wrapper.get('.idea').element);
+      wrapper.unmount();
+    } finally {
+      restoreScrollIntoView();
+    }
+  });
+
+  it('有深链锚点时打开页面不会滚到底（锚点不被挤出视野）', async () => {
+    const layout = stubLayout();
+    try {
+      await router.push('/?idea=idea-1');
+      const wrapper = mount(HomePage);
+      await flushPromises();
+
+      const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+      // 滚到底会是 1000 - 400 = 600；有锚点时不能那样滚。
+      expect(scroller.scrollTop).not.toBe(600);
+      wrapper.unmount();
+    } finally {
+      layout.restore();
+    }
+  });
+
+  it('没有深链锚点时打开页面会滚到底（最新的一条在视野里）', async () => {
+    const layout = stubLayout();
+    try {
+      const wrapper = mount(HomePage);
+      await flushPromises();
+
+      const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+      expect(scroller.scrollTop).toBe(600);
+      wrapper.unmount();
+    } finally {
+      layout.restore();
+    }
+  });
+
+  it('SSE 来新内容时贴着底部就跟着滚到底（滚到 DOM 更新后的新底部）', async () => {
+    // 回归用例：滚动发生在 DOM 更新之前时，内容高度还是旧的，
+    // 滚过去的位置不对 —— 新条目落在视野外。
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+    // 一条内容时：高度 400 + 300 = 700，贴底的位置是 300。
+    makeScrollable(scroller, 300);
+    scroller.dispatchEvent(new Event('scroll'));
+
+    const created: Idea = {
+      ...idea,
+      id: 'idea-new',
+      content: '别处记的',
+      updatedAt: '2026-11-12T10:00:00Z',
+    };
+    FakeEventSource.instances[0].emit('idea.created', makeEvent('idea.created', { idea: created }), 'e1');
+    await flushPromises();
+
+    // 两条内容：高度 400 + 600 = 1000，贴底的位置是 600。
+    expect(scroller.scrollTop).toBe(600);
+    wrapper.unmount();
+  });
+
+  it('自己记的一条也会滚进视野（滚到 DOM 更新后的新底部）', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+    makeScrollable(scroller, 300);
+    scroller.dispatchEvent(new Event('scroll'));
+
+    apiSend.mockResolvedValue({
+      ...idea,
+      id: 'idea-new',
+      content: '新记的',
+      updatedAt: '2026-11-12T10:00:00Z',
+    });
+
+    const textarea = wrapper.get('.composer textarea');
+    await textarea.setValue('新记的');
+    await textarea.trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+
+    // 自己刚记的那条也要在视野里（滚到两条内容的新底部）。
+    expect(scroller.scrollTop).toBe(600);
+    wrapper.unmount();
+  });
+
+  it('项目列表重拉失败时给提示（不静默吞掉）', async () => {
+    const wrapper = mount(HomePage);
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    // 让下一次拉项目列表失败。
+    apiGet.mockImplementation((path: string) => {
+      if (path === '/projects') {
+        return Promise.reject(new Error('boom'));
+      }
+      if (path === '/ideas') {
+        return Promise.resolve([idea]);
+      }
+      return Promise.resolve([]);
+    });
+
+    // 一个本地没有的项目（别处新建的）→ 需要重拉项目列表。
+    FakeEventSource.instances[0].emit(
+      'project.created',
+      makeEvent('project.created', { project: { id: 'project-new', name: '新项目', sortOrder: 2 } }),
+      'e1',
+    );
+    await flushPromises();
+
+    // 提示队列是模块级单例（跨用例共享）：看有没有这条提示，别只看最后一条。
+    expect(toastHost.findAll('.toast').map((toast) => toast.text()).join('\n')).toContain('加载项目失败');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
+  it('当前项目被删、切回全部项目失败时给提示', async () => {
+    const wrapper = mount(HomePage);
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    // 先切到 project-1。
+    await selectProject(wrapper, 'project-1');
+    await flushPromises();
+
+    // 让下一次拉列表失败（切回「全部项目」要用它）。
+    apiGet.mockImplementation((path: string) => {
+      if (path === '/ideas') {
+        return Promise.reject(new Error('boom'));
+      }
+      return Promise.resolve([]);
+    });
+
+    FakeEventSource.instances[0].emit(
+      'project.deleted',
+      makeEvent('project.deleted', { project: { id: 'project-1', name: '老项目', sortOrder: 0 } }),
+      'e1',
+    );
+    await flushPromises();
+
+    // 列表还停在已删项目的旧数据上 —— 这种情况必须给用户一条提示。
+    expect(toastHost.findAll('.toast').map((toast) => toast.text()).join('\n')).toContain('切换项目失败');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
+  it('改成不符合当前状态过滤的条目不会被从数据集里删掉（切回过滤条件还在）', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // 切到「未完成」视图。
+    await clickStatus(wrapper, '未完成');
+    await flushPromises();
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+
+    // 别处把它标记完成了：它不该再出现在「未完成」视图里。
+    const done: Idea = { ...idea, done: true, updatedAt: '2026-11-12T10:00:00Z' };
+    FakeEventSource.instances[0].emit('idea.updated', makeEvent('idea.updated', { idea: done }), 'e1');
+    await flushPromises();
+    expect(wrapper.findAll('.idea')).toHaveLength(0);
+
+    // 切回「全部」：那条还在（不能因为中途的过滤被从数据集里删掉）。
+    await clickStatus(wrapper, '全部');
+    await flushPromises();
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+    wrapper.unmount();
   });
 });
