@@ -1452,4 +1452,106 @@ describe('HomePage', () => {
     expect(wrapper.findAll('.idea')).toHaveLength(1);
     wrapper.unmount();
   });
+
+  it('URL 带 ?idea= 时，合并出来的新条目仍被定位（滚动 + 高亮）', async () => {
+    // 回归用例：只记「最后定位过的那一条」的话，深链 id 一直留在 URL 里，
+    // 合并结果（候选里优先级更高）就永远轮不上定位 —— 用户合并完看不到那条。
+    const scrollIntoView = stubScrollIntoView();
+    try {
+      await router.push('/?idea=idea-a');
+      apiGet.mockImplementation((path: string) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            return Promise.resolve([ideaA, ideaB]);
+          default:
+            return Promise.resolve([]);
+        }
+      });
+      const merged: Idea = { ...ideaA, id: 'idea-merged', content: '甲\n\n乙' };
+      apiSend.mockImplementation((_method: string, path: string) =>
+        path === '/ideas/merge' ? Promise.resolve(merged) : Promise.resolve([ideaA, ideaB]),
+      );
+
+      const wrapper = mount(HomePage);
+      await flushPromises();
+
+      // 深链那条先定位到了。
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+      // 合并两条。
+      const checkboxes = wrapper.findAll('input.select');
+      await checkboxes[0].setValue(true);
+      await checkboxes[1].setValue(true);
+      await wrapper.get('.batch-bar button.action--merge').trigger('click');
+      await flushPromises();
+      await wrapper.get('button.action--confirm').trigger('click');
+      await flushPromises();
+
+      // 合并出来的新条目被定位了（滚过去 + 高亮）。
+      const mergedElement = wrapper.get('[data-idea-id="idea-merged"]').element;
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(scrollIntoView.mock.instances[1]).toBe(mergedElement);
+      expect(wrapper.get('[data-idea-id="idea-merged"]').classes()).toContain('highlight');
+      wrapper.unmount();
+    } finally {
+      restoreScrollIntoView();
+    }
+  });
+
+  it('看不见但还勾着的条目不计入批量条数、也不被批量操作处理', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([ideaA, ideaB]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+    apiSend.mockResolvedValue([ideaA, ideaB]);
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // 只看「未完成」。
+    await clickStatus(wrapper, '未完成');
+    await flushPromises();
+
+    // 两条都勾上。
+    const checkboxes = wrapper.findAll('input.select');
+    await checkboxes[0].setValue(true);
+    await checkboxes[1].setValue(true);
+    expect(wrapper.get('.batch-bar .count').text()).toContain('已选 2 条');
+
+    // 另一台设备把其中一条标记完成了：它在「未完成」视图里消失了，
+    // 但勾选还留着（用户看不见它，也没法取消勾选）。
+    const doneIdea: Idea = { ...ideaB, done: true, updatedAt: '2026-11-12T10:00:00Z' };
+    FakeEventSource.instances[0].emit('idea.updated', makeEvent('idea.updated', { idea: doneIdea }), 'e1');
+    await flushPromises();
+
+    // 看不见的那条不计入条数。
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+    expect(wrapper.get('.batch-bar .count').text()).toContain('已选 1 条');
+
+    // 批量操作也只处理看得见的那条。
+    await wrapper.get('.batch-bar button.action--complete').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).toHaveBeenCalledWith('POST', '/ideas/bulk/complete', {
+      ids: ['idea-a'],
+      done: true,
+    });
+    wrapper.unmount();
+  });
 });

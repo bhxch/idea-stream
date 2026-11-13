@@ -582,18 +582,35 @@ function onToggleSelect(id: string): void {
 }
 
 /**
- * 勾选中的想法，按列表顺序。
+ * 勾选中**且看得见**的想法，按列表顺序。
+ *
+ * 「看得见」= 在当前过滤条件下的可见列表里（`visibleIdeas`）。
+ *
+ * 为什么不是直接从数据集（`ideas.value`）里取：
+ * 数据集不再剔除过滤项（F4 的修复），所以里面可能有「用户在视图里看不见、
+ * 但还勾着」的条目 —— 比如它在别的设备上被标记完成了，在「未完成」视图里消失了，
+ * 勾选却还留着。那种条目既不该计入批量条数，也不该被批量操作处理
+ * （用户根本没看见它，却会被批量标记完成/删除）。
  *
  * 顺序与后端合并时的拼接顺序一致（`updated_at ASC, id ASC`），
  * 所以合并对话框里看到的拼接结果就是后端会拼出来的那份。
  */
 const selectedIdeas = computed(() =>
-  sortIdeas(ideas.value.filter((idea) => selectedIds.value.has(idea.id))),
+  visibleIdeas.value.filter((idea) => selectedIds.value.has(idea.id)),
 );
+
+/**
+ * 批量操作真正要处理的 id。
+ *
+ * 口径与批量条数一致：**看得见且勾选**的那些（见 {@link selectedIdeas}）。
+ */
+function selectedVisibleIds(): string[] {
+  return selectedIdeas.value.map((idea) => idea.id);
+}
 
 /** 批量标记完成 / 撤销完成。 */
 async function onBulkComplete(done: boolean): Promise<void> {
-  const ids = [...selectedIds.value];
+  const ids = selectedVisibleIds();
   if (ids.length === 0 || batchBusy.value) {
     return;
   }
@@ -618,7 +635,7 @@ async function onBulkComplete(done: boolean): Promise<void> {
  *   失败时用户敲的标签得留着，能直接重试）。
  */
 async function onBulkAddTags(tags: string[], ack: (ok: boolean) => void): Promise<void> {
-  const ids = [...selectedIds.value];
+  const ids = selectedVisibleIds();
   if (ids.length === 0 || tags.length === 0 || batchBusy.value) {
     ack(false);
     return;
@@ -648,7 +665,7 @@ async function onBulkAddTags(tags: string[], ack: (ok: boolean) => void): Promis
  * 删掉的条目不在列表里了，勾选也就没意义。
  */
 async function onBulkDelete(): Promise<void> {
-  const ids = [...selectedIds.value];
+  const ids = selectedVisibleIds();
   if (ids.length === 0 || batchBusy.value) {
     return;
   }
@@ -976,10 +993,13 @@ onBeforeUnmount(() => {
         <!--
           批量操作条**随内容流**排（不 fixed）：固定在底部会盖住下面的输入框，
           页面滚到底部时用户想接着记一条都点不到「记下」。
+
+          条数与批量操作的口径一致：**看得见且勾选**的那些
+          （看不见的勾选不算数，见 selectedIdeas）。
         -->
         <BatchBar
-          v-if="selectedIds.size > 0"
-          :count="selectedIds.size"
+          v-if="selectedIdeas.length > 0"
+          :count="selectedIdeas.length"
           :busy="batchBusy"
           :suggest="suggestTags"
           @complete="onBulkComplete(true)"
