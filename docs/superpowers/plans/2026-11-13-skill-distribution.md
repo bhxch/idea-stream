@@ -122,6 +122,8 @@ skills/idea-manager/references/openapi.json      契约副本（服务端实时�
     - `files`：递归枚举的全部文件（跳过路径里含 `__pycache__` 段的），按 path 升序。
     - `sha256`：文件字节的 sha256 十六进制小写串（与 `fetch.py` 侧算法一致：先算文件字节的 sha256，再对 `(path + "\n" + sha256)` 按 path 升序拼接的字节串取 sha256）。
   - `GET /skill/idea-manager/{**path}` → 200 + 文件内容；`.md` → `text/markdown; charset=utf-8`，`.json` → `application/json; charset=utf-8`，其余 → `text/plain; charset=utf-8`。
+    - **分发副本目录不存在** → 404 `skill_not_distributed`；**目录在但文件不在** → 404 `skill_file_not_found`。
+      （目录判定由端点单独做：`TryResolveFile` 只管路径解析与文件存在性。）
   - `GET /skill/{**rest}` → 404 + ProblemDetails，`code=skill_endpoint_not_found`。
   - `SkillCatalog`：`public SkillCatalog(string configuredPath)`、`public string Root { get; }`、`public SkillManifestDto BuildManifest()`、`public bool TryResolveFile(string relativePath, out string fullPath)`。
     - `configuredPath` 是相对路径时按 `AppContext.BaseDirectory` 解析。
@@ -234,7 +236,9 @@ public static IEndpointRouteBuilder MapSkillEndpoints(this IEndpointRouteBuilder
 
 三个端点：
 - `GET /skill/idea-manager/version` → `Results.Json(catalog.BuildManifest(), IdeaJsonContext.Default.SkillManifestDto)`，`.Produces<SkillManifestDto>(200)`。
-- `GET /skill/idea-manager/{**path}` → 找到就 `Results.Text(内容, 内容类型)`；找不到就抛 `ApiException(404, "skill_file_not_found", …)`。`.Produces<string>(200)` 与 `.ProducesApiProblem(404, "skill_file_not_found", "skill_not_distributed")`。
+- `GET /skill/idea-manager/{**path}` → 先判分发副本目录在不在（不在 → `ApiException(404, "skill_not_distributed", …)`）；
+  再 `TryResolveFile`：找到就 `Results.Text(内容, 内容类型)`；找不到就抛 `ApiException(404, "skill_file_not_found", …)`。
+  `.Produces<string>(200)` 与 `.ProducesApiProblem(404, "skill_file_not_found", "skill_not_distributed")`。
 - `GET /skill/{**rest}` → 抛 `ApiException(404, "skill_endpoint_not_found", …)`。
 
 `server/IdeaApp/Program.cs`：
@@ -364,7 +368,8 @@ class FetchTest(unittest.TestCase):
     def test_prints_an_absolute_server_path(self)    # fetch.py /openapi/v1.json → 打服务端那个路径
     def test_syncs_a_new_version_and_replaces_the_cache(self)
         # 服务端换版本（内容变了 → version 变了）→ 再取一次拿到新内容，
-        # 且缓存目录里只有一个版本目录（旧的那个被清掉或至少不再是当前版本）。
+        # 且**当前版本目录**里是新版内容。
+        # 不断言「缓存里只有一个版本目录」：旧版本要留着（同步失败时还要靠它退）。
     def test_keeps_the_old_version_when_a_hash_does_not_match(self)
         # 服务端返回的 sha256 与实际内容对不上 → 退出码 1，stderr 有 skill_integrity_error，
         # 且旧版本目录仍在、内容没被覆盖。
@@ -809,8 +814,10 @@ agent 现在用 curl + 服务端实时发的 /openapi/v1.json 直接调 API。
 // 每个 (方法, 路径) 都必须在契约里存在。
 
 [Fact] public void Manual_error_code_table_matches_the_registry()
-// errors.md 的「## 服务端错误码」表里第一列的 code 集合
+// errors.md 的「## 服务端错误码」表里**表格行**的 code 集合
 // 必须恰好等于 ApiErrorCodes.All 的 code 集合（不多不少）。
+// internal_error 是服务端兜底码（不在 ApiErrorCodes.All 里），在正文里说明即可，
+// 不要放进这张表的表格行 —— 否则集合对不上。
 
 [Fact] public void Shell_frontmatter_matches_the_content_source()
 // 薄壳与索引页的 frontmatter 块逐字相同。
