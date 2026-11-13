@@ -22,9 +22,22 @@ namespace IdeaApp.Endpoints;
 /// 而契约（openapi/idea-v1.json）给这些端点声明的是 400 + ProblemDetails ——
 /// agent 按契约读，遇到畸形 body 会拿到一个空 body，
 /// 稳定的业务错误码在这条路径上整个失效。</item>
+/// <item><b>媒体类型不对</b>：Content-Type 不是 application/json ——
+/// 同样是在绑定 body 阶段抛的 <see cref="BadHttpRequestException"/>（415），
+/// 由这里转成 415 + ProblemDetails + <c>code=unsupported_media_type</c>。
+/// （端点侧的 <see cref="ApiProblemExtensions.RejectsNonJsonBodyWithProblemDetails"/>
+/// 是这条路径能走通的前提：没有它，路由层会先把这个端点毙掉。）</item>
 /// <item><b>其余未预期的异常</b>：500 + <c>code=internal_error</c>，
 /// 真实原因只进日志，不进响应体（与 <see cref="ApiResults.Run"/> 的口径一致）。</item>
 /// </list>
+///
+/// <para>
+/// <b>413（请求体太大）不在这里</b>：Kestrel 在**读 body 阶段**就把超大请求拒掉
+/// （默认上限 30MB），框架捕获 <see cref="BadHttpRequestException"/> 后
+/// <b>只设一个状态码就返回</b>（不看 <c>ThrowOnBadRequest</c>）——
+/// 真实结果是 413 + **空响应体** + 没有 <c>code</c>，
+/// 走不到这个 handler。所以契约里不声明 413，错误码清单里也没有它。
+/// </para>
 ///
 /// <para>
 /// <b>不要绕开 <see cref="ApiResults.Run"/></b>：端点里的业务异常已经由它处理，
@@ -95,11 +108,10 @@ public sealed class ApiExceptionHandler(ILogger<ApiExceptionHandler> logger) : I
         BadHttpRequestException bad when bad.StatusCode == StatusCodes.Status400BadRequest =>
             new ApiException(400, "invalid_request_body", "请求体不是合法的 JSON（模型绑定阶段的失败）。"),
 
-        // 413：请求体超过大小限制。
-        BadHttpRequestException bad when bad.StatusCode == StatusCodes.Status413PayloadTooLarge =>
-            new ApiException(413, "request_body_too_large", "请求体超过大小限制。"),
-
         // 415：Content-Type 不是 JSON。
+        //
+        // 413 不在这里：Kestrel 在读 body 阶段就把超大请求拒掉了，
+        // 框架只设状态码就返回，走不到这个 handler（见类注释）。
         BadHttpRequestException bad when bad.StatusCode == StatusCodes.Status415UnsupportedMediaType =>
             new ApiException(415, "unsupported_media_type", "请求的 Content-Type 不是 application/json。"),
 

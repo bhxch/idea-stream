@@ -252,6 +252,7 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 | `inbox_not_deletable` | 内置收件箱不能删 | 换个项目 |
 | `invalid_content` | 正文为空或全空白 | 补上正文再提交 |
 | `invalid_request_body` | 请求体不是合法 JSON（模型绑定阶段就失败了） | 检查发出去的 body 是不是一个 JSON 文档 |
+| `unsupported_media_type` | Content-Type 不是 application/json（415） | 带上 `Content-Type: application/json` 再发 |
 | `invalid_project_name` | 项目名为空或全空白 | 补上名字 |
 | `invalid_reorder_ids` | 重排的 ids 为空 | 别发空的 reorder |
 | `invalid_sort_mode` | 排序方式不是 `recent` / `manual` | 用这两个值之一 |

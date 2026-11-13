@@ -20,6 +20,17 @@ internal static class RepoPaths
     /// <summary>提交进仓库的 OpenAPI 契约文件。</summary>
     public static string Contract { get; } = Path.Combine(Root, "openapi", "idea-v1.json");
 
+    /// <summary>
+    /// skill 里那份契约副本（<c>skills/idea-manager/references/openapi.json</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 它是 <see cref="Contract"/> 的**逐字副本**：agent 读的是 skill 目录里那份，
+    /// 两份不一致时 agent 拿到的契约与应用实际暴露的接口对不上，
+    /// 而且不会有任何编译错误或测试失败。
+    /// </remarks>
+    public static string SkillContract { get; } =
+        Path.Combine(Root, "skills", "idea-manager", "references", "openapi.json");
+
     /// <summary>应用的端点源码目录。</summary>
     public static string Endpoints { get; } = Path.Combine(AppSource, "Endpoints");
 

@@ -128,6 +128,89 @@ public sealed class ErrorContractTests
     }
 
     /// <summary>
+    /// Content-Type 不是 JSON → 415 + ProblemDetails + <c>unsupported_media_type</c>。
+    ///
+    /// <para>
+    /// 这条路径容易被框架改坏：.NET 10 的路由层会给「带 JSON body 的端点」加一条
+    /// <c>AcceptsMetadata</c>，Content-Type 不对时**在路由层就把端点毙掉** ——
+    /// 要么回一个**空的** 415（没有 problem+json、没有 code），
+    /// 要么落到 <c>/api/{**rest}</c> 兜底、回一个语义完全不对的 404。
+    /// 端点侧的 <c>RejectsNonJsonBodyWithProblemDetails()</c> 就是把这条路径拉回来的：
+    /// 请求会真的进到端点，框架在绑定 body 时抛 415，再由 <see cref="ApiExceptionHandler"/>
+    /// 统一转成 ProblemDetails。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("POST", "/api/ideas")]
+    [InlineData("PATCH", "/api/ideas/{id}")]
+    [InlineData("PUT", "/api/ideas/{id}/tags")]
+    [InlineData("POST", "/api/ideas/{id}/complete")]
+    [InlineData("POST", "/api/ideas/bulk/complete")]
+    [InlineData("POST", "/api/ideas/bulk/tags")]
+    [InlineData("POST", "/api/ideas/bulk/delete")]
+    [InlineData("POST", "/api/ideas/merge")]
+    [InlineData("POST", "/api/projects")]
+    [InlineData("PATCH", "/api/projects/{id}")]
+    [InlineData("POST", "/api/projects/reorder")]
+    [InlineData("PUT", "/api/settings/{key}")]
+    [InlineData("POST", "/api/webhooks")]
+    [InlineData("PATCH", "/api/webhooks/{id}")]
+    public async Task A_body_endpoint_rejects_a_non_json_content_type_with_415(string method, string path)
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(new HttpMethod(method), ConcretePath(path))
+        {
+            Content = new StringContent("hello", Encoding.UTF8, "text/plain")
+        };
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+
+        Assert.Equal(415, problem.GetProperty("status").GetInt32());
+        Assert.Equal("unsupported_media_type", problem.GetProperty("code").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(problem.GetProperty("detail").GetString()));
+    }
+
+    /// <summary>
+    /// 没有请求体的端点不受这条规则影响：Content-Type 是什么都无所谓。
+    /// </summary>
+    /// <remarks>
+    /// 框架只会给「带 JSON body 的端点」加那条 AcceptsMetadata，
+    /// 没有 body 的端点不该被判 415 —— 否则契约里就要给它们也声明 415。
+    /// </remarks>
+    [Fact]
+    public async Task An_endpoint_without_a_body_does_not_care_about_the_content_type()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/ideas/00000000-0000-0000-0000-000000000000/restore")
+        {
+            Content = new StringContent("hello", Encoding.UTF8, "text/plain")
+        };
+
+        var response = await client.SendAsync(request);
+
+        // 端点真的被执行了：找不到想法 → 404 + idea_not_found（不是 415）。
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("idea_not_found", problem.GetProperty("code").GetString());
+    }
+
+    /// <summary>
+    /// 把路由模板里的占位符换成真实值（请求不能带花括号）。
+    /// </summary>
+    private static string ConcretePath(string template) => template
+        .Replace("{id}", "00000000-0000-0000-0000-000000000000", StringComparison.Ordinal)
+        .Replace("{key}", "project.sort_mode", StringComparison.Ordinal);
+
+    /// <summary>
     /// 框架层抛出来的未预期异常 → 500 + ProblemDetails + <c>internal_error</c>，
     /// 不能是裸 500（裸 500 没有 problem+json，也没有 code）。
     /// </summary>

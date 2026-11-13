@@ -33,6 +33,7 @@ public static class WebhookEndpoints
         app.MapPost("/api/webhooks", (WebhookCreateRequest request, WebhookService service) =>
             ApiResults.Run(() => Results.Json(service.Create(request),
                 IdeaJsonContext.Default.WebhookDto, statusCode: StatusCodes.Status201Created)))
+            .RejectsNonJsonBodyWithProblemDetails()
             .Produces<WebhookDto>(StatusCodes.Status201Created)
             .ProducesApiProblem(
                 StatusCodes.Status400BadRequest,
@@ -42,7 +43,8 @@ public static class WebhookEndpoints
                 "invalid_webhook_project",
                 "invalid_event_type",
                 "invalid_body_template",
-                "invalid_request_body");
+                "invalid_request_body")
+            .ProducesApiProblem(StatusCodes.Status415UnsupportedMediaType, "unsupported_media_type");
 
         // 模板预设：页面用它预填表单。放在 {id} 之前只是读起来顺，
         // 路由本身不冲突（字面量段优先于参数段，且段数也不同）。
@@ -59,6 +61,7 @@ public static class WebhookEndpoints
 
         app.MapPatch("/api/webhooks/{id}", (string id, WebhookUpdateRequest request, WebhookService service) =>
             ApiResults.Run(() => Results.Json(service.Update(id, request), IdeaJsonContext.Default.WebhookDto)))
+            .RejectsNonJsonBodyWithProblemDetails()
             .Produces<WebhookDto>(StatusCodes.Status200OK)
             .ProducesApiProblem(
                 StatusCodes.Status400BadRequest,
@@ -67,7 +70,8 @@ public static class WebhookEndpoints
                 "invalid_event_type",
                 "invalid_body_template",
                 "invalid_request_body")
-            .ProducesApiProblem(StatusCodes.Status404NotFound, "webhook_not_found");
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "webhook_not_found")
+            .ProducesApiProblem(StatusCodes.Status415UnsupportedMediaType, "unsupported_media_type");
 
         app.MapDelete("/api/webhooks/{id}", (string id, WebhookService service) =>
             ApiResults.Run(() =>

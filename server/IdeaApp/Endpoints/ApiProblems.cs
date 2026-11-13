@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Metadata;
 
 namespace IdeaApp.Endpoints;
 
@@ -56,5 +57,52 @@ public static class ApiProblemExtensions
 
         // 错误码清单挂在端点元数据上，由 OpenApiProblemTransformer 写进契约。
         return builder.WithMetadata(new ApiProblemMetadata(statusCode, codes));
+    }
+
+    /// <summary>
+    /// 把「Content-Type 不是 JSON」的拒绝留在我们自己的错误契约里。
+    /// </summary>
+    ///
+    /// <para>
+    /// <b>为什么需要它</b>：框架会给「带 JSON body 的端点」自动加一条
+    /// <see cref="AcceptsMetadata"/>（内容类型 <c>application/json</c>），
+    /// 路由层据此在 Content-Type 不对时**把这个端点毙掉**：
+    /// 要么回一个**空的** 415（没有 <c>application/problem+json</c>、没有 <c>code</c>），
+    /// 要么（像本应用这样有 <c>/api/{**rest}</c> 兜底时）落到兜底端点，
+    /// 回一个语义完全不对的 404 + <c>api_not_found</c>。
+    /// 两条路都不符合本应用「所有错误响应都是 ProblemDetails + 稳定错误码」的约定。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>它做了什么</b>：把框架推断出来的那条 <see cref="AcceptsMetadata"/> 去掉 ——
+    /// 路由层因此不再按 Content-Type 拦截，请求会真的进到端点，
+    /// 框架在**绑定 body 时**抛 <c>BadHttpRequestException(415)</c>，
+    /// 再由 <see cref="ApiExceptionHandler"/> 统一转成
+    /// ProblemDetails + <c>code=unsupported_media_type</c>
+    /// —— 与畸形 body 的 400（<c>invalid_request_body</c>）走同一条路。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>对契约没有副作用</b>：OpenAPI 生成器在找不到 <see cref="AcceptsMetadata"/> 时
+    /// 会按 body 参数的类型回落到 <c>application/json</c>，所以 requestBody 那一段不变。
+    /// </para>
+    /// </remarks>
+    /// <param name="builder">端点构造器。</param>
+    public static TBuilder RejectsNonJsonBodyWithProblemDetails<TBuilder>(this TBuilder builder)
+        where TBuilder : IEndpointConventionBuilder
+    {
+        builder.Add(endpoint =>
+        {
+            // 从后往前删：删除会改变下标。
+            for (var index = endpoint.Metadata.Count - 1; index >= 0; index--)
+            {
+                if (endpoint.Metadata[index] is AcceptsMetadata)
+                {
+                    endpoint.Metadata.RemoveAt(index);
+                }
+            }
+        });
+
+        return builder;
     }
 }

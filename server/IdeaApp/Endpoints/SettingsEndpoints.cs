@@ -42,12 +42,14 @@ public static class SettingsEndpoints
 
                 return Results.Json(ReadAll(settings), IdeaJsonContext.Default.DictionaryStringString);
             }))
+            .RejectsNonJsonBodyWithProblemDetails()
             .Produces<Dictionary<string, string>>(StatusCodes.Status200OK)
             .ProducesApiProblem(
                 StatusCodes.Status400BadRequest,
                 "setting_key_not_writable",
                 "invalid_sort_mode",
-                "invalid_request_body");
+                "invalid_request_body")
+            .ProducesApiProblem(StatusCodes.Status415UnsupportedMediaType, "unsupported_media_type");
 
         return app;
     }

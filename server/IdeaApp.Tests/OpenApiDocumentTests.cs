@@ -369,6 +369,90 @@ public sealed class OpenApiDocumentTests
     }
 
     /// <summary>
+    /// skill 目录里那份契约副本必须与仓库根下的契约文件**逐字相同**。
+    /// </summary>
+    /// <remarks>
+    /// <c>skills/idea-manager/references/openapi.json</c> 是手工 <c>cp</c> 过去的副本：
+    /// agent 读的是 skill 目录里那份，而契约文件在仓库根下。
+    /// 两份漂移了（改了契约忘了同步副本）不会有任何编译错误，
+    /// 也不会有别的测试失败 —— agent 却拿着旧契约调接口。
+    /// 上一轮修复波就因此手工同步过一次，所以这里加一条守卫。
+    /// </remarks>
+    [Fact]
+    public async Task The_skill_copy_of_the_contract_is_byte_for_byte_the_same_file()
+    {
+        var contract = await File.ReadAllBytesAsync(CommittedDocumentPath());
+        var copy = await File.ReadAllBytesAsync(SkillContractPath());
+
+        Assert.True(
+            contract.AsSpan().SequenceEqual(copy),
+            "skill 里的契约副本与 openapi/idea-v1.json 不是同一份："
+            + $"前者 {copy.Length} 字节，后者 {contract.Length} 字节。"
+            + "重新 cp 一份：cp openapi/idea-v1.json skills/idea-manager/references/openapi.json");
+    }
+
+    /// <summary>
+    /// 带请求体的端点必须声明 415，不带请求体的端点不许声明 415。
+    /// </summary>
+    /// <remarks>
+    /// 契约是给 agent 当接口手册用的：Content-Type 不是 application/json 时，
+    /// 应用回 415 + ProblemDetails + <c>code=unsupported_media_type</c>，
+    /// 契约里就必须写得出这个 415 —— 否则 agent 按契约预期不到它。
+    /// <para>
+    /// 反过来也守着：没有请求体的端点不会因为 Content-Type 被判 415，
+    /// 契约里给它们也声明一个 415 就是骗人。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Only_endpoints_with_a_request_body_declare_415()
+    {
+        var committed = await File.ReadAllTextAsync(CommittedDocumentPath());
+        using var document = JsonDocument.Parse(committed);
+
+        foreach (var path in document.RootElement.GetProperty("paths").EnumerateObject())
+        {
+            foreach (var operation in path.Value.EnumerateObject())
+            {
+                // 路径项里除了各方法，还有路径级的 parameters（数组）——跳过。
+                if (operation.Value.ValueKind != JsonValueKind.Object
+                    || !operation.Value.TryGetProperty("responses", out var responses))
+                {
+                    continue;
+                }
+
+                var hasBody = operation.Value.TryGetProperty("requestBody", out var requestBody)
+                    && requestBody.ValueKind == JsonValueKind.Object
+                    && requestBody.TryGetProperty("content", out var content)
+                    && content.ValueKind == JsonValueKind.Object
+                    && content.EnumerateObject().Any();
+
+                var declares415 = responses.TryGetProperty("415", out _);
+
+                var label = $"{operation.Name.ToUpperInvariant()} {path.Name}";
+
+                if (hasBody)
+                {
+                    Assert.True(declares415, $"{label}：带请求体却没有声明 415");
+                }
+                else
+                {
+                    Assert.False(declares415, $"{label}：没有请求体却声明了 415");
+                }
+            }
+        }
+    }
+
+    /// <summary>skill 目录里那份契约副本。</summary>
+    private static string SkillContractPath()
+    {
+        var path = RepoPaths.SkillContract;
+
+        Assert.True(File.Exists(path), $"找不到契约副本：{path}");
+
+        return path;
+    }
+
+    /// <summary>
     /// 仓库根下的 openapi/idea-v1.json。
     /// </summary>
     /// <remarks>

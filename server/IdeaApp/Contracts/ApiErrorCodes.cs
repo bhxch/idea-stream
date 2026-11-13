@@ -29,6 +29,13 @@ public sealed record ApiErrorCode(string Code, int Status, string Meaning);
 /// <c>ApiErrorCodeTests.Documented_codes_match_the_ones_actually_thrown</c>
 /// 会扫源码里的 <c>ApiException(...)</c> 调用点来核对，漏登记就会测试失败。
 /// </para>
+///
+/// <para>
+/// <b>清单里只登记真的送得到客户端的错误码</b>：框架自己处理掉的情况不登记。
+/// 最典型的是 <b>413（请求体太大）</b> —— Kestrel 在**读 body 阶段**就把超大请求拒掉，
+/// 框架捕获后只设一个状态码就返回（响应体是空的，没有 <c>code</c>），
+/// 走不到 <c>ApiExceptionHandler</c>，所以清单里没有它，契约里也不声明它。
+/// </para>
 /// </remarks>
 public static class ApiErrorCodes
 {
@@ -76,9 +83,6 @@ public static class ApiErrorCodes
         new("idea_not_found", 404, "想法不存在"),
         new("project_not_found", 404, "项目不存在"),
         new("webhook_not_found", 404, "webhook 不存在"),
-
-        // 413：请求体太大。
-        new("request_body_too_large", 413, "请求体超过大小限制"),
 
         // 415：请求的媒体类型不对。
         new("unsupported_media_type", 415, "请求的 Content-Type 不是 application/json"),

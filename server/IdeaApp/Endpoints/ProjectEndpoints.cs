@@ -23,14 +23,18 @@ public static class ProjectEndpoints
         app.MapPost("/api/projects", (CreateProjectRequest request, ProjectService service) =>
             ApiResults.Run(() => Results.Json(service.Create(request.Name),
                 IdeaJsonContext.Default.ProjectDto, statusCode: StatusCodes.Status201Created)))
+            .RejectsNonJsonBodyWithProblemDetails()
             .Produces<ProjectDto>(StatusCodes.Status201Created)
-            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_project_name", "invalid_request_body");
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_project_name", "invalid_request_body")
+            .ProducesApiProblem(StatusCodes.Status415UnsupportedMediaType, "unsupported_media_type");
 
         app.MapPatch("/api/projects/{id}", (string id, RenameProjectRequest request, ProjectService service) =>
             ApiResults.Run(() => Results.Json(service.Rename(id, request.Name), IdeaJsonContext.Default.ProjectDto)))
+            .RejectsNonJsonBodyWithProblemDetails()
             .Produces<ProjectDto>(StatusCodes.Status200OK)
             .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_project_name", "invalid_request_body")
-            .ProducesApiProblem(StatusCodes.Status404NotFound, "project_not_found");
+            .ProducesApiProblem(StatusCodes.Status404NotFound, "project_not_found")
+            .ProducesApiProblem(StatusCodes.Status415UnsupportedMediaType, "unsupported_media_type");
 
         app.MapDelete("/api/projects/{id}", (string id, ProjectService service) =>
             ApiResults.Run(() =>
@@ -52,8 +56,10 @@ public static class ProjectEndpoints
         app.MapPost("/api/projects/reorder", (ReorderProjectsRequest request, ProjectService service) =>
             ApiResults.Run(() => Results.Json(service.Reorder(request.Ids).ToList(),
                 IdeaJsonContext.Default.ListProjectDto)))
+            .RejectsNonJsonBodyWithProblemDetails()
             .Produces<List<ProjectDto>>(StatusCodes.Status200OK)
-            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_reorder_ids", "invalid_request_body");
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_reorder_ids", "invalid_request_body")
+            .ProducesApiProblem(StatusCodes.Status415UnsupportedMediaType, "unsupported_media_type");
 
         return app;
     }
