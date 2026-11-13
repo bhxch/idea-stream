@@ -419,16 +419,22 @@ class FetchTest(unittest.TestCase):
         )
 
     def test_falls_back_to_the_cache_when_the_manifest_cannot_be_fetched(self):
-        """取不到清单但本地有缓存 → 用缓存，stderr 给一行提示。"""
+        """取不到清单但本地有缓存 → 用缓存，stderr 给一行提示（不含凭据）。"""
         code, out, err = self.run_fetch([])
         self.assertEqual(code, 0, err)
 
+        password = "PASS-SECRET-9f3a2b"
         dead = "http://127.0.0.1:{}".format(free_port())
-        code, out, err = self.run_fetch([], base_url=dead)
+        code, out, err = self.run_fetch(
+            [], base_url=dead, env={"IDEA_USER": "agent", "IDEA_PASS": password}
+        )
 
         self.assertEqual(code, 0, err)
         self.assertEqual(out, ENTRY_BODY)
         self.assertEqual(len(err.strip().splitlines()), 1, "提示只该有一行：{}".format(err))
+        # 降级的那行提示也不能带凭据
+        self.assertNotIn(password, err)
+        self.assertNotIn(password, out)
 
     def test_falls_back_to_the_old_cache_when_a_download_is_cut_off(self):
         """同步到一半传输断了 → 用旧版本（旧版本留着就是为了这一刻）。"""

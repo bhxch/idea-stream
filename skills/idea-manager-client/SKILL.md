@@ -10,7 +10,7 @@ description: 管理本地 idea 记事本（项目、想法、标签、完成状�
 ## 第一步：取说明书
 
     scripts/fetch.py                      # 索引页：有哪些能力、怎么调、细节去哪找
-    scripts/fetch.py references/errors.md # 按索引页里的路由表取某一份细节
+    scripts/fetch.py <路径>               # 按索引页里的路由表取某一份细节
     scripts/fetch.py /openapi/v1.json     # 完整接口契约
 
 ## 第二步：按索引页给的姿势调 API

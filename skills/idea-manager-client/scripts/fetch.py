@@ -63,6 +63,26 @@ SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 # --------------------------------------------------------------------------
 # 错误
 # --------------------------------------------------------------------------
+#
+# 取件器自己的错误码：一行 `code: detail` 到 stderr，退出码非 0。
+#
+# | 情况 | 码 | 退出码 |
+# |---|---|---|
+# | 缺 IDEA_BASE_URL | missing_config | 1 |
+# | IDEA_BASE_URL 非法（没 scheme / 没 host） | invalid_config | 1 |
+# | 服务端拒了鉴权（401 / 403） | auth_error | 1 |
+# | 服务端没分发 skill 内容 | skill_not_distributed | 1 |
+# | 要取的文件不存在 | not_found | 1 |
+# | 取回来的内容与服务端清单对不上 | skill_integrity_error | 1 |
+# | 清单不是合法 JSON（多半是代理返回了 HTML） | invalid_response | 1 |
+# | 服务端回了别的业务错误码 | 服务端给的 code | 1 |
+# | 别的非 2xx | http_<状态码> | 1 |
+# | 网络不可达 / 超时 / 传输中断 | network_error | 2 |
+# | argparse 的用法错误 | argparse 自己的用法提示 | 2 |
+# | 兜底（未预期的异常） | internal_error | 1 |
+#
+# 降级不是错误：取不到清单但本地有**完好**的缓存时，走缓存并在 stderr 打一行
+# ``warning:`` 提示，退出码仍是 0。
 
 
 def _one_line(value: Any) -> str:
