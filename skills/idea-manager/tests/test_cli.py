@@ -393,6 +393,99 @@ class LocalServerTest(unittest.TestCase):
                     self.assertNotIn(secret, out)
                 self.assertEqual(json.loads(out)[0]["url"], expected)
 
+    def test_bot_token_placeholder_does_not_leak_neighbours(self):
+        """占位符只保留它自己：**同段夹带的真 token 必须遮掉**。
+
+        「含 ``<BOT_TOKEN>`` 的整段原样保留」是个泄漏路径：
+        ``bot<BOT_TOKEN>123456789:FAKEfakeTOKEN`` 整段进 stdout，
+        等于把占位符后面粘着的真 token 一起带出去了。
+        """
+        raw_url = "https://api.telegram.org/bot<BOT_TOKEN>123456789:FAKEfakeTOKEN/sendMessage"
+        webhook = {
+            "id": "wh-4",
+            "name": "telegram",
+            "url": raw_url,
+            "method": "POST",
+            "headers": {},
+            "bodyTemplate": "{}",
+            "events": ["idea.created"],
+            "scope": "global",
+            "projectId": None,
+            "enabled": False,
+            "hasSecret": False,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+        }
+        body = json.dumps([webhook]).encode("utf-8")
+        url = self._serve(self._static_handler(200, "application/json", body))
+
+        code, out, err = run_cli(["webhook", "list"], base_url=url)
+        self.assertEqual(code, 0, err)
+
+        # 夹带的两截都不许出现在输出里。
+        self.assertNotIn("123456789", out)
+        self.assertNotIn("FAKEfakeTOKEN", out)
+        # 占位符本身留着（agent 要拿它去填自己的 token），夹带的部分遮掉。
+        self.assertEqual(
+            json.loads(out)[0]["url"],
+            "https://api.telegram.org/bot<BOT_TOKEN>***/sendMessage",
+        )
+
+    def test_long_numeric_version_segment_is_masked(self):
+        """「v + 长数字」是纯数字 id 的形状，不能当成版本号放行。
+
+        版本段白名单只放行**最多两位**的裸数字版本（v1、v2、v10……）；
+        带后缀的版本段（v1.0、v1-beta1、v1beta1）仍然放行。
+        """
+        cases = [
+            (
+                "https://api.example.com/v1234567890123/hook/sk_live_abc123",
+                "https://api.example.com/***/hook/***",
+                ["v1234567890123"],
+            ),
+            (
+                "https://api.example.com/v123/hook/sk_live_abc123",
+                "https://api.example.com/***/hook/***",
+                ["v123"],
+            ),
+            (
+                "https://api.example.com/v1/hook/sk_live_abc123",
+                "https://api.example.com/v1/hook/***",
+                [],
+            ),
+            (
+                "https://api.example.com/v1beta1/hook/sk_live_abc123",
+                "https://api.example.com/v1beta1/hook/***",
+                [],
+            ),
+        ]
+
+        for raw_url, expected, secrets in cases:
+            with self.subTest(url=raw_url):
+                webhook = {
+                    "id": "wh-5",
+                    "name": "其它服务",
+                    "url": raw_url,
+                    "method": "POST",
+                    "headers": {},
+                    "bodyTemplate": "{}",
+                    "events": ["idea.created"],
+                    "scope": "global",
+                    "projectId": None,
+                    "enabled": False,
+                    "hasSecret": False,
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-01-01T00:00:00Z",
+                }
+                body = json.dumps([webhook]).encode("utf-8")
+                url = self._serve(self._static_handler(200, "application/json", body))
+
+                code, out, err = run_cli(["webhook", "list"], base_url=url)
+                self.assertEqual(code, 0, err)
+                for secret in secrets:
+                    self.assertNotIn(secret, out)
+                self.assertEqual(json.loads(out)[0]["url"], expected)
+
     def test_base_url_without_scheme_exits_cleanly(self):
         # 「地址忘了写 scheme」是最常见的配置错：不能吐裸 traceback。
         code, out, err = run_cli(["list"], base_url="ideas.example.com")

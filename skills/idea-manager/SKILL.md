@@ -177,9 +177,13 @@ CLI 的 stdout 会进 agent 的上下文与日志，那就是日志 —— 所�
 - **路径段默认全遮**（`***`）—— 只有明确是结构词的段才原样保留。
   白名单（结构/协议词，不含任何凭据形态）：
   `api`、`apis`、`webhook(s)`、`hook(s)`、`service(s)`、`endpoint(s)`、`trigger(s)`、
-  `incoming`、`outgoing`、`sendMessage`、`bot`，以及版本号段（`v1`、`v2`、`v1beta1`……）。
+  `incoming`、`outgoing`、`sendMessage`、`bot`，以及版本号段
+  （`v1`、`v2`、`v10`……：**裸数字版本号最多两位**；带后缀的 `v1.0`、`v1-beta1`、
+  `v1beta1` 也放行。`v` + 长数字不在白名单里 —— 那是纯数字 id 的形状）。
   两条例外：
-  - `<BOT_TOKEN>` 占位符**原样保留** —— 它不是秘密，是给用户替换的提示；
+  - `<BOT_TOKEN>` 占位符**原样保留** —— 它不是秘密，是给用户替换的提示。
+    但**只保留占位符本身**：同段里夹带的别的东西照样遮
+    （`bot<BOT_TOKEN>123456789:FAKEfake` → `bot<BOT_TOKEN>***`）；
   - `/bot<token>`（Telegram 就是这个形状，token 粘在 `bot` 后面）→ `bot***`。
 - `headers` → 只保留键名，值一律换成 `***`。
 
@@ -192,6 +196,8 @@ CLI 的 stdout 会进 agent 的上下文与日志，那就是日志 —— 所�
 |---|---|
 | `https://api.telegram.org/botXXXXXX:ABCDEF/sendMessage` | `https://api.telegram.org/bot***/sendMessage` |
 | `https://api.telegram.org/bot<BOT_TOKEN>/sendMessage` | `https://api.telegram.org/bot<BOT_TOKEN>/sendMessage` |
+| `https://api.telegram.org/bot<BOT_TOKEN>123456789:FAKEfake/sendMessage` | `https://api.telegram.org/bot<BOT_TOKEN>***/sendMessage` |
+| `https://api.example.com/v1234567890123/hook/sk_live_abc123` | `https://api.example.com/***/hook/***` |
 | `https://hooks.slack.com/services/T00000000/B00000000/abcdefghijklmnopqrstuvwx` | `https://hooks.slack.com/services/***/***/***` |
 | `https://discord.com/api/webhooks/123456789012/AbCdEfGhIjKlMnOpQrStUvWxYz` | `https://discord.com/api/webhooks/***/***` |
 | `https://api.example.com/v1/hook/sk_live_abc123` | `https://api.example.com/v1/hook/***` |
@@ -213,8 +219,9 @@ CLI 的 stdout 会进 agent 的上下文与日志，那就是日志 —— 所�
 
 表里的 `missing_config` / `invalid_config` / `usage_error` / `invalid_response` /
 `network_error` / `internal_error` 是 **CLI 自己的**错误码；错误码对照表里的其余 `code`
-都来自服务端。CLI 永远只往 stderr 打**一行** `code: detail`，不会吐 Python traceback
-（真实原因靠服务端日志与报告定位）。
+都来自服务端。**CLI 自己的错误**只往 stderr 打**一行** `code: detail`，
+不会吐 Python traceback（真实原因靠服务端日志与报告定位）。
+argparse 的用法错误不在此列：它打的是多行 usage 提示、退出码 2（见上表）。
 
 ### 错误码对照表
 

@@ -58,8 +58,17 @@ SAFE_PATH_SEGMENTS = frozenset(
     ]
 )
 
-# 版本号段（v1、v2、v1beta1……）：结构性的，放行。
-VERSION_SEGMENT = re.compile(r"^v\d+([._-][a-z0-9]+)?$")
+# 版本号段：结构性的，放行。
+#
+# **裸数字版本号最多两位**（v1、v2、v10……）：位数不限的话，
+# 「v + 长数字」（v1234567890123，纯数字 id 的形状）会被当成版本号原样放行 ——
+# 那就是漏网。
+# 带后缀的版本段只认两种形状：
+#   * 分隔符 + 短的字母数字段（v1.0、v1-beta1）；
+#   * 常见的版本后缀词 + 至多两位数字（v1beta1、v1rc2）。
+# 后缀词用白名单而不是「任意字母」：任意字母会让「v1 + 一串字母」这种
+# 短 token 的形状蒙混过关。
+VERSION_SEGMENT = re.compile(r"^v\d{1,2}(([._-][a-z0-9]{1,8})|(beta|alpha|rc|preview)\d{0,2})?$")
 
 # 目标实例的地址。由 main() 设置，build_request() 读它
 # （build_request 的签名是固定的，不收 base_url 参数）。
@@ -256,6 +265,8 @@ def mask_url(url: str) -> str:
       「长得像随机串才遮」那种启发式会漏掉纯字母的 token、纯数字的 id
       和短 token，而漏掉的就是凭据本身。
     * ``<BOT_TOKEN>`` 这个占位符原样保留：它不是秘密，是给用户替换的提示。
+      但**只保留占位符本身**：同段里夹带的其它内容照样遮
+      （见 :func:`_mask_placeholder_segment`）。
     """
     try:
         parts = urllib.parse.urlsplit(url)
@@ -284,8 +295,7 @@ def _mask_segment(segment: str) -> str:
     if not segment:
         return segment
     if BOT_PLACEHOLDER in segment:
-        # 占位符不是秘密：agent 要拿它去填自己的 token。
-        return segment
+        return _mask_placeholder_segment(segment)
     lowered = segment.lower()
     if lowered in SAFE_PATH_SEGMENTS or VERSION_SEGMENT.match(lowered):
         return segment
@@ -294,6 +304,24 @@ def _mask_segment(segment: str) -> str:
         # 例子里不写真实的数字串 —— 仓库有一条 grep 盯着「像真 token」的形状。
         return "bot" + MASK
     return MASK
+
+
+def _mask_placeholder_segment(segment: str) -> str:
+    """带占位符的段：**只保留占位符本身**，同段里别的东西一律遮。
+
+    占位符不是秘密（是给用户替换的提示），但**同段里夹带的东西是**：
+    ``/bot<BOT_TOKEN>123456789:AAHfakeTOKEN`` 这种「占位符后面粘着真 token」
+    的段，整段保留等于把真 token 带出去了。
+
+    规则：
+    * 占位符之外没有别的东西 → 整段保留（``<BOT_TOKEN>``、``bot<BOT_TOKEN>``）；
+    * 占位符之外还有东西 → 那些东西遮成 ``***``，占位符原样留着；
+    * 只有紧挨在占位符前面的结构词 ``bot`` 保留（Telegram 的形状是 ``/bot<token>``）。
+    """
+    prefix, _, suffix = segment.partition(BOT_PLACEHOLDER)
+    head = prefix if prefix.lower() == "bot" else (MASK if prefix else "")
+    tail = MASK if suffix else ""
+    return head + BOT_PLACEHOLDER + tail
 
 
 def redact(value: Any) -> Any:
