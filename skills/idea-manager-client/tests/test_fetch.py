@@ -71,6 +71,8 @@ class _State(object):
         self.manifest_html = False
         # 取文件时传输中断：模拟「头说有多长、body 只有一点」。
         self.truncate_files = False
+        # 把收到的 Authorization 头回显进错误体：模拟代理/服务端反射请求头。
+        self.echo_auth = False
         # 服务端的绝对路径（不走分发副本的那一类）。
         self.absolute = {"/openapi/v1.json": OPENAPI_BODY}
         # 记下被请求过的路径，用来断言「绝对路径是直连服务端的」。
@@ -120,6 +122,16 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(404, b'{"code":"not_found","detail":"no"}', "application/problem+json")
 
     def _serve_manifest(self, state):
+        if state.echo_auth:
+            # 回显请求头：凭据原样进了响应体，看取件器会不会把它抄进 stderr。
+            auth = self.headers.get("Authorization", "")
+            body = json.dumps(
+                {"detail": "服务端把请求头反射回来了：Authorization: {}".format(auth)},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            self._send(500, body, "application/problem+json")
+            return
+
         if state.manifest_html:
             self._send(200, b"<html><body>proxy error</body></html>", "text/html")
             return
@@ -184,6 +196,18 @@ def free_port():
         return sock.getsockname()[1]
     finally:
         sock.close()
+
+
+def dead_pid():
+    """找一个确定没有进程在跑的 pid —— 拿来当「崩溃残留」的临时目录名。"""
+    for candidate in (999999, 999998, 4194303, 1234567, 424242):
+        try:
+            os.kill(candidate, 0)
+        except ProcessLookupError:
+            return candidate
+        except OSError:
+            continue
+    raise RuntimeError("找不到没在跑的 pid")
 
 
 # 「用默认的假服务端地址」与「不设 IDEA_BASE_URL」要分得开 —— 用哨兵值区分。
@@ -280,6 +304,21 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(out, REFERENCE_BODY)
 
     # -- 同步 ---------------------------------------------------------------
+
+    def test_prunes_the_temporary_directory_left_by_a_crashed_run(self):
+        """崩了留下的临时目录 → 下一次取件时清掉（别在缓存根目录堆孤儿）。
+
+        临时目录名里带着 pid：主人那个进程已经不在了，就是残骸。
+        """
+        leftover = os.path.join(self.cache, ".tmp-deadbeef-{}".format(dead_pid()))
+        os.makedirs(leftover)
+        with open(os.path.join(leftover, "SKILL.md"), "w", encoding="utf-8") as handle:
+            handle.write("半个文件")
+
+        code, out, err = self.run_fetch([])
+
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.exists(leftover), "崩溃留下的临时目录该被清掉")
 
     def test_syncs_a_new_version_and_replaces_the_cache(self):
         """服务端换版本 → 缓存跟着换，当前版本目录里是新版内容。
@@ -441,6 +480,48 @@ class FetchTest(unittest.TestCase):
         self.assertIn("invalid_config", err)
         self.assertEqual(code, 1)
 
+    def test_never_echoes_the_password_when_the_base_url_has_leading_space(self):
+        """地址带前导空白 → 密码仍然不许漏。
+
+        真正发出去的地址是去空白的那份，脱敏也得按去空白的那份算 ——
+        不然正则锚在开头就匹配不上，密码原样进 stderr。
+        """
+        code, out, err = self.run_fetch(
+            [], base_url=" http://user:sekret-pw@nonexistent.invalid"
+        )
+
+        self.assertNotIn("sekret-pw", err)
+        self.assertNotIn("sekret-pw", out)
+        self.assertIn("network_error", err)
+
+    def test_keeps_the_error_code_intact_when_the_password_looks_like_a_code(self):
+        """密码与错误码同名时也不能把 code 改写掉（agent 要按 code 分支）。"""
+        code, out, err = self.run_fetch(
+            [],
+            base_url="http://127.0.0.1:{}".format(free_port()),
+            env={"IDEA_PASS": "error"},
+        )
+
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("network_error: "), err)
+        self.assertNotIn("network_***", err)
+
+    def test_does_not_echo_the_basic_auth_header_the_server_reflects(self):
+        """服务端把 Authorization 头回显进错误体 → stderr 不含那串 base64。
+
+        base64 是可逆的 —— 只掩裸密码、放过 base64 等于掩了个寂寞。
+        """
+        self.server.state.echo_auth = True
+
+        code, out, err = self.run_fetch(
+            [], env={"IDEA_USER": "agent", "IDEA_PASS": "pw-1234"}
+        )
+
+        self.assertNotIn("YWdlbnQ6cHctMTIzNA==", err)   # base64("agent:pw-1234")
+        self.assertNotIn("pw-1234", err)
+        self.assertNotIn("agent", err)
+        self.assertEqual(code, 1)
+
     def test_keeps_the_at_sign_in_a_path_intact(self):
         """路径里的 '@' 不是 userinfo：脱敏不许把它当成密码段抹掉。
 
@@ -510,6 +591,18 @@ class FetchTest(unittest.TestCase):
         # 降级的那行提示也不能带凭据
         self.assertNotIn(password, err)
         self.assertNotIn(password, out)
+
+    def test_keeps_the_error_code_intact_in_the_degraded_warning(self):
+        """降级提示行里的错误码也不能被改写（提示行里的码 agent 也要认）。"""
+        code, out, err = self.run_fetch([])
+        self.assertEqual(code, 0, err)
+
+        dead = "http://127.0.0.1:{}".format(free_port())
+        code, out, err = self.run_fetch([], base_url=dead, env={"IDEA_PASS": "error"})
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("（network_error）", err)
+        self.assertNotIn("network_***", err)
 
     def test_reports_one_line_when_the_degraded_cache_lacks_the_file(self):
         """降级 + 缓存里没有那个文件 → stderr 只该有一行（错误），不再另打 warning。"""

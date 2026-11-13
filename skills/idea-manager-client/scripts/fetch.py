@@ -50,6 +50,9 @@ KEEP_VERSIONS = 2
 # 没有它，离线降级就不知道该打印什么。
 MANIFEST_SNAPSHOT = ".manifest.json"
 
+# 临时目录的前缀（``.tmp-<version>-<pid>``）。
+TEMP_PREFIX = ".tmp-"
+
 # 版本串要能当目录名：只收字母数字与 . _ -。
 #
 # 版本串是**服务端给的**，不是自己算的 —— 但它会直接变成目录名，
@@ -215,29 +218,32 @@ def _secret_values() -> List[str]:
     """本进程里可能出现在输出中的凭据值。
 
     凭据可能来自两处：
-    * 环境变量（``IDEA_PASS`` / ``IDEA_TOKEN``）；
+    * 环境变量（``IDEA_USER`` / ``IDEA_PASS`` / ``IDEA_TOKEN``）；
     * **实例地址里的 userinfo** —— 有人会把密码写进 URL，
       那时它不在环境变量里，但也绝不能进 stderr。
     """
     values: List[str] = []
 
-    for name in ("IDEA_PASS", "IDEA_TOKEN"):
+    for name in ("IDEA_USER", "IDEA_PASS", "IDEA_TOKEN"):
         raw = os.environ.get(name, "")
         for value in (raw, raw.strip()):
             if value:
                 values.append(value)
 
-    password = _password_in_base_url()
-    if password:
-        values.append(password)
-
-    # basic auth 的那串 base64：请求头若被回显出来，同样是凭据。
+    # 实际发出去的那串 basic auth：请求头若被回显，它就是凭据
+    # （base64 可逆 —— 只掩裸密码、放过 base64 等于掩了个寂寞）。
     user = os.environ.get("IDEA_USER", "").strip()
+    password = os.environ.get("IDEA_PASS", "").strip()
     if user and password:
         raw = "{}:{}".format(user, password).encode("utf-8")
         values.append(base64.b64encode(raw).decode("ascii"))
 
-    return values
+    url_password = _password_in_base_url()
+    if url_password:
+        values.append(url_password)
+
+    # 长的先掩：短的可能是长的的一部分（先掩短的会把长的拆成两半）。
+    return sorted(set(values), key=len, reverse=True)
 
 
 def _password_in_base_url() -> str:
@@ -245,8 +251,12 @@ def _password_in_base_url() -> str:
 
     userinfo 是 ``user:password``，按**第一个**冒号切（RFC 里的规矩：
     用户名里不能有冒号，密码里可以）。
+
+    地址要先去掉首尾空白 —— 真正发出去的地址也是去空白的那个，
+    不然 ``" http://u:p@host"`` 里的密码就漏了（它带前导空格，
+    正则锚在开头就匹配不上）。
     """
-    raw = os.environ.get("IDEA_BASE_URL", "")
+    raw = os.environ.get("IDEA_BASE_URL", "").strip()
     match = BASE_URL_USERINFO.match(raw)
     if not match:
         return ""
@@ -547,7 +557,7 @@ def sync(base_url: str, cache_root: str) -> Tuple[Manifest, str]:
     # 临时目录带上 pid：两个进程同时取件时，第二个不能删掉第一个正在写的目录。
     # 名字还是「同目录下的临时目录」——改名落位的原子性不受影响。
     temporary = os.path.join(
-        cache_root, ".tmp-" + manifest.version + "-" + str(os.getpid())
+        cache_root, TEMP_PREFIX + manifest.version + "-" + str(os.getpid())
     )
 
     # 上一次崩了可能留下半个临时目录：从干净状态重来。
@@ -680,6 +690,56 @@ def _prune(cache_root: str, keep: str) -> None:
         if path not in survivors:
             _remove_path(path)
 
+    _prune_temporaries(cache_root)
+
+
+def _prune_temporaries(cache_root: str) -> None:
+    """清掉崩溃留下的临时目录（``.tmp-<version>-<pid>``）。
+
+    临时目录名里带着 pid：两个进程并发取件时不会互删对方的目录。
+    但进程崩了就会留下一个没人管的目录 —— 长期跑会在缓存根目录堆积孤儿。
+
+    判据是「主人还在不在」而不是「新旧」：主人没了的目录就是残骸
+    （刚崩的残骸也是新的，但没人要它）；主人还活着的目录有人在写，
+    不能动。pid 认不出来的（旧版固定名 ``.tmp-<version>``）一律当残骸。
+    """
+    for name in os.listdir(cache_root):
+        if not name.startswith(TEMP_PREFIX):
+            continue
+
+        path = os.path.join(cache_root, name)
+        if not os.path.isdir(path) or os.path.islink(path):
+            continue
+
+        pid = _pid_of(path)
+        if pid is not None and _process_alive(pid):
+            continue
+
+        _remove_path(path)
+
+
+def _pid_of(path: str) -> Optional[int]:
+    """从临时目录名里取出 pid（取不出就返回 None）。"""
+    name = os.path.basename(path)
+    tail = name[len(TEMP_PREFIX):]
+    _, _, pid_text = tail.rpartition("-")
+    try:
+        return int(pid_text)
+    except ValueError:
+        return None
+
+
+def _process_alive(pid: int) -> bool:
+    """那个进程还在吗（0 号信号只探活，不发信号）。"""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # 别的用户的进程：探不到，但多半还活着 → 当活着处理。
+        return True
+    return True
+
 
 def _remove_path(path: str) -> None:
     """删掉一个路径（目录或文件），出错也不抛。
@@ -798,10 +858,11 @@ def _write_stderr(line: str) -> None:
 
     同样走 ``buffer``：错误信息里有中文，不能让 locale 决定它能不能写出去。
 
-    脱敏也在这里再做一遍：这是 stderr 的**唯一出口**，警告行与兜底的
-    internal_error 也要守住「凭据不回显」那条。
+    **这里不再脱敏**：传进来的整行里带着错误码，而错误码是 agent 要拿来
+    分支的（``network_error: …`` 里的 network_error 不能被改成 network_***）。
+    脱敏只在 detail 段做 —— 见 :meth:`CliError.render` 与各调用点。
     """
-    sys.stderr.buffer.write((_redact(line) + "\n").encode("utf-8"))
+    sys.stderr.buffer.write((line + "\n").encode("utf-8"))
     sys.stderr.buffer.flush()
 
 
@@ -867,7 +928,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         _write_stderr(
             "warning: 同步失败（{}），改用本地缓存 {}".format(
-                degraded, os.path.basename(cache_dir)
+                degraded, _redact(os.path.basename(cache_dir))
             )
         )
         print_cached_file(cache_dir, target)
@@ -877,7 +938,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception as exc:  # noqa: BLE001 —— 兜底：干净地失败，别吐 traceback
         # 未预期的异常也要守住「stderr 一行 + 退出码非 0」的契约：
         # agent 侧要的是能读的一行，真实原因靠报告与服务端日志定位。
-        _write_stderr("internal_error: {}".format(_one_line(exc)))
+        # 脱敏只作用在 detail 段：code 段（internal_error）不能被改写。
+        _write_stderr("internal_error: {}".format(_redact(_one_line(exc))))
         return 1
 
     return 0
