@@ -355,6 +355,13 @@ public sealed class IdeaService(
     /// 返回完整表示而不是空响应：前端能立刻把这些条目从本地列表里移除，
     /// 也能显示「已删除 N 条」，不必等重新拉列表。
     /// </para>
+    /// <para>
+    /// <b>已在回收站里的 id 算「已处理」（幂等）</b>：与单条删除
+    /// （<c>DELETE /api/ideas/{id}</c> 对已软删的想法回 204）一个口径 ——
+    /// 不重复写 <c>deleted_at</c>（那会把保留期重新开始）、不发
+    /// <c>idea.deleted</c> 事件（那会让其它设备收到一条假消息），
+    /// 也不把它算进「压根不存在」那 404 里。
+    /// </para>
     /// </remarks>
     public IReadOnlyList<IdeaDto> BulkDelete(IReadOnlyList<string> ids)
     {
@@ -362,13 +369,18 @@ public sealed class IdeaService(
 
         var deleted = repo.InTransaction(r =>
         {
-            var existing = ResolveExisting(r, targets);
-            EnsureSomethingProcessed(targets, existing.Count);
+            var (active, alreadyDeleted) = ResolveForDelete(r, targets);
+
+            // 「已在回收站」也算处理过了：只有压根不存在的才算没处理。
+            EnsureSomethingProcessed(
+                targets,
+                active.Count + alreadyDeleted,
+                "选中的想法都不存在了（可能已被合并）");
 
             // 同一批用同一时刻进回收站。
             var now = DateTimeOffset.UtcNow;
-            var results = new List<IdeaDto>(existing.Count);
-            foreach (var idea in existing)
+            var results = new List<IdeaDto>(active.Count);
+            foreach (var idea in active)
             {
                 r.SoftDelete(idea.Id, now);
 
@@ -528,17 +540,63 @@ public sealed class IdeaService(
     }
 
     /// <summary>
-    /// 传的 id 一个都不存在时报错：「全选错」与「部分对」要能区分开。
+    /// 批量删除用的三态分辨：压根不存在 / 已在回收站 / 还活着。
+    /// </summary>
+    /// <remarks>
+    /// 删除要区分「已在回收站」与「压根不存在」，所以不能直接用
+    /// <see cref="ResolveExisting"/>（它把已软删的与不存在的混在一起，都跳过）。
+    /// <para>
+    /// 「已在回收站」算**已处理**（幂等，与单条删除同口径）：不重复软删、
+    /// 不重复发事件。「压根不存在」才算没处理。
+    /// </para>
+    /// </remarks>
+    private static (List<Idea> Active, int AlreadyDeleted) ResolveForDelete(
+        IdeaRepository repo,
+        IReadOnlyList<string> ids)
+    {
+        var active = new List<Idea>();
+        var alreadyDeleted = 0;
+
+        foreach (var id in ids)
+        {
+            var idea = repo.Get(id);
+
+            if (idea is null)
+            {
+                // 压根没有这条：不算已处理。
+                continue;
+            }
+
+            if (idea.DeletedAt is not null)
+            {
+                // 已经在回收站里：算已处理（幂等）。
+                alreadyDeleted++;
+                continue;
+            }
+
+            active.Add(idea);
+        }
+
+        return (active, alreadyDeleted);
+    }
+
+    /// <summary>
+    /// 传的 id 一个都没处理到时报错：「全选错」与「部分对」要能区分开。
     /// </summary>
     /// <remarks>
     /// 传空列表不算「全选错」：那是「没选东西」，空操作即可。
     /// </remarks>
-    private static void EnsureSomethingProcessed(IReadOnlyList<string> requested, int processed)
+    /// <param name="requested">请求里的 id 列表（去重去空之后）。</param>
+    /// <param name="processed">其中被处理到的条数。</param>
+    /// <param name="detail">报错时给调用方看的说明。</param>
+    private static void EnsureSomethingProcessed(
+        IReadOnlyList<string> requested,
+        int processed,
+        string detail = "选中的想法都不存在了（可能已被删除或合并）")
     {
         if (requested.Count > 0 && processed == 0)
         {
-            throw new ApiException(404, "idea_not_found",
-                "选中的想法都不存在了（可能已被删除或合并）");
+            throw new ApiException(404, "idea_not_found", detail);
         }
     }
 

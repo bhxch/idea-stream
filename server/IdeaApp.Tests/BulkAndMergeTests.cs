@@ -176,6 +176,91 @@ public sealed class BulkAndMergeTests
     }
 
     /// <summary>
+    /// 已在回收站里的 id 算「已处理」（幂等），与单条删除一个口径。
+    /// </summary>
+    /// <remarks>
+    /// 单条删除（<c>DELETE /api/ideas/{id}</c>）对已软删的想法回 204（空操作）。
+    /// 批量删除以前对同一个 id 回 404 —— 同一件事，两种答案。
+    /// <para>
+    /// 幂等不只是「不报错」：再写一次 <c>deleted_at</c> 会把保留期**重新开始**
+    /// （用户点两下删除，那条想法就多留一个月）；重复发 <c>idea.deleted</c> 会让
+    /// 其它设备收到一条「它被删了」的假消息。两条都要挡掉。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Bulk_delete_treats_already_deleted_ideas_as_processed()
+    {
+        var publisher = new RecordingEventPublisher();
+        using var factory = new TestAppFactory(publisher: publisher);
+        using var client = factory.CreateClient();
+
+        var id = await CreateIdeaAsync(client, "先删掉的一条");
+
+        // 单条删除：进回收站。
+        var single = await client.DeleteAsync($"/api/ideas/{id}");
+        Assert.Equal(HttpStatusCode.NoContent, single.StatusCode);
+
+        var deletedAt = QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM idea WHERE id = $id0;", id);
+        Assert.NotNull(deletedAt);
+
+        publisher.Clear();
+
+        // 批量删除同一个 id：幂等。
+        var response = await client.PostAsJsonAsync("/api/ideas/bulk/delete",
+            new { ids = new[] { id } });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(await ReadIdeasAsync(response));
+
+        // deleted_at 没被刷新（保留期没有重新开始）。
+        Assert.Equal(deletedAt, QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM idea WHERE id = $id0;", id));
+
+        // 也不发 idea.deleted 事件（那条想法早就被删过了）。
+        Assert.Empty(publisher.Events);
+    }
+
+    /// <summary>
+    /// 混合批次：只有还活着的那些被真正软删，已在回收站里的原样不动。
+    /// </summary>
+    [Fact]
+    public async Task Bulk_delete_only_soft_deletes_the_ideas_that_are_still_alive()
+    {
+        var publisher = new RecordingEventPublisher();
+        using var factory = new TestAppFactory(publisher: publisher);
+        using var client = factory.CreateClient();
+
+        var already = await CreateIdeaAsync(client, "已经在回收站里的");
+        var alive = await CreateIdeaAsync(client, "还活着的");
+
+        await client.DeleteAsync($"/api/ideas/{already}");
+
+        var deletedAt = QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM idea WHERE id = $id0;", already);
+
+        publisher.Clear();
+
+        var response = await client.PostAsJsonAsync("/api/ideas/bulk/delete",
+            new { ids = new[] { already, alive } });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // 返回的只有真正被软删的那条。
+        var ideas = await ReadIdeasAsync(response);
+        Assert.Equal(alive, Assert.Single(ideas).Id);
+
+        // 已经在回收站里的那条没被动过。
+        Assert.Equal(deletedAt, QuerySingleString(factory.DatabasePath,
+            "SELECT deleted_at FROM idea WHERE id = $id0;", already));
+
+        // 只发一条 idea.deleted 事件（另一条早就发过了）。
+        var events = publisher.Events;
+        Assert.Single(events);
+        Assert.Equal("idea.deleted", events[0].Type);
+    }
+
+    /// <summary>
     /// 换标签也是写操作 → 必须刷新 <c>updated_at</c>（挪到列表最下面）。
     /// </summary>
     [Fact]
