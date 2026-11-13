@@ -2,18 +2,24 @@ import { describe, expect, it } from 'vitest';
 import { reorderToTarget } from './reorder';
 
 describe('reorderToTarget', () => {
-  it('把源挪到目标的位置上（顶替目标，不是插到它后面）', () => {
-    // 拖 A 到 C 上：源落在目标的正上方（第二位），不是排到 C 后面。
-    expect(reorderToTarget(['a', 'b', 'c'], 'a', 'c')).toEqual(['b', 'a', 'c']);
+  it('往下拖：落到目标之后', () => {
+    // [A,B,C] 拖 A 到 C 上 → [B,C,A]
+    expect(reorderToTarget(['a', 'b', 'c'], 'a', 'c')).toEqual(['b', 'c', 'a']);
   });
 
-  it('往后拖也是顶替目标的位置', () => {
-    // 拖 C 到 A 上：源落在目标的正上方（第一位）。
+  it('往上拖：落到目标之前', () => {
+    // [A,B,C] 拖 C 到 A 上 → [C,A,B]
     expect(reorderToTarget(['a', 'b', 'c'], 'c', 'a')).toEqual(['c', 'a', 'b']);
   });
 
-  it('源已经在目标的正上方时顺序不变', () => {
-    expect(reorderToTarget(['a', 'b', 'c'], 'a', 'b')).toEqual(['a', 'b', 'c']);
+  it('往下挪一格也有效果（没有「拖了等于没动」的死角）', () => {
+    // [A,B,C] 拖 A 到 B 上 → [B,A,C]
+    expect(reorderToTarget(['a', 'b', 'c'], 'a', 'b')).toEqual(['b', 'a', 'c']);
+  });
+
+  it('往上挪一格也有效果', () => {
+    // [A,B,C] 拖 C 到 B 上 → [A,C,B]
+    expect(reorderToTarget(['a', 'b', 'c'], 'c', 'b')).toEqual(['a', 'c', 'b']);
   });
 
   it('拖到自己身上不动', () => {

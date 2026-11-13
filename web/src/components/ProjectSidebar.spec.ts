@@ -105,42 +105,47 @@ describe('ProjectSidebar', () => {
     const wrapper = mountSidebar({ mode: 'manual' });
 
     const first = wrapper.get('[data-project-id="project-1"]');
-    const third = wrapper.get('[data-project-id="project-3"]');
     expect(first.classes()).toContain('is-draggable');
 
     await first.trigger('dragstart');
-    await third.trigger('drop');
-
-    // 拖 project-1 到 project-3 上：project-1 落到 project-3 的正上方。
-    expect(wrapper.emitted('reorder')).toEqual([[['project-2', 'project-1', 'project-3']]]);
-  });
-
-  it('拖到谁头上就顶替谁（不是插到它后面）', async () => {
-    const wrapper = mountSidebar({ mode: 'manual' });
-
-    // 拖 project-1 到 project-3 上（中间隔着一个）：
-    // project-1 落到 project-3 的正上方（第二位），不是排到它后面。
-    await wrapper.get('[data-project-id="project-1"]').trigger('dragstart');
     await wrapper.get('[data-project-id="project-3"]').trigger('drop');
 
-    expect(wrapper.emitted('reorder')).toEqual([[['project-2', 'project-1', 'project-3']]]);
+    // 往下拖：落到目标之后。
+    expect(wrapper.emitted('reorder')).toEqual([[['project-2', 'project-3', 'project-1']]]);
   });
 
-  it('往后拖也是顶替目标的位置', async () => {
+  it('往上拖：落到目标之前', async () => {
     const wrapper = mountSidebar({ mode: 'manual' });
 
-    // 拖 project-3 到 project-1 上：project-3 落到 project-1 的正上方（第一位）。
+    // 拖 project-3 到 project-1 上：project-3 落到 project-1 之前（第一位）。
     await wrapper.get('[data-project-id="project-3"]').trigger('dragstart');
     await wrapper.get('[data-project-id="project-1"]').trigger('drop');
 
     expect(wrapper.emitted('reorder')).toEqual([[['project-3', 'project-1', 'project-2']]]);
   });
 
-  it('拖到紧邻的项目上顺序没变，不白发重排请求', async () => {
+  it('往下挪一格也有效果（没有「拖了等于没动」的死角）', async () => {
     const wrapper = mountSidebar({ mode: 'manual' });
 
-    // project-1 已经在 project-2 的正上方了：拖过去顺序不变。
     await wrapper.get('[data-project-id="project-1"]').trigger('dragstart');
+    await wrapper.get('[data-project-id="project-2"]').trigger('drop');
+
+    expect(wrapper.emitted('reorder')).toEqual([[['project-2', 'project-1', 'project-3']]]);
+  });
+
+  it('往上挪一格也有效果', async () => {
+    const wrapper = mountSidebar({ mode: 'manual' });
+
+    await wrapper.get('[data-project-id="project-3"]').trigger('dragstart');
+    await wrapper.get('[data-project-id="project-2"]').trigger('drop');
+
+    expect(wrapper.emitted('reorder')).toEqual([[['project-1', 'project-3', 'project-2']]]);
+  });
+
+  it('拖到自己身上不发重排请求', async () => {
+    const wrapper = mountSidebar({ mode: 'manual' });
+
+    await wrapper.get('[data-project-id="project-2"]').trigger('dragstart');
     await wrapper.get('[data-project-id="project-2"]').trigger('drop');
 
     expect(wrapper.emitted('reorder')).toBeUndefined();

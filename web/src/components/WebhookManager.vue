@@ -28,6 +28,9 @@ const editing = ref<Webhook | null | undefined>(undefined);
 /** 展开投递记录的那个 webhook id（`null` = 都收着）。 */
 const deliveryId = ref<string | null>(null);
 
+/** 等着确认删除的 webhook id（`null` = 没在确认）。 */
+const confirmingId = ref<string | null>(null);
+
 /**
  * 拉列表。
  *
@@ -49,12 +52,14 @@ async function load(): Promise<void> {
 function startCreate(): void {
   editing.value = null;
   deliveryId.value = null;
+  confirmingId.value = null;
 }
 
 /** 开始编辑。 */
 function startEdit(webhook: Webhook): void {
   editing.value = webhook;
   deliveryId.value = null;
+  confirmingId.value = null;
 }
 
 /** 关闭表单。 */
@@ -81,10 +86,25 @@ async function toggleEnabled(webhook: Webhook): Promise<void> {
   }
 }
 
-/** 删除。 */
+/** 问一句再删（删想法、删项目都有二次确认，删 webhook 也一样）。 */
+function askDelete(webhook: Webhook): void {
+  confirmingId.value = webhook.id;
+}
+
+/** 不删了。 */
+function cancelDelete(): void {
+  confirmingId.value = null;
+}
+
+/**
+ * 确认删除。
+ *
+ * 删掉的是配置与它的投递记录 —— 不可逆，所以确认过才发请求。
+ */
 async function remove(webhook: Webhook): Promise<void> {
   try {
     await apiSend<void>('DELETE', `/webhooks/${webhook.id}`);
+    confirmingId.value = null;
     if (deliveryId.value === webhook.id) {
       deliveryId.value = null;
     }
@@ -134,10 +154,19 @@ onMounted(() => {
           <button class="webhooks__toggle" type="button" @click="toggleEnabled(webhook)">
             {{ webhook.enabled ? '禁用' : '启用' }}
           </button>
-          <button class="webhooks__delete" type="button" @click="remove(webhook)">删除</button>
+          <button class="webhooks__delete" type="button" @click="askDelete(webhook)">删除</button>
           <button class="webhooks__deliveries" type="button" @click="toggleDeliveries(webhook)">
             投递记录
           </button>
+        </div>
+
+        <!-- 删 webhook 是破坏性的（配置与投递记录一起没了）：先问一句。 -->
+        <div v-if="confirmingId === webhook.id" class="webhooks__confirm">
+          <span class="webhooks__confirm-text">删除这个 webhook？它的配置和投递记录会一起没了。</span>
+          <button class="webhooks__confirm-yes" type="button" @click="remove(webhook)">
+            确认删除
+          </button>
+          <button class="webhooks__confirm-no" type="button" @click="cancelDelete">取消</button>
         </div>
 
         <DeliveryList v-if="deliveryId === webhook.id" :webhook-id="webhook.id" />
@@ -225,6 +254,21 @@ onMounted(() => {
 
 .webhooks__delete {
   color: var(--danger);
+}
+
+.webhooks__confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+}
+
+.webhooks__confirm-text {
+  flex: 1;
+  font-size: 12px;
 }
 
 .webhooks__empty {

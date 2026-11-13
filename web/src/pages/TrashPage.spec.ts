@@ -199,6 +199,20 @@ describe('TrashPage', () => {
     wrapper.unmount();
   });
 
+  it('页面上说明回收站里的内容到期会自动清理（不说保留期天数）', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const hint = wrapper.get('.trash__hint').text();
+    // 用户得知道这些东西怎么才能真没了：到期自动清理。
+    expect(hint).toContain('自动清理');
+    // 保留期是服务端配置的事，页面与 API 都不提供设置入口 —— 要说清楚。
+    expect(hint).toContain('保留期');
+    // 保留期由服务端配置决定，页面不提供设置入口：不说具体天数。
+    expect(hint).not.toMatch(/\d+\s*天/);
+    wrapper.unmount();
+  });
+
   it('回收站是空的时给一句说明', async () => {
     apiGet.mockImplementation((path: string) =>
       Promise.resolve(path === '/trash' ? [] : []),

@@ -98,7 +98,10 @@ onMounted(() => {
     <PageNav />
 
     <h1>回收站</h1>
-    <p class="trash__hint">回收站里的条目到期自动清理；在那之前可以恢复。</p>
+    <p class="trash__hint">
+      回收站里的内容到期后会自动清理（保留期由服务端配置决定，页面与 API
+      都不提供设置入口）；在那之前可以恢复。
+    </p>
 
     <ul class="trash__list">
       <li

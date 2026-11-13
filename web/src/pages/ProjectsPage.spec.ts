@@ -203,8 +203,9 @@ describe('ProjectsPage', () => {
     await wrapper.get('[data-project-id="project-3"]').trigger('drop');
     await flushPromises();
 
+    // 往下拖：落到目标之后。
     expect(apiSend).toHaveBeenCalledWith('POST', '/projects/reorder', {
-      ids: ['project-2', 'project-1', 'project-3'],
+      ids: ['project-2', 'project-3', 'project-1'],
     });
     wrapper.unmount();
   });

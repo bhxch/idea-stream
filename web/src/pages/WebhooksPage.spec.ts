@@ -143,14 +143,29 @@ describe('WebhooksPage', () => {
     wrapper.unmount();
   });
 
-  it('删除：DELETE /webhooks/{id}', async () => {
+  it('删除要二次确认：确认后才 DELETE', async () => {
     const wrapper = mountPage();
     await flushPromises();
 
     await wrapper.get('[data-webhook-id="wh-1"] .webhooks__delete').trigger('click');
+    // 还没确认，不该发请求。
+    expect(apiSend).not.toHaveBeenCalledWith('DELETE', '/webhooks/wh-1');
+
+    await wrapper.get('.webhooks__confirm-yes').trigger('click');
     await flushPromises();
 
     expect(apiSend).toHaveBeenCalledWith('DELETE', '/webhooks/wh-1');
+    wrapper.unmount();
+  });
+
+  it('删除的二次确认可以取消（不发请求）', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('[data-webhook-id="wh-1"] .webhooks__delete').trigger('click');
+    await wrapper.get('.webhooks__confirm-no').trigger('click');
+
+    expect(apiSend).not.toHaveBeenCalledWith('DELETE', '/webhooks/wh-1');
     wrapper.unmount();
   });
 
