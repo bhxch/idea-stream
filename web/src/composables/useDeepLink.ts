@@ -42,19 +42,24 @@ export function useDeepLink(options: UseDeepLinkOptions) {
   const highlightedId = ref<string | null>(null);
 
   /**
-   * 已经定位过的 id：同一条不重复定位。
+   * **已经定位过的 id 集合**（不是一个 id！）。
    *
-   * `focusIdeaId` 不会自动复位（合并之后一直记着新条目的 id），
-   * 所以这里自己记一份「定位过了」，列表再变也不会反复滚过去。
-   */
-  const locatedId = ref<string | null>(null);
-
-  /**
-   * 定位到了没有。
+   * 为什么是集合：
    *
-   * 定位过之后**不能再无脑滚到底** —— 那会把刚定位到的锚点挤出视野。
+   * - 候选是多个（合并结果 `focusIdeaId` 优先，其次是深链 `?idea=`），
+   *   而且深链 id 会**一直留在 URL 里** —— 只记「最后定位过的那一条」的话，
+   *   深链定位过一次之后，每次列表变化都会命中它，
+   *   合并出来的新条目（候选里优先级更高）反而永远轮不上定位。
+   * - 反过来，已经定位过的 id **不能**再定位一次：
+   *   深链那条在列表每次变化时都把用户拽回去，SSE 每来一条新内容就跳一次。
+   *
+   * 集合两条都满足：候选循环里跳过集合里已有的，定位到的就加进集合。
+   *
+   * ⚠️ 这里用**普通 Set**，不是响应式的 —— 它只是内部状态，不进模板。
+   * （Vue 的响应式 Set 只追踪 `has`，不追踪 `add`/`delete`，
+   * 原地改会让依赖它的计算失效不了 —— 参见 `busyIds` 的注释。）
    */
-  const anchored = ref(false);
+  const locatedIds = new Set<string>();
 
   const highlightMs = options.highlightMs ?? DEFAULT_HIGHLIGHT_MS;
 
@@ -96,16 +101,24 @@ export function useDeepLink(options: UseDeepLinkOptions) {
    * **必须在 DOM 更新之后调用**（用 `flush:'post'` 或 `await nextTick()`）：
    * 之前元素还没进 DOM，找不到它，什么都不会发生。
    *
-   * @returns true 表示「锚点已经定位到了」（含之前就定位过的情况）。
+   * 候选按优先级逐个试：已经定位过的**跳过并继续往下找**
+   * （合并结果优先于深链，深链定位过了不代表合并结果不用定位）。
+   *
+   * @returns true 表示「当前锚点已经定位过」——
+   *   本次定位到了，或者之前就定位过（它还在候选里）。
+   *   调用方据此决定「别再滚到底」：滚到底会把锚点挤出视野。
    */
   function locateAnchor(): boolean {
     const candidates = options.anchorIds().filter((id): id is string => !!id);
-    // 当前锚点就是已经定位过的那条：不用再滚一次。
-    if (locatedId.value && candidates.includes(locatedId.value)) {
-      anchored.value = true;
-      return true;
-    }
+    /** 候选里有没有「早就定位过」的（定位过就不再重复定位）。 */
+    let alreadyLocated = false;
     for (const id of candidates) {
+      if (locatedIds.has(id)) {
+        // 已经定位过这一条：不重复定位（否则列表一变就把用户拽回老锚点）。
+        // 但它仍是当前锚点之一 —— 返回值要算上，**继续往下找**别的候选。
+        alreadyLocated = true;
+        continue;
+      }
       if (!options.isVisible(id)) {
         // 不在可见列表里：那条可能已经被删了，或者被当前过滤条件挡住了 ——
         // 静默忽略，不报错。
@@ -116,14 +129,13 @@ export function useDeepLink(options: UseDeepLinkOptions) {
         // DOM 里还没有这条：等列表再变一次再试（**不**标记成已定位）。
         continue;
       }
-      locatedId.value = id;
-      anchored.value = true;
+      locatedIds.add(id);
       // jsdom 里没有 scrollIntoView（浏览器才有），可选调用。
       element.scrollIntoView?.({ block: 'center' });
       highlight(id);
       return true;
     }
-    return false;
+    return alreadyLocated;
   }
 
   // flush:'post' —— 等组件重渲染完，条目已经在 DOM 里了，
@@ -136,5 +148,5 @@ export function useDeepLink(options: UseDeepLinkOptions) {
     { flush: 'post' },
   );
 
-  return { highlightedId, anchored, locateAnchor };
+  return { highlightedId, locateAnchor };
 }

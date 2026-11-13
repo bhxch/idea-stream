@@ -31,7 +31,6 @@ describe('useDeepLink', () => {
     expect(deepLink.locateAnchor()).toBe(true);
     expect(item.scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
     expect(deepLink.highlightedId.value).toBe('idea-1');
-    expect(deepLink.anchored.value).toBe(true);
   });
 
   it('锚点不在可见列表里时静默忽略（不报错、不高亮、不滚）', () => {
@@ -47,7 +46,6 @@ describe('useDeepLink', () => {
 
     expect(deepLink.locateAnchor()).toBe(false);
     expect(deepLink.highlightedId.value).toBe(null);
-    expect(deepLink.anchored.value).toBe(false);
     expect(item.scrollIntoView).not.toHaveBeenCalled();
   });
 
@@ -65,7 +63,7 @@ describe('useDeepLink', () => {
     // 列表里已经有它了，但 DOM 里还没有：定位不到，也不该标记成「定位过了」。
     ids.value = ['idea-1'];
     await nextTick();
-    expect(deepLink.anchored.value).toBe(false);
+    expect(deepLink.locateAnchor()).toBe(false);
     expect(deepLink.highlightedId.value).toBe(null);
 
     // 它进 DOM 之后再来一次变化：这时才定位得到。
@@ -74,7 +72,7 @@ describe('useDeepLink', () => {
     await nextTick();
 
     expect(item.scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
-    expect(deepLink.anchored.value).toBe(true);
+    expect(deepLink.locateAnchor()).toBe(true);
   });
 
   it('定位发生在 DOM 更新之后：条目刚进 DOM 也能定位到', async () => {
@@ -148,6 +146,57 @@ describe('useDeepLink', () => {
     deepLink.locateAnchor();
     expect(second.scrollIntoView).toHaveBeenCalledTimes(1);
     expect(deepLink.highlightedId.value).toBe('idea-2');
+  });
+
+  it('深链定位过之后，另一个候选（合并结果）仍会被定位', () => {
+    // 回归用例：只记「最后定位过的那一条」的话，深链定位过一次之后
+    // 就永远命中它 —— 合并出来的新条目（候选里优先级更高）再也轮不上定位。
+    const container = document.createElement('div');
+    const deepLinkItem = makeItem(container, 'idea-1');
+    const mergedItem = makeItem(container, 'idea-merged');
+    const focus = ref<string | null>(null);
+
+    const deepLink = useDeepLink({
+      container: shallowRef<HTMLElement | null>(container),
+      anchorIds: () => [focus.value, 'idea-1'],
+      isVisible: () => true,
+      watchSources: [focus],
+    });
+
+    // 深链那条先定位到（URL 里的 ?idea= 会一直留着）。
+    expect(deepLink.locateAnchor()).toBe(true);
+    expect(deepLinkItem.scrollIntoView).toHaveBeenCalledTimes(1);
+
+    // 合并结果出来了：它也得被定位。
+    focus.value = 'idea-merged';
+    expect(deepLink.locateAnchor()).toBe(true);
+    expect(mergedItem.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(deepLink.highlightedId.value).toBe('idea-merged');
+  });
+
+  it('已经定位过的候选不会在列表再次变化时把用户拽回去', async () => {
+    const container = document.createElement('div');
+    const item = makeItem(container, 'idea-1');
+    const ids = ref<string[]>([]);
+
+    const deepLink = useDeepLink({
+      container: shallowRef<HTMLElement | null>(container),
+      anchorIds: () => ['idea-1'],
+      isVisible: (id) => ids.value.includes(id),
+      watchSources: [ids],
+    });
+
+    ids.value = ['idea-1'];
+    await nextTick();
+    expect(item.scrollIntoView).toHaveBeenCalledTimes(1);
+
+    // 列表又变了（SSE 来新内容）：不该再滚回去把用户拽回老锚点。
+    ids.value = ['idea-1', 'idea-2'];
+    await nextTick();
+    expect(item.scrollIntoView).toHaveBeenCalledTimes(1);
+    // 但它仍是当前锚点：返回 true（调用方据此别再无脑滚到底）。
+    expect(deepLink.locateAnchor()).toBe(true);
+    expect(item.scrollIntoView).toHaveBeenCalledTimes(1);
   });
 
   it('高亮过一会儿自己撤掉', () => {
