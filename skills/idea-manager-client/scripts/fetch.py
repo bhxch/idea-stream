@@ -59,6 +59,30 @@ VERSION_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # 清单里的哈希：64 位十六进制。
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 
+# 脱敏用的占位符。
+MASK = "***"
+
+# 地址里的 userinfo（user:password@host）—— 回显地址时抹掉。
+#
+# 按 URL 结构来（先分出 scheme，再看 authority 里有没有 '@'），
+# **不是**按最后一个 '@' 切：按 '@' 切会把路径里的 '@'（http://host/a@b）
+# 误当成 userinfo，把一段正常的路径改成 "***@b"。
+BASE_URL_USERINFO = re.compile(
+    r"^(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)?(?P<userinfo>[^/?#@\s]*)@"
+)
+
+# 文本里的 userinfo（user:password@host）——错误信息里抹掉。
+#
+# 与上面那个的区别：这里要能在**一段文本**里找（异常消息可能只带半个 URL），
+# 所以不锚在开头；userinfo 段必须带冒号（user:password），
+# 免得把普通的 "someone@example.com" 也当成凭据。
+USERINFO_PATTERN = re.compile(
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)?"
+    r"(?P<userinfo>[^/?#@\s]*:[^/?#@\s]*)"
+    r"@"
+    r"(?P<host>[^/?#@\s]*)"
+)
+
 
 # --------------------------------------------------------------------------
 # 错误
@@ -105,7 +129,8 @@ class CliError(Exception):
         self.detail = detail
 
     def render(self) -> str:
-        return "{}: {}".format(self.code, _one_line(self.detail))
+        # 脱敏在这一层做（而不是各错误码各做一遍）：所有错误码都从这里过。
+        return "{}: {}".format(self.code, _redact(_one_line(self.detail)))
 
 
 class ConfigError(CliError):
@@ -150,6 +175,90 @@ class IntegrityError(CliError):
 
 
 # --------------------------------------------------------------------------
+# 脱敏
+# --------------------------------------------------------------------------
+
+
+def _redact(text: str) -> str:
+    """把凭据从一段文本里抹掉。
+
+    错误信息是给人（和 agent 的上下文）看的 —— 凭据进去就等于泄了：
+    stderr 会进日志、进 agent 的上下文。
+
+    两道一起上：
+    * **已知的凭据值**（环境变量里的密码 / token、地址里带的密码）→ 换成 ``***``；
+    * **文本里 URL 的 userinfo**（``user:password@host``）→ 换成 ``***@``。
+
+    只做第二道不够：异常消息未必带着 URL（比如 urllib 抱怨端口时只说
+    ``nonnumeric port: 'sekret-pw@host'``），密码会**原样**出现在里面。
+    """
+    for value in _secret_values():
+        if value:
+            text = text.replace(value, MASK)
+
+    return USERINFO_PATTERN.sub(_redact_userinfo, text)
+
+
+def _redact_userinfo(match: "re.Match") -> str:
+    """把一段文本里的 userinfo 换成 ``***@``（没有 host 就整个抹掉）。"""
+    scheme = match.group("scheme") or ""
+    host = match.group("host")
+
+    if not host:
+        # 整个 URL 就是凭据段（没有 host）→ 整个抹掉。
+        return MASK
+
+    return "{}***@{}".format(scheme, host)
+
+
+def _secret_values() -> List[str]:
+    """本进程里可能出现在输出中的凭据值。
+
+    凭据可能来自两处：
+    * 环境变量（``IDEA_PASS`` / ``IDEA_TOKEN``）；
+    * **实例地址里的 userinfo** —— 有人会把密码写进 URL，
+      那时它不在环境变量里，但也绝不能进 stderr。
+    """
+    values: List[str] = []
+
+    for name in ("IDEA_PASS", "IDEA_TOKEN"):
+        raw = os.environ.get(name, "")
+        for value in (raw, raw.strip()):
+            if value:
+                values.append(value)
+
+    password = _password_in_base_url()
+    if password:
+        values.append(password)
+
+    # basic auth 的那串 base64：请求头若被回显出来，同样是凭据。
+    user = os.environ.get("IDEA_USER", "").strip()
+    if user and password:
+        raw = "{}:{}".format(user, password).encode("utf-8")
+        values.append(base64.b64encode(raw).decode("ascii"))
+
+    return values
+
+
+def _password_in_base_url() -> str:
+    """实例地址的 userinfo 里带的密码（没有就返回空串）。
+
+    userinfo 是 ``user:password``，按**第一个**冒号切（RFC 里的规矩：
+    用户名里不能有冒号，密码里可以）。
+    """
+    raw = os.environ.get("IDEA_BASE_URL", "")
+    match = BASE_URL_USERINFO.match(raw)
+    if not match:
+        return ""
+
+    userinfo = match.group("userinfo")
+    if ":" not in userinfo:
+        return ""
+
+    return userinfo.split(":", 1)[1]
+
+
+# --------------------------------------------------------------------------
 # 环境与地址
 # --------------------------------------------------------------------------
 
@@ -176,19 +285,26 @@ def resolve_base_url() -> str:
         raise ConfigError(
             "invalid_config",
             "IDEA_BASE_URL 不是合法的实例地址：{}（要带 scheme，如 https://ideas.example.com）".format(
-                _redact_userinfo(raw)
+                _redact_base_url(raw)
             ),
         )
 
     return raw.rstrip("/")
 
 
-def _redact_userinfo(raw: str) -> str:
-    """错误信息里回显地址时去掉 userinfo（有人会把密码写在 URL 里）。"""
-    head, sep, tail = raw.rpartition("@")
-    if not sep:
+def _redact_base_url(raw: str) -> str:
+    """回显实例地址时把 userinfo 抹掉（有人会把密码写在 URL 里）。
+
+    按 URL 结构来（先分出 scheme，再看 authority 里有没有 '@'），
+    不是按最后一个 '@' 切 —— 按 '@' 切会把路径里的 '@'（http://host/a@b）
+    误当成 userinfo。
+    """
+    match = BASE_URL_USERINFO.match(raw)
+    if not match:
         return raw
-    return "***@" + tail
+
+    scheme = match.group("scheme") or ""
+    return "{}***@{}".format(scheme, raw[match.end():])
 
 
 def resolve_cache_root() -> str:
@@ -262,6 +378,11 @@ def fetch_bytes(url: str) -> bytes:
     except http.client.HTTPException as exc:
         # 传输中断（响应体没读全、连接被掐断……）：
         # 这是网络层的失败，不是「服务端说了什么」——归 network_error。
+        raise NetworkError(_one_line(exc))
+    except ValueError as exc:
+        # urllib 对畸形地址/端口的抱怨（"nonnumeric port: …"）：
+        # 请求层的问题，不是内部 bug —— 归 network_error。
+        # （不同 Python 版本抛的异常类型不一样，这里都收着。）
         raise NetworkError(_one_line(exc))
     except (TimeoutError, OSError) as exc:
         raise NetworkError(_one_line(exc))
@@ -422,7 +543,12 @@ def sync(base_url: str, cache_root: str) -> Tuple[Manifest, str]:
         return manifest, target
 
     os.makedirs(cache_root, exist_ok=True)
-    temporary = os.path.join(cache_root, ".tmp-" + manifest.version)
+
+    # 临时目录带上 pid：两个进程同时取件时，第二个不能删掉第一个正在写的目录。
+    # 名字还是「同目录下的临时目录」——改名落位的原子性不受影响。
+    temporary = os.path.join(
+        cache_root, ".tmp-" + manifest.version + "-" + str(os.getpid())
+    )
 
     # 上一次崩了可能留下半个临时目录：从干净状态重来。
     _remove_path(temporary)
@@ -614,10 +740,11 @@ def load_cached_manifest(cache_root: str) -> Optional[Tuple[Manifest, str]]:
 # --------------------------------------------------------------------------
 
 
-def print_from_cache(cache_dir: str, manifest: Manifest, relative: Optional[str]) -> None:
-    """打印缓存里的一份文件。
+def resolve_target(manifest: Manifest, relative: Optional[str]) -> str:
+    """定下要取哪一份文件。
 
-    相对路径要**在清单里**才给：清单之外的文件不在分发副本内，
+    不给参数就是入口页（清单里的 ``entry``）；给了相对路径，
+    那它必须**在清单里**：清单之外的文件不在分发副本内，
     也不该被当成说明书的一部分。
     """
     target = relative if relative else manifest.entry
@@ -630,6 +757,16 @@ def print_from_cache(cache_dir: str, manifest: Manifest, relative: Optional[str]
     if target not in manifest.paths:
         raise NotFoundError("分发副本里没有这个文件：{}".format(target))
 
+    return target
+
+
+def print_from_cache(cache_dir: str, manifest: Manifest, relative: Optional[str]) -> None:
+    """打印缓存里的一份文件。"""
+    print_cached_file(cache_dir, resolve_target(manifest, relative))
+
+
+def print_cached_file(cache_dir: str, target: str) -> None:
+    """把缓存里的那一份文件打到 stdout。"""
     path = os.path.join(cache_dir, *target.split("/"))
     try:
         with open(path, "rb") as handle:
@@ -660,8 +797,11 @@ def _write_stderr(line: str) -> None:
     """往 stderr 写一行（UTF-8）。
 
     同样走 ``buffer``：错误信息里有中文，不能让 locale 决定它能不能写出去。
+
+    脱敏也在这里再做一遍：这是 stderr 的**唯一出口**，警告行与兜底的
+    internal_error 也要守住「凭据不回显」那条。
     """
-    sys.stderr.buffer.write((line + "\n").encode("utf-8"))
+    sys.stderr.buffer.write((_redact(line) + "\n").encode("utf-8"))
     sys.stderr.buffer.flush()
 
 
@@ -699,6 +839,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
 
         cache_root = resolve_cache_root()
+        degraded = ""
 
         try:
             manifest, cache_dir = sync(base_url, cache_root)
@@ -710,13 +851,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             if cached is None:
                 raise
             manifest, cache_dir = cached
-            _write_stderr(
-                "warning: 同步失败（{}），改用本地缓存 {}".format(
-                    exc.code, os.path.basename(cache_dir)
-                )
-            )
+            degraded = exc.code
 
-        print_from_cache(cache_dir, manifest, args.path)
+        if not degraded:
+            print_from_cache(cache_dir, manifest, args.path)
+            return 0
+
+        # 降级：先确认缓存里有没有要取的东西。
+        # 取不到 → 只打那一行**错误**（把「本次是离线降级」写进 detail），
+        # 不再另打一行 warning —— 错误输出只该有一行。
+        try:
+            target = resolve_target(manifest, args.path)
+        except CliError as exc:
+            raise CliError(exc.code, "（本次是离线降级，用的是本地缓存）{}".format(exc.detail))
+
+        _write_stderr(
+            "warning: 同步失败（{}），改用本地缓存 {}".format(
+                degraded, os.path.basename(cache_dir)
+            )
+        )
+        print_cached_file(cache_dir, target)
     except CliError as exc:
         _write_stderr(exc.render())
         return exc.exit_code

@@ -25,6 +25,7 @@ description: 管理本地 idea 记事本（项目、想法、标签、完成状�
 | `IDEA_USER` | 否 | nginx basic auth 用户名（与密码同时存在时才发） |
 | `IDEA_PASS` | 否 | nginx basic auth 密码 |
 | `IDEA_TOKEN` | 否 | 可选。存在时额外发 `X-Api-Key` 头 |
+| `IDEA_SKILL_CACHE_DIR` | 否 | 缓存根目录（默认 `${XDG_CACHE_HOME:-~/.cache}/idea-skill`） |
 
 ## 取件失败怎么查
 
@@ -34,3 +35,4 @@ description: 管理本地 idea 记事本（项目、想法、标签、完成状�
 - `skill_not_distributed`：服务端没有分发 skill 内容（部署漏了 `skill/` 目录）。
 - `not_found`：要取的文件不存在。
 - `skill_integrity_error`：取到的内容与服务端清单对不上（多半是传输中被改了），重试一次。
+- 服务端暂时连不上、但本地有缓存时：stderr 会有一行 `warning:`，这时拿到的是**上一版**手册。

@@ -11,6 +11,7 @@
 包括 stdout/stderr 的分工与退出码。
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -74,6 +75,8 @@ class _State(object):
         self.absolute = {"/openapi/v1.json": OPENAPI_BODY}
         # 记下被请求过的路径，用来断言「绝对路径是直连服务端的」。
         self.requested = []
+        # 记下每次请求的头，用来断言认证头发对了。
+        self.headers = []
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -83,6 +86,7 @@ class _Handler(BaseHTTPRequestHandler):
         state = self.server.state
         path = urllib.parse.urlsplit(self.path).path
         state.requested.append(path)
+        state.headers.append(dict(self.headers))
 
         if state.deny:
             self._send(401, b'{"code":"unauthorized","detail":"no"}', "application/problem+json")
@@ -401,6 +405,77 @@ class FetchTest(unittest.TestCase):
         self.assertNotIn(password, out)
         self.assertEqual(out, "")
 
+    # -- 地址里的密码也不许漏 -----------------------------------------------
+
+    def test_never_echoes_the_password_in_the_base_url_when_the_port_is_broken(self):
+        """地址里带密码且端口解析不出来 → 异常消息里不许出现那个密码。
+
+        urllib 抱怨端口时会把整段 authority 说出来（"nonnumeric port: 'pw@host'"），
+        密码就跟着进了 stderr —— 这是实测过的泄漏，不是推测。
+        """
+        code, out, err = self.run_fetch(
+            [], base_url="http://user:sekret-pw@nonexistent.invalid"
+        )
+
+        self.assertNotIn("sekret-pw", err)
+        self.assertNotIn("sekret-pw", out)
+        self.assertIn("network_error", err)
+        self.assertEqual(code, 2)
+
+    def test_never_echoes_the_password_in_the_base_url_when_the_path_has_a_space(self):
+        """地址里带密码且路径含空格 → 异常消息里不许出现那个密码。"""
+        code, out, err = self.run_fetch(
+            [], base_url="http://user:sekret-pw@127.0.0.1:1/a b"
+        )
+
+        self.assertNotIn("sekret-pw", err)
+        self.assertNotIn("sekret-pw", out)
+        self.assertEqual(len(err.strip().splitlines()), 1, "错误只该有一行：{}".format(err))
+
+    def test_never_echoes_the_password_in_the_base_url_without_a_scheme(self):
+        """地址没带 scheme（连 userinfo 带密码）→ 回显地址时也不许出现那个密码。"""
+        code, out, err = self.run_fetch([], base_url="user:sekret-pw@example.invalid")
+
+        self.assertNotIn("sekret-pw", err)
+        self.assertNotIn("sekret-pw", out)
+        self.assertIn("invalid_config", err)
+        self.assertEqual(code, 1)
+
+    def test_keeps_the_at_sign_in_a_path_intact(self):
+        """路径里的 '@' 不是 userinfo：脱敏不许把它当成密码段抹掉。
+
+        旧做法是按最后一个 '@' 切（rpartition），那样 "host/a@b" 会被切成 "***@b"。
+        """
+        code, out, err = self.run_fetch([], base_url="host.invalid/a@b")
+
+        self.assertNotIn("***", err)
+        self.assertIn("host.invalid/a@b", err)
+
+    # -- 认证头与 --help ----------------------------------------------------
+
+    def test_sends_basic_auth_and_api_key_headers(self):
+        """IDEA_USER/IDEA_PASS → Basic 头；IDEA_TOKEN → X-Api-Key 头。"""
+        code, out, err = self.run_fetch(
+            [],
+            env={"IDEA_USER": "agent", "IDEA_PASS": "pw-1234", "IDEA_TOKEN": "tok-5678"},
+        )
+
+        self.assertEqual(code, 0, err)
+
+        headers = dict((name.lower(), value) for name, value in self.server.state.headers[-1].items())
+        expected = base64.b64encode(b"agent:pw-1234").decode("ascii")
+        self.assertEqual(headers.get("authorization"), "Basic " + expected)
+        self.assertEqual(headers.get("x-api-key"), "tok-5678")
+
+    def test_help_does_not_mention_credentials(self):
+        """--help 里不许出现密码相关的词（命令行不接受密码）。"""
+        code, out, err = self.run_fetch(["--help"])
+
+        self.assertEqual(code, 0)
+        lowered = (out + err).lower()
+        for word in ("pass", "password", "token", "secret"):
+            self.assertNotIn(word, lowered, "--help 里不该出现 {}".format(word))
+
     # -- 缓存目录 -----------------------------------------------------------
 
     def test_uses_the_xdg_cache_home_by_default(self):
@@ -435,6 +510,20 @@ class FetchTest(unittest.TestCase):
         # 降级的那行提示也不能带凭据
         self.assertNotIn(password, err)
         self.assertNotIn(password, out)
+
+    def test_reports_one_line_when_the_degraded_cache_lacks_the_file(self):
+        """降级 + 缓存里没有那个文件 → stderr 只该有一行（错误），不再另打 warning。"""
+        code, out, err = self.run_fetch([])
+        self.assertEqual(code, 0, err)
+
+        dead = "http://127.0.0.1:{}".format(free_port())
+        code, out, err = self.run_fetch(["references/nope.md"], base_url=dead)
+
+        self.assertEqual(code, 1)
+        self.assertIn("not_found", err)
+        self.assertEqual(len(err.strip().splitlines()), 1, "错误只该有一行：{}".format(err))
+        self.assertNotIn("warning", err)
+        self.assertEqual(out, "")
 
     def test_falls_back_to_the_old_cache_when_a_download_is_cut_off(self):
         """同步到一半传输断了 → 用旧版本（旧版本留着就是为了这一刻）。"""
