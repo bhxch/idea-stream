@@ -220,12 +220,15 @@ OpenApiExporter.ExportIfRequested(app);
 // 那个 catch-all 会把「路径打错」变成 200 + HTML，而这个 API 是给 agent 读的
 // （契约在 openapi/idea-v1.json）—— agent 只看状态码会把「路径打错」当成成功。
 //
-// 用 **Map** 而不是 **MapFallback**：.NET 10 的 MapFallback 有两族公开重载
-// （(string, RequestDelegate) 与 (string, Delegate)），本轮两次隔离探针
-// 各测到一个，结论相反 —— 传 RequestDelegate 的那族注册出 "/ddd/{**rest}"
+// 用 **Map** 而不是 **MapFallback**：.NET 10 的 MapFallback 有 4 个公开重载 ——
+// 两族（RequestDelegate 族与 Delegate 族），每族两个（带 pattern 与不带 pattern）：
+// (RequestDelegate)、(string, RequestDelegate)、(Delegate)、(string, Delegate)。
+// 本轮两次隔离探针各测到其中一族，观测到的行为相反 ——
+// 传 RequestDelegate 的那族注册出 "/ddd/{**rest}"
 // （Order=int.MaxValue、pattern 被尊重），传 lambda 的那族（lambda 绑定到
 // Delegate 重载）注册出的是 "{*path:nonfile}"、Order=0。
-// 同一个 API 两族重载行为不一致，**不赌它**：显式写 pattern 的 Map 更可控。
+// **两族为什么不一样，原因没有查清**（没读框架源码，也没找到说明它的文档）。
+// 既然同一个 API 两族重载行为不一致，**不赌它**：显式写 pattern 的 Map 更可控。
 //
 // Map 的字面量段 "api" 让路由优先走字面量转移（胜过 catch-all 模板），
 // 四条验收口径都实测过：

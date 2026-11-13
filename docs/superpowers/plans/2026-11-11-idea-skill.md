@@ -251,6 +251,7 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 | `project_not_found` | 项目不存在 | 同上 |
 | `inbox_not_deletable` | 内置收件箱不能删 | 换个项目 |
 | `invalid_content` | 正文为空或全空白 | 补上正文再提交 |
+| `invalid_request_body` | 请求体不是合法 JSON（模型绑定阶段就失败了） | 检查发出去的 body 是不是一个 JSON 文档 |
 | `invalid_project_name` | 项目名为空或全空白 | 补上名字 |
 | `invalid_reorder_ids` | 重排的 ids 为空 | 别发空的 reorder |
 | `invalid_sort_mode` | 排序方式不是 `recent` / `manual` | 用这两个值之一 |
@@ -273,7 +274,8 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 | `delivery_queue_full` | 投递队列已满（503），**这次手动重投没排上** | 稍后重试；事件路径的队列满是静默丢弃 + 日志，不会返回 503 |
 
 （Task 11 的 webhook 相关 `code` 已补进这张表；Task 15 复审又补了设置相关的两个
-`code` —— `invalid_sort_mode` 与 `setting_key_not_writable`。
+`code` —— `invalid_sort_mode` 与 `setting_key_not_writable`；
+最终评审的修复波又补了模型绑定失败的 `invalid_request_body`（400）。
 另外 500 的 `internal_error` 是服务端兜底码，含义是「未预期的异常，看服务端日志」，
 agent 侧只需当成「重试或报错」，不必分支处理。）
 

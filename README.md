@@ -134,6 +134,12 @@ IDEA_PublicBaseUrl=https://ideas.example.com \
 不带前缀的环境变量也认（`Urls=`、`Trash__RetentionDays=` 仍然生效）；两套并存，
 **带 `IDEA_` 前缀的优先**（后注册的 provider 赢）。
 
+> ⚠️ **`IDEA_` 前缀的优先级比命令行参数高** —— 与 ASP.NET Core 的常规约定**相反**
+> （常规是命令行参数压过环境变量）。原因是 `IDEA_` 这套 provider 注册得**更晚**，
+> 而配置源按注册顺序决胜，后注册的赢。
+> 实测：`IDEA_Urls=http://127.0.0.1:5192 ./IdeaApp --urls http://127.0.0.1:5193`
+> 监听的是 **5192**（`IDEA_` 的那个），5193 不通。
+
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `Urls` | `http://127.0.0.1:5080` | Kestrel 监听地址（只绑回环，对外走 nginx） |

@@ -118,7 +118,9 @@ function buildHeaders(): Record<string, string> {
  *
  * 新建时 `null` 与 `""` 都表示「不设密钥」。
  *
- * ⚠️ **值不 trim**：密钥首尾的空白是有意义的，trim 会静默改掉用户填的东西。
+ * ⚠️ **后端会 trim**（`WebhookService.NormalizeSecret`：去掉首尾空白，
+ * 空串与 null 都表示「没有密钥」）—— 这里原样发过去即可，
+ * 不必在前端先 trim 一次。
  * 只用 trim 判断「是不是留空了」（留空 → `null` = 不改）。
  */
 function secretValue(): string | null {

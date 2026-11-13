@@ -239,6 +239,7 @@ argparse 的用法错误不在此列：它打的是多行 usage 提示、退出�
 | `project_not_found` | 项目不存在 | 同上 |
 | `inbox_not_deletable` | 内置收件箱不能删 | 换个项目 |
 | `invalid_content` | 正文为空或全空白 | 补上正文再提交 |
+| `invalid_request_body` | 请求体不是合法 JSON（模型绑定阶段就失败了） | 检查发出去的 body 是不是一个 JSON 文档 |
 | `invalid_project_name` | 项目名为空或全空白 | 补上名字 |
 | `invalid_reorder_ids` | 重排的 ids 为空 | 别发空的 reorder |
 | `invalid_sort_mode` | 排序方式不是 `recent` / `manual` | 用这两个值之一 |

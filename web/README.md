@@ -27,7 +27,7 @@ web/
   tsconfig.node.json    vite.config.ts 等 Node 侧文件的 TS 配置
   src/
     main.ts             应用入口：createApp + router + 样式
-    App.vue             根组件：外壳、导航、SSE 订阅
+    App.vue             根组件：路由出口（RouterView）+ 全局提示条（ToastHost）
     router.ts           路由表（history 模式）
     api/                后端调用层
       client.ts         fetch 封装、ApiError、路径归一
@@ -39,7 +39,7 @@ web/
       settings.ts       设置项
     components/         可复用组件（列表项、编辑器、对话框、筛选栏……）
     pages/              路由级页面
-      HomePage.vue         /                    收件箱
+      HomePage.vue         /                    收件箱（SSE 订阅在这里）
       ProjectsPage.vue     /projects            项目管理
       TrashPage.vue        /trash               回收站
       WebhooksPage.vue     /webhooks            webhook 管理

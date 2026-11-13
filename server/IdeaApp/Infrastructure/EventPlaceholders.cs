@@ -42,6 +42,10 @@ public static class EventPlaceholders
     }
 
     /// <summary>想法的深链：<c>{公开地址}/?idea={想法 id}</c>。</summary>
+    /// <remarks>
+    /// 公开地址的**尾部斜杠要裁掉**：<c>https://x.example/</c> 直接拼上
+    /// <c>/?idea=…</c> 会得到 <c>https://x.example//?idea=…</c>（双斜杠）。
+    /// </remarks>
     private static string BuildIdeaUrl(string? ideaId, string? publicBaseUrl)
     {
         if (string.IsNullOrEmpty(publicBaseUrl) || string.IsNullOrEmpty(ideaId))
@@ -49,6 +53,6 @@ public static class EventPlaceholders
             return string.Empty;
         }
 
-        return $"{publicBaseUrl}/?idea={ideaId}";
+        return $"{publicBaseUrl.TrimEnd('/')}/?idea={ideaId}";
     }
 }

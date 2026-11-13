@@ -246,6 +246,18 @@ public sealed class TemplateRendererTests
     }
 
     /// <summary>
+    /// 公开地址的**尾部斜杠要裁掉**：直接拼会得到 <c>https://x.example//?idea=…</c>
+    /// （双斜杠）。
+    /// </summary>
+    [Fact]
+    public void Build_idea_url_trims_the_trailing_slash_of_the_public_base_url()
+    {
+        var values = EventPlaceholders.Build(SampleEvent(), "https://x.example/");
+
+        Assert.Equal($"https://x.example/?idea={IdeaId}", values["idea.url"]);
+    }
+
+    /// <summary>
     /// 没配公开地址时，<c>{{idea.url}}</c> 是**空串**：半截链接（<c>/?idea=xxx</c>）
     /// 既点不开，又比没有链接更难认。
     /// </summary>
