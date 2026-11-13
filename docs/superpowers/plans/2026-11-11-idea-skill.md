@@ -262,13 +262,13 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 | `invalid_merge_selection` | 合并时少于两条 | 至少选两条 |
 | `merge_cross_project` | 合并的想法不属于同一项目 | 先把它们移到同一项目 |
 | `not_in_trash` | 要恢复的东西不在回收站里 | 先拉 `GET /api/trash` 确认 |
-| `too_many_ideas` | 命中数超过 `Api:MaxIdeasPerResponse`（默认 2000） | 收窄过滤条件（加 projectId / status / tags）|
+| `too_many_ideas` | 命中数超过 `Api:MaxIdeasPerResponse`（默认 2000） | 收窄过滤条件（加 projectId / status / tags） |
 | `invalid_webhook_name` | webhook 名称为空 | 补上名称 |
 | `invalid_webhook_url` | webhook 的 URL 为空或不是合法绝对地址 | 换成 http(s) 绝对地址 |
 | `invalid_webhook_scope` | scope 不是 `global` / `project` | 用这两个值之一 |
-| `invalid_webhook_project` | 项目级 webhook 必须指定一个存在的项目；全局 webhook 不能绑定项目 | 补一个存在的项目 id，或去掉 `--project` |
+| `invalid_webhook_project` | scope 与 project_id 不一致：**scope=project** 却没给 project_id（或该项目不存在）；**scope=global** 却带了 project_id（全局 webhook 不能绑定项目） | scope 与 `--project` 对齐：global 就别给 `--project`；project 就给一个存在的项目 id |
 | `invalid_body_template` | Body 模板不是合法 JSON | 模板本身必须是一个 JSON 文档 |
-| `invalid_event_type` | 订阅的事件名不在 8 种事件类型里 | 用 `EventTypes.All` 里的名字 |
+| `invalid_event_type` | 订阅的事件名不在 8 种事件类型里 | 用下面那组事件名 |
 | `webhook_not_found` | webhook 不存在 | 重新拉列表，可能是别的设备删了 |
 | `api_not_found` | 请求的接口不存在（路径写错了）—— **任何未匹配的 `/api/**` 路径都回这个码**（不只是「路径写错了」）；「路径不存在」有稳定的机器码可分支，不必去猜 404 的含义 | 核对命令名对应的 API 路径；完整契约见 `references/openapi.json` |
 | `delivery_not_found` | 投递记录不存在 | 重新拉该 webhook 的投递列表 |
