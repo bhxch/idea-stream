@@ -573,6 +573,10 @@ IDEA_PublicBaseUrl=https://ideas.example.com \
 
 ### 16.3 nginx 反代
 
+> **本节是片段副本**，实际配置以 `docs/nginx/idea.conf` 为准（那边还有 upstream、
+> SSE 段与 413 的 `error_page`）。关键项（**请求体上限**）由 `server/IdeaApp.Tests`
+> 里的守卫测试守住一致 —— 改了一边不改另一边，测试会红。
+
 ```nginx
 upstream idea_app { server 127.0.0.1:5080; keepalive 32; }
 
