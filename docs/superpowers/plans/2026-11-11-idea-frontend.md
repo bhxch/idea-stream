@@ -436,7 +436,7 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 **Interfaces:**
 - Consumes: F1 的 `client.ts`、F3 的 `stores/projects.ts`。
-- Produces: `ProjectsPage` 提供：新建项目（输入框 + 按钮）、改名（行内编辑）、删除（二次确认）、拖拽排序（HTML5 drag & drop，仅 `manual` 模式下可拖）、排序方式切换（`recent` / `manual`，切换到 manual 时调用 `POST /api/projects/reorder` 用当前显示顺序初始化）。
+- Produces: `ProjectsPage` 提供：新建项目（输入框 + 按钮）、改名（行内编辑）、删除（二次确认）、拖拽排序（HTML5 drag & drop，仅 `manual` 模式下可拖）、排序方式切换（`recent` / `manual`）。
   - 拖拽完成后调 `POST /api/projects/reorder`，body `{ ids: [...] }`。
 
 - [ ] **Step 1: 写失败测试** —— 组件测试：新建项目输入并提交后 emit/调用正确；排序方式切换触发 `PUT /api/settings/project.sort_mode`。
@@ -449,7 +449,10 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 > 实现上：移除源之后目标的**新下标**是 `target`；源原来的下标小于目标原来的下标时插到 `target + 1`，否则插到 `target`。
 > **这份语义在侧栏与项目管理页之间只有一份实现**（`web/src/lib/reorder.ts`）—— 两处各写一遍，迟早有一处变成另一种语义，同一份数据在两个界面里拖出来的顺序对不上。
 >
-> **排序方式切换的顺序（R153 同批裁定）**：切到 `manual` 时要调 `POST /api/projects/reorder` 用当前显示顺序初始化，**先 reorder、后切设置**（先写好 `sort_order` 再切排序方式，切过去后顺序与切换前一致，不会跳位）。
+> **排序方式切换（R159 修正，2026-11-13）**：**前端只调 `PUT /api/settings/project.sort_mode`，不要自己再发一次 `POST /api/projects/reorder`。**
+> **后端已经做了初始化**：`ProjectService.SetSortMode` 在切到 `manual` 时会用**当前显示顺序**（此刻 `List()` 给出的顺序，也就是用户正看到的顺序）调 `Reorder(ids)` 落库，再写设置 —— 所以切过去后顺序与切换前一致，不会跳位。
+> 前端再发一次反而有害：它用的是**前端缓存的**项目列表，别处（另一台设备）新建的项目不在这个列表里，而后端的 `Reorder` 会把「没被列出的接在后面」—— 那是真的会把顺序改坏。
+> 侧栏的排序方式按钮与项目管理页的切换按钮因此是**同一条路径**：`saveSortMode(mode)` → `loadProjects()`。
 - [ ] **Step 4: 运行测试确认通过** → Expected: PASS
 - [ ] **Step 5: 提交** → `git commit -m "feat(web): 实现项目管理页与拖拽排序"`
 
