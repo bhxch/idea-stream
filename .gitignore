@@ -9,6 +9,10 @@ node_modules/
 web/dist/
 server/IdeaApp/wwwroot/
 
+# Python（skills/idea-manager/scripts 下的命令行封装与测试）
+__pycache__/
+*.py[cod]
+
 # 运行时数据（SQLite 及 WAL）
 *.db
 *.db-shm
