@@ -214,6 +214,7 @@ CLI 的 stdout 会进 agent 的上下文与日志，那就是日志 —— 所�
 |---|---|---|
 | 服务端返回 4xx/5xx（ProblemDetails） | `code: detail`，如 `merge_cross_project: 不能跨项目合并想法：源想法分属不同项目` | 1 |
 | 响应体不是 JSON（代理返回 HTML、路径写错拿到 SPA 的 index.html） | `invalid_response: 响应不是 JSON（HTTP 502，Content-Type: text/html）；…` | 1 |
+| 请求体超过服务端上限（HTTP 413；Kestrel 默认约 30MB，本项目没配这个限制） | `invalid_response: 响应不是 JSON（HTTP 413，Content-Type: 未知）；…` —— 响应体是空的，没有 `code` | 1 |
 | 缺 `IDEA_BASE_URL` | `missing_config: IDEA_BASE_URL is required（也可以用 --base-url <地址> 临时覆盖）` | 1 |
 | `IDEA_BASE_URL` 写错了（缺 scheme、畸形 IPv6……） | `invalid_config: IDEA_BASE_URL 不是合法的实例地址：…（要带 scheme，如 https://ideas.example.com）` | 1 |
 | 命令行用错（缺 `--body`、没给要改的字段、`--headers` 不是 `键=值`） | `usage_error: …` | 1 |
@@ -227,6 +228,12 @@ CLI 的 stdout 会进 agent 的上下文与日志，那就是日志 —— 所�
 不会吐 Python traceback（真实原因靠服务端日志与报告定位）。
 「一行」是硬约定：detail 里的换行会被压成空格（异常消息常带换行）。
 argparse 的用法错误不在此列：它打的是多行 usage 提示、退出码 2（见上表）。
+
+**HTTP 413（请求体太大）不是 API 的业务错误**：错误码对照表里没有它，服务端也来不及生成
+ProblemDetails —— Kestrel 在**读 body 阶段**就把超大请求拒掉了，所以**响应体是空的、没有 `code`**，
+CLI 只能报 `invalid_response`（见上表）。看到 413 就知道是请求体太大，
+**把 body 调小再试**，别去错误码对照表里找它。
+（本项目没配 Kestrel 的请求体上限，用的是默认的约 30MB；改了 Kestrel 配置这里也要跟着改。）
 
 ### 错误码对照表
 
@@ -258,7 +265,7 @@ argparse 的用法错误不在此列：它打的是多行 usage 提示、退出�
 | `invalid_body_template` | Body 模板不是合法 JSON | 模板本身必须是一个 JSON 文档 |
 | `invalid_event_type` | 订阅的事件名不在 8 种事件类型里 | 用下面那组事件名 |
 | `webhook_not_found` | webhook 不存在 | 重新拉列表，可能是别的设备删了 |
-| `api_not_found` | 请求的接口不存在（路径写错了） | 核对命令名对应的 API 路径；完整契约见 `references/openapi.json` |
+| `api_not_found` | 请求的接口不存在（路径写错了）—— **任何未匹配的 `/api/**` 路径都回这个码**（不只是「路径写错了」）；「路径不存在」有稳定的机器码可分支，不必去猜 404 的含义 | 核对命令名对应的 API 路径；完整契约见 `references/openapi.json` |
 | `delivery_not_found` | 投递记录不存在 | 重新拉该 webhook 的投递列表 |
 | `delivery_queue_full` | 投递队列已满（503），**这次手动重投没排上** | 稍后重试；事件路径的队列满是静默丢弃 + 日志，不会返回 503 |
 
