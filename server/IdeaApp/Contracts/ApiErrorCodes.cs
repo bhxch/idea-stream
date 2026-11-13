@@ -57,6 +57,7 @@ public static class ApiErrorCodes
         new("invalid_merge_selection", 400, "合并至少需要两条想法"),
         new("invalid_project_name", 400, "项目名称为空或全是空白"),
         new("invalid_reorder_ids", 400, "重排请求没有给出任何项目 id"),
+        new("invalid_request_body", 400, "请求体不是合法的 JSON（模型绑定阶段的失败）"),
         new("invalid_sort_mode", 400, "排序方式只能是 recent 或 manual"),
         new("invalid_status", 400, "status 参数只支持 all / open / done"),
         new("invalid_tag_mode", 400, "tagMode 参数只支持 or / and"),
@@ -75,6 +76,12 @@ public static class ApiErrorCodes
         new("idea_not_found", 404, "想法不存在"),
         new("project_not_found", 404, "项目不存在"),
         new("webhook_not_found", 404, "webhook 不存在"),
+
+        // 413：请求体太大。
+        new("request_body_too_large", 413, "请求体超过大小限制"),
+
+        // 415：请求的媒体类型不对。
+        new("unsupported_media_type", 415, "请求的 Content-Type 不是 application/json"),
 
         // 503：服务暂时接不住。
         new("delivery_queue_full", 503, "投递队列已满，请稍后重试"),

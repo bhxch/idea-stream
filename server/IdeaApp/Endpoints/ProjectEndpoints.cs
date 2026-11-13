@@ -24,12 +24,12 @@ public static class ProjectEndpoints
             ApiResults.Run(() => Results.Json(service.Create(request.Name),
                 IdeaJsonContext.Default.ProjectDto, statusCode: StatusCodes.Status201Created)))
             .Produces<ProjectDto>(StatusCodes.Status201Created)
-            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_project_name");
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_project_name", "invalid_request_body");
 
         app.MapPatch("/api/projects/{id}", (string id, RenameProjectRequest request, ProjectService service) =>
             ApiResults.Run(() => Results.Json(service.Rename(id, request.Name), IdeaJsonContext.Default.ProjectDto)))
             .Produces<ProjectDto>(StatusCodes.Status200OK)
-            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_project_name")
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_project_name", "invalid_request_body")
             .ProducesApiProblem(StatusCodes.Status404NotFound, "project_not_found");
 
         app.MapDelete("/api/projects/{id}", (string id, ProjectService service) =>
@@ -53,7 +53,7 @@ public static class ProjectEndpoints
             ApiResults.Run(() => Results.Json(service.Reorder(request.Ids).ToList(),
                 IdeaJsonContext.Default.ListProjectDto)))
             .Produces<List<ProjectDto>>(StatusCodes.Status200OK)
-            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_reorder_ids");
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_reorder_ids", "invalid_request_body");
 
         return app;
     }

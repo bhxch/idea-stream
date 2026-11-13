@@ -41,25 +41,27 @@ public static class IdeaEndpoints
                     request.Tags ?? Array.Empty<string>()),
                 IdeaJsonContext.Default.IdeaDto, statusCode: StatusCodes.Status201Created)))
             .Produces<IdeaDto>(StatusCodes.Status201Created)
-            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_content")
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_content", "invalid_request_body")
             .ProducesApiProblem(StatusCodes.Status404NotFound, "project_not_found");
 
         app.MapPatch("/api/ideas/{id}", (string id, UpdateIdeaRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.Update(id, request.Title, request.Content),
                 IdeaJsonContext.Default.IdeaDto)))
             .Produces<IdeaDto>(StatusCodes.Status200OK)
-            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_content")
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_content", "invalid_request_body")
             .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         app.MapPut("/api/ideas/{id}/tags", (string id, SetTagsRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.SetTags(id, request.Tags ?? Array.Empty<string>()),
                 IdeaJsonContext.Default.IdeaDto)))
             .Produces<IdeaDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_request_body")
             .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         app.MapPost("/api/ideas/{id}/complete", (string id, SetDoneRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.SetDone(id, request.Done), IdeaJsonContext.Default.IdeaDto)))
             .Produces<IdeaDto>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_request_body")
             .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         app.MapDelete("/api/ideas/{id}", (string id, IdeaService service) =>

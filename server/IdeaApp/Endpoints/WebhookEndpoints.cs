@@ -41,7 +41,8 @@ public static class WebhookEndpoints
                 "invalid_webhook_scope",
                 "invalid_webhook_project",
                 "invalid_event_type",
-                "invalid_body_template");
+                "invalid_body_template",
+                "invalid_request_body");
 
         // 模板预设：页面用它预填表单。放在 {id} 之前只是读起来顺，
         // 路由本身不冲突（字面量段优先于参数段，且段数也不同）。
@@ -64,7 +65,8 @@ public static class WebhookEndpoints
                 "invalid_webhook_name",
                 "invalid_webhook_url",
                 "invalid_event_type",
-                "invalid_body_template")
+                "invalid_body_template",
+                "invalid_request_body")
             .ProducesApiProblem(StatusCodes.Status404NotFound, "webhook_not_found");
 
         app.MapDelete("/api/webhooks/{id}", (string id, WebhookService service) =>

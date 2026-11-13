@@ -26,6 +26,7 @@ public static class BulkIdeaEndpoints
                 service.BulkSetDone(request.Ids ?? Array.Empty<string>(), request.Done).ToList(),
                 IdeaJsonContext.Default.ListIdeaDto)))
             .Produces<List<IdeaDto>>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_request_body")
             .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         // 批量设置标签：默认并集式追加，replace: true 时覆盖。
@@ -37,6 +38,7 @@ public static class BulkIdeaEndpoints
                     request.Replace ?? false).ToList(),
                 IdeaJsonContext.Default.ListIdeaDto)))
             .Produces<List<IdeaDto>>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_request_body")
             .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         // 批量删除：软删（进回收站），返回被删掉的那些想法。
@@ -47,6 +49,7 @@ public static class BulkIdeaEndpoints
                 service.BulkDelete(request.Ids ?? Array.Empty<string>()).ToList(),
                 IdeaJsonContext.Default.ListIdeaDto)))
             .Produces<List<IdeaDto>>(StatusCodes.Status200OK)
+            .ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_request_body")
             .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         // 合并：多条想法 → 一条全新的想法，返回合并结果。
@@ -58,7 +61,8 @@ public static class BulkIdeaEndpoints
             .ProducesApiProblem(
                 StatusCodes.Status400BadRequest,
                 "invalid_merge_selection",
-                "merge_cross_project")
+                "merge_cross_project",
+                "invalid_request_body")
             .ProducesApiProblem(StatusCodes.Status404NotFound, "idea_not_found");
 
         return app;

@@ -57,6 +57,14 @@ builder.Configuration.AddEnvironmentVariables("IDEA_");
 // 保住「未登记的类型在开发期就抛 NoMetadataForType」这条 AOT 防线。
 builder.Services.AddOpenApi(IdeaOpenApi.Configure);
 
+// ProblemDetails 服务：UseExceptionHandler() 在 .NET 10 里**要求**它存在
+// （没有它，中间件构造时就抛 InvalidOperationException：应用起不来）。
+//
+// 它只在本应用自己的 handler 都没接住异常时才被用到（框架兜底写一份 ProblemDetails）。
+// 注册位置在下面那段 JSON 配置**之前**：与 AddOpenApi 同理 ——
+// 配置项按注册顺序执行，后注册的「直接赋值源生成上下文」必须排在最后。
+builder.Services.AddProblemDetails();
+
 // Native AOT 下没有反射式序列化：把源生成上下文直接设成 JSON 解析器，
 // 端点才能用 Results.Ok(dto) 返回已登记的 DTO，否则会 500。
 //
@@ -127,6 +135,27 @@ builder.Services.AddSingleton<WebhookDeliveryWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<WebhookDeliveryWorker>());
 builder.Services.AddSingleton<IEventHandler, WebhookEventHandler>();
 
+// 框架层异常的统一出口（模型绑定失败、未预期的异常）。
+//
+// 少这一段，「请求体不是合法 JSON」会变成 Kestrel 的 400 + **空响应体**：
+// 没有 application/problem+json、没有 code —— 而契约给这些端点声明的是
+// 400 + ProblemDetails，agent 按契约读会拿到一个空 body，
+// 稳定的业务错误码在这条路径上整个失效。
+//
+// ⚠️ 它只管**框架层**抛出来的异常：端点里的业务错误仍然由 ApiResults.Run
+// 自己处理（状态码与错误码都是端点自己定的），别绕开它。
+builder.Services.AddExceptionHandler<ApiExceptionHandler>();
+
+// 模型绑定失败要**抛出来**，才能被上面的 handler 接住并转成 ProblemDetails。
+//
+// RouteHandlerOptions.ThrowOnBadRequest 默认只在 Development 为 true：
+// 生产环境里框架自己在 RequestDelegateFactory 里吞掉「请求体不是合法 JSON」
+// 这类错误，只设一个 400 状态码就返回 —— **响应体是空的**
+//（既没有 application/problem+json，也没有 code）。
+//
+// 显式打开它：两种环境的口径一致，错误响应都由 ApiExceptionHandler 统一产出。
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
+
 var app = builder.Build();
 
 // 反向代理头：nginx 会转发 X-Forwarded-Proto / X-Forwarded-For / X-Forwarded-Host 等
@@ -156,6 +185,17 @@ app.UseStaticFiles();
 
 // 端点共用的异常包装需要日志器：未预期的异常只进日志，不进响应体。
 ApiResults.UseLogger(app.Logger);
+
+// 框架层异常的统一出口（模型绑定失败、未预期的异常）。
+//
+// 少这一段，「请求体不是合法 JSON」会变成 Kestrel 的 400 + **空响应体**：
+// 没有 application/problem+json、没有 code —— 而契约给这些端点声明的是
+// 400 + ProblemDetails，agent 按契约读会拿到一个空 body，
+// 稳定的业务错误码在这条路径上整个失效。
+//
+// ⚠️ 它只管**框架层**抛出来的异常：端点里的业务错误仍然由 ApiResults.Run
+// 自己处理（状态码与错误码都是端点自己定的），别绕开它。
+app.UseExceptionHandler();
 
 // 首次启动即建库建表并写入内置收件箱。
 app.Services.GetRequiredService<SqliteDatabase>().Initialize();

@@ -46,7 +46,8 @@ public static class SettingsEndpoints
             .ProducesApiProblem(
                 StatusCodes.Status400BadRequest,
                 "setting_key_not_writable",
-                "invalid_sort_mode");
+                "invalid_sort_mode",
+                "invalid_request_body");
 
         return app;
     }
