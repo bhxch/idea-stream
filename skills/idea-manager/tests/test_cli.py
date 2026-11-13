@@ -74,6 +74,9 @@ class IdeaCliTest(unittest.TestCase):
     def test_health_via_list(self):
         payload = run_json(["list"], base_url=BASE_URL)
         self.assertIsInstance(payload, list)
+        # 先锚一下非空：逐项断言只在列表非空时才生效，
+        # 空列表会让这个用例「什么都没检查」地通过。
+        self.assertTrue(payload, "列表不该是空的（库里至少要有内置收件箱）")
         for item in payload:
             self.assertIn("id", item)
             self.assertIn("content", item)
@@ -335,6 +338,89 @@ class LocalServerTest(unittest.TestCase):
         )
         self.assertEqual(code, 1)
         self.assertIn("--body", err)
+        self.assertEqual(out, "")
+
+    def test_non_telegram_webhook_tokens_are_redacted(self):
+        """非 Telegram 的 webhook token 也不能原样进 stdout。
+
+        三种曾经漏网的形态：
+        * Slack：末段是纯字母的长串（不含数字，「像随机串」的启发式放行了它）；
+        * Discord：id 段纯数字、token 段纯字母；
+        * 短 token：一段不长的下划线串。
+        """
+        cases = [
+            (
+                "https://hooks.slack.com/services/T00000000/B00000000/abcdefghijklmnopqrstuvwx",
+                "https://hooks.slack.com/services/***/***/***",
+                ["T00000000", "B00000000", "abcdefghijklmnopqrstuvwx"],
+            ),
+            (
+                "https://discord.com/api/webhooks/123456789012/AbCdEfGhIjKlMnOpQrStUvWxYz",
+                "https://discord.com/api/webhooks/***/***",
+                ["123456789012", "AbCdEfGhIjKlMnOpQrStUvWxYz"],
+            ),
+            (
+                "https://api.example.com/v1/hook/sk_live_abc123",
+                "https://api.example.com/v1/hook/***",
+                ["sk_live_abc123"],
+            ),
+        ]
+
+        for raw_url, expected, secrets in cases:
+            with self.subTest(url=raw_url):
+                webhook = {
+                    "id": "wh-3",
+                    "name": "其它服务",
+                    "url": raw_url,
+                    "method": "POST",
+                    "headers": {},
+                    "bodyTemplate": "{}",
+                    "events": ["idea.created"],
+                    "scope": "global",
+                    "projectId": None,
+                    "enabled": False,
+                    "hasSecret": False,
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-01-01T00:00:00Z",
+                }
+                body = json.dumps([webhook]).encode("utf-8")
+                url = self._serve(self._static_handler(200, "application/json", body))
+
+                code, out, err = run_cli(["webhook", "list"], base_url=url)
+                self.assertEqual(code, 0, err)
+                self.assertNotIn(raw_url, out)
+                for secret in secrets:
+                    self.assertNotIn(secret, out)
+                self.assertEqual(json.loads(out)[0]["url"], expected)
+
+    def test_base_url_without_scheme_exits_cleanly(self):
+        # 「地址忘了写 scheme」是最常见的配置错：不能吐裸 traceback。
+        code, out, err = run_cli(["list"], base_url="ideas.example.com")
+        self.assertEqual(code, 1)
+        self.assertNotIn("Traceback", err)
+        self.assertIn("invalid_config", err)
+        self.assertIn("scheme", err)
+        self.assertEqual(out, "")
+
+    def test_malformed_base_url_exits_cleanly(self):
+        # 畸形 IPv6：urlsplit 自己会抛 ValueError（Invalid IPv6 URL）。
+        code, out, err = run_cli(["list"], base_url="http://[::1")
+        self.assertEqual(code, 1)
+        self.assertNotIn("Traceback", err)
+        self.assertIn("invalid_config", err)
+        self.assertEqual(out, "")
+
+    def test_unexpected_error_does_not_leak_traceback(self):
+        # 兜底：未预期的异常也要是 stderr 的一行 + 非 0 退出，不能是 traceback。
+        # 这里的触发点：服务端回了 content 不是字符串的畸形载荷，
+        # text 渲染器会在上面炸掉（AttributeError）。
+        body = json.dumps([{"id": "x", "content": 123}]).encode("utf-8")
+        url = self._serve(self._static_handler(200, "application/json", body))
+
+        code, out, err = run_cli(["--format", "text", "list"], base_url=url)
+        self.assertEqual(code, 1)
+        self.assertNotIn("Traceback", err)
+        self.assertTrue(err.startswith("internal_error: "), err)
         self.assertEqual(out, "")
 
 

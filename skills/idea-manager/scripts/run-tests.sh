@@ -3,6 +3,7 @@
 # skill 的端到端测试脚本：起一个真实的后端实例，跑 skills/idea-manager/tests 下的 unittest。
 #
 # 职责（照 skill 计划 Task S1）：
+#   0. 端口被占着就直接报错退出（连到上一次的旧实例 = 测试跑在别人的数据上）；
 #   1. 用临时 SQLite 库起后端（后台）；
 #   2. 轮询 GET /api/health 直到 200（最多 60 秒）；
 #   3. 跑 unittest（IDEA_BASE_URL 指向刚起的实例）；
@@ -22,16 +23,67 @@ LOG="${WORK}/server.log"
 
 SERVER_PID=""
 
+# 端口有没有被占着？
+#
+# 端口被占 = 可能会连到**上一次没退干净的实例**（连错实例、连到旧库，
+# 测试结果看着对、其实跑在别人的数据上）。所以先查、占着就报错退出。
+#
+# 探针用 bind 试：带 SO_REUSEADDR 时，已经在 LISTEN 的 socket 仍然占着端口
+# （bind 会失败），但 TIME_WAIT 不会误报。
+port_busy() {
+  python3 - "$1" <<'PY'
+import socket
+import sys
+
+sock = socket.socket()
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    sock.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    sys.exit(0)  # 占着
+finally:
+    sock.close()
+sys.exit(1)  # 空的
+PY
+}
+
+# 等端口放出来：进程刚被杀，socket 可能还在收尾，给它几秒钟。
+wait_port_free() {
+  for _ in $(seq 1 20); do
+    if ! port_busy "${PORT}"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
 cleanup() {
+  local status=$?
   if [ -n "${SERVER_PID}" ]; then
-    kill "${SERVER_PID}" 2>/dev/null || true
-    # dotnet run 是个包装进程：真正的应用是它的子进程，一并收掉，
-    # 否则端口一直被占着，下一次跑测试就撞端口了。
+    # 顺序要紧：**先杀子进程再杀父进程**。
+    # dotnet run 是包装进程，真正的应用是它的子进程；
+    # 反过来（先杀父）的话 child 会被 reparent，pkill -P 就捞不到东西了。
     pkill -P "${SERVER_PID}" 2>/dev/null || true
+    kill "${SERVER_PID}" 2>/dev/null || true
     wait "${SERVER_PID}" 2>/dev/null || true
+    # 端口没放出来 = 后端还活着（或者是别人抢了这个端口）。
+    # 不能就这么算了：留着它，下一次跑就会连到旧实例，
+    # 测试结果看着对、其实跑在别人的数据上。所以报错退出。
+    if ! wait_port_free; then
+      echo "错误：端口 ${PORT} 仍被占用，后端没退干净（下次跑会连到旧实例）。" >&2
+      exit 1
+    fi
   fi
+  exit "${status}"
 }
 trap cleanup EXIT
+
+if port_busy "${PORT}"; then
+  echo "端口 ${PORT} 已被占用：可能有上一次的实例没退干净。" >&2
+  echo "换个端口再跑：IDEA_TEST_PORT=5081 bash $(basename "$0")" >&2
+  exit 1
+fi
 
 # 后端日志单独落文件：不跟测试输出混在一起，失败时再整段贴出来。
 IDEA_Database__Path="${DB}" IDEA_Urls="${BASE}" \

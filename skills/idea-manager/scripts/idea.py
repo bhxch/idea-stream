@@ -32,6 +32,35 @@ MASK = "***"
 # Telegram 模板里的 bot token 占位符：它不是秘密（是给用户替换的提示），要原样保留。
 BOT_PLACEHOLDER = "<BOT_TOKEN>"
 
+# 路径段白名单：明确是结构/协议词的段才原样保留，其余一律遮。
+#
+# 白名单只收「形状词」：协议前缀、版本号、资源的复数形式、动作名。
+# 凡是可能装凭据的东西（id、token、随机串）都不在这里 —— 宁可遮错，
+# 也不能因为「看着像词」就放过去。
+SAFE_PATH_SEGMENTS = frozenset(
+    [
+        "api",
+        "apis",
+        "webhook",
+        "webhooks",
+        "hook",
+        "hooks",
+        "service",
+        "services",
+        "endpoint",
+        "endpoints",
+        "trigger",
+        "triggers",
+        "incoming",
+        "outgoing",
+        "sendmessage",
+        "bot",
+    ]
+)
+
+# 版本号段（v1、v2、v1beta1……）：结构性的，放行。
+VERSION_SEGMENT = re.compile(r"^v\d+([._-][a-z0-9]+)?$")
+
 # 目标实例的地址。由 main() 设置，build_request() 读它
 # （build_request 的签名是固定的，不收 base_url 参数）。
 BASE_URL = ""
@@ -218,14 +247,15 @@ def api(method: str, path: str, body: Optional[dict] = None) -> Any:
 
 
 def mask_url(url: str) -> str:
-    """把 URL 变成「host + 路径形状」，可能含凭据的段落替换成 ``***``。
+    """把 URL 变成「host + 路径形状」，可能含凭据的段替换成 ``***``。
 
     * scheme 与 host 保留（不是秘密）；query 与 fragment 一律丢弃
-      （access_token 之类的凭据常在 query 里）。
-    * ``/bot`` 后面那一段是 Telegram 的 bot token → 换成 ``***``；
-      但 ``<BOT_TOKEN>`` 这个占位符原样保留（它是给用户替换的提示，不是秘密）。
-    * 其它长得像随机串的路径段也换成 ``***``（Discord/Slack 之类的 webhook
-      把凭据放在路径段里）。
+      （access_token 之类的凭据常在 query 里）；userinfo 也不保留。
+    * **路径段默认全遮**，只有明确是结构词的段才原样保留（见
+      :data:`SAFE_PATH_SEGMENTS`）—— 方向是「默认遮、白名单例外」：
+      「长得像随机串才遮」那种启发式会漏掉纯字母的 token、纯数字的 id
+      和短 token，而漏掉的就是凭据本身。
+    * ``<BOT_TOKEN>`` 这个占位符原样保留：它不是秘密，是给用户替换的提示。
     """
     try:
         parts = urllib.parse.urlsplit(url)
@@ -239,19 +269,7 @@ def mask_url(url: str) -> str:
         netloc = "{}:{}".format(host, port)
 
     segments = parts.path.split("/")
-    masked: List[str] = []
-    for index, segment in enumerate(segments):
-        previous = segments[index - 1].lower() if index > 0 else ""
-        if previous == "bot":
-            # 路径形如 /bot/<token>：整段就是凭据。
-            masked.append(segment if BOT_PLACEHOLDER in segment else MASK)
-        elif segment.lower().startswith("bot") and len(segment) > 3:
-            # 路径形如 /bot<token>：Telegram 就是这样 —— token 粘在 bot 后面。
-            masked.append(segment if BOT_PLACEHOLDER in segment else "bot" + MASK)
-        elif _looks_like_secret(segment):
-            masked.append(MASK)
-        else:
-            masked.append(segment)
+    masked: List[str] = [_mask_segment(segment) for segment in segments]
     path = "/".join(masked)
 
     if not netloc and not path:
@@ -261,22 +279,21 @@ def mask_url(url: str) -> str:
     return "{}{}".format(netloc, path)
 
 
-def _looks_like_secret(segment: str) -> bool:
-    """路径段是不是「长得像随机凭据」。
-
-    两类：
-    * 长得像随机串 —— 长度 >= 24、只有字母数字与 -_、且字母数字都有
-      （UUID 与各类 webhook token 都长这样）；
-    * 形如 ``123456:ABC`` 的「键:值」段（Telegram 风格）。
-    宁可多遮一点：遮错了只是不好看，漏了就是泄密。
-    """
-    if ":" in segment and len(segment) >= 8:
-        return True
-    if len(segment) < 24:
-        return False
-    if not re.match(r"^[A-Za-z0-9_-]+$", segment):
-        return False
-    return any(char.isdigit() for char in segment) and any(char.isalpha() for char in segment)
+def _mask_segment(segment: str) -> str:
+    """遮一个路径段：默认遮，白名单例外。"""
+    if not segment:
+        return segment
+    if BOT_PLACEHOLDER in segment:
+        # 占位符不是秘密：agent 要拿它去填自己的 token。
+        return segment
+    lowered = segment.lower()
+    if lowered in SAFE_PATH_SEGMENTS or VERSION_SEGMENT.match(lowered):
+        return segment
+    if lowered.startswith("bot") and len(segment) > 3:
+        # Telegram 的形状：token 粘在 bot 后面（/bot<token>）。
+        # 例子里不写真实的数字串 —— 仓库有一条 grep 盯着「像真 token」的形状。
+        return "bot" + MASK
+    return MASK
 
 
 def redact(value: Any) -> Any:
@@ -640,8 +657,11 @@ def _dispatch_list(args: argparse.Namespace) -> Any:
         params["projectId"] = args.project
     if args.status:
         params["status"] = args.status
-    if args.tags:
-        params["tags"] = args.tags
+    # 逗号串统一走 _split_csv：跟同一文件里其它地方（--tags/--events/--headers）
+    # 用同一套语义（去空白、丢空项），免得两套逗号语义以后分叉。
+    tags = _split_csv(args.tags)
+    if tags:
+        params["tags"] = ",".join(tags)
     if args.tag_mode:
         params["tagMode"] = args.tag_mode
 
@@ -777,6 +797,55 @@ def _dispatch_webhook(args: argparse.Namespace) -> Any:
 # --------------------------------------------------------------------------
 
 
+def resolve_base_url(args: argparse.Namespace) -> str:
+    """定下目标地址：``--base-url`` 优先，否则读 ``IDEA_BASE_URL``。
+
+    校验放在这里：缺 scheme、畸形 IPv6 之类的地址错误，
+    到 urllib 手上会变成 ``ValueError``（裸 traceback）。
+    「地址写错」是 agent/用户最常犯的配置错，比「代理返回 HTML」常见得多 ——
+    所以本地就说清楚。
+    """
+    override = getattr(args, "base_url", None)
+    if override and override.strip():
+        raw = override.strip()
+        source = "--base-url"
+    else:
+        try:
+            raw = env_or_die("IDEA_BASE_URL")
+        except ConfigError as exc:
+            # 提示语拼在这里：env_or_die 只管「有没有」，怎么补是调用方的事。
+            raise ConfigError(
+                exc.code,
+                "{}（也可以用 --base-url <地址> 临时覆盖）".format(exc.detail),
+            )
+        source = "IDEA_BASE_URL"
+
+    try:
+        parts = urllib.parse.urlsplit(raw)
+        host = parts.hostname
+    except ValueError:
+        parts = None
+        host = None
+
+    if parts is None or parts.scheme.lower() not in ("http", "https") or not host:
+        raise ConfigError(
+            "invalid_config",
+            "{} 不是合法的实例地址：{}（要带 scheme，如 https://ideas.example.com）".format(
+                source, _redact_userinfo(raw)
+            ),
+        )
+
+    return raw
+
+
+def _redact_userinfo(raw: str) -> str:
+    """错误信息里回显地址时去掉 userinfo（有人会把密码写在 URL 里）。"""
+    head, sep, tail = raw.rpartition("@")
+    if not sep:
+        return raw
+    return "***@" + tail
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     global BASE_URL
 
@@ -788,19 +857,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     try:
-        base_url = getattr(args, "base_url", None) or os.environ.get("IDEA_BASE_URL", "").strip()
-        if not base_url:
-            raise ConfigError(
-                "missing_config",
-                "IDEA_BASE_URL is required（也可以用 --base-url <地址> 临时覆盖）",
-            )
-        BASE_URL = base_url
+        BASE_URL = resolve_base_url(args)
         payload = dispatch(args)
+        emit(payload, getattr(args, "format", "json"))
     except CliError as exc:
         print(exc.render(), file=sys.stderr)
         return exc.exit_code
+    except Exception as exc:  # noqa: BLE001 —— 兜底：干净地失败，别吐 traceback
+        # 未预期的异常也要守住「stderr 一行 + 退出码非 0」的契约：
+        # agent 侧要的是能读的一行，真实原因靠服务端日志与报告定位。
+        print("internal_error: {}".format(exc), file=sys.stderr)
+        return 1
 
-    emit(payload, getattr(args, "format", "json"))
     return 0
 
 

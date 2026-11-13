@@ -111,6 +111,10 @@ idea.py webhook update <id> [--name <name>] [--url <url>] [--body <template>]
 - `webhook add` **必须给 `--body`**：Body 模板不能为空（后端会拒，CLI 也提前拦下）。
 - `webhook add` **不发送 `enabled`**：全局作用域的 webhook 创建后默认禁用，
   项目作用域的默认启用，由后端按 scope 决定。
+- `--scope` **默认是 `global`**。scope 与 `--project` 必须对齐：
+  全局 webhook **不能绑定项目**（给了 `--project` 会拿到 `invalid_webhook_project`），
+  项目级 webhook **必须**给一个存在的项目 id（不给或项目不存在也是这个错误码）。
+  要绑项目就写全：`--scope project --project <id>`。
 - `--secret` 留空就不发这个键（后端的密钥三态是 `null` = 不改、`""` = 清空、非空 = 替换；
   CLI 不给空串，所以「清空」这一档 CLI 做不到）。
 - `--status` / `--tag-mode` 的取值由**服务端**校验：写错了会拿到 `invalid_status` /
@@ -164,20 +168,33 @@ scripts/idea.py webhook add --name "tg" \
 
 ### 脱敏规则
 
-webhook 的 `url` 里可能带凭据（Telegram 的 bot token 就在 URL 路径里），
-`headers` 里可能带鉴权头（Bearer 令牌之类）。CLI 的 stdout 会进 agent 的上下文与日志，
-那就是日志 —— 所以两份输出里都脱敏：
+webhook 的 `url` 里可能带凭据（Telegram 的 bot token 就在 URL 路径里，
+Slack/Discord 的凭据在路径段里），`headers` 里可能带鉴权头（Bearer 令牌之类）。
+CLI 的 stdout 会进 agent 的上下文与日志，那就是日志 —— 所以两份输出里都脱敏。
 
-- `url` → 保留 scheme 与 host；query 与 fragment 一律丢弃（凭据常在 query 里）；
-  路径里可能含凭据的段替换成 `***`：
-  - `/bot<token>`（Telegram 就是这个形状，token 粘在 `bot` 后面）→ `bot***`；
-  - `/bot/<token>` → `***`；
-  - 其它长得像随机串的路径段（长 UUID、随机 token、`键:值` 形状）→ `***`。
-  `<BOT_TOKEN>` 这个占位符**保持原样** —— 它不是秘密，是给用户替换的提示。
+- `url` → 保留 scheme 与 host；query 与 fragment 一律丢弃（凭据常在 query 里），
+  userinfo 也不保留。
+- **路径段默认全遮**（`***`）—— 只有明确是结构词的段才原样保留。
+  白名单（结构/协议词，不含任何凭据形态）：
+  `api`、`apis`、`webhook(s)`、`hook(s)`、`service(s)`、`endpoint(s)`、`trigger(s)`、
+  `incoming`、`outgoing`、`sendMessage`、`bot`，以及版本号段（`v1`、`v2`、`v1beta1`……）。
+  两条例外：
+  - `<BOT_TOKEN>` 占位符**原样保留** —— 它不是秘密，是给用户替换的提示；
+  - `/bot<token>`（Telegram 就是这个形状，token 粘在 `bot` 后面）→ `bot***`。
 - `headers` → 只保留键名，值一律换成 `***`。
 
-例子：`https://api.telegram.org/botXXXXXX:ABCDEF/sendMessage`
-→ `https://api.telegram.org/bot***/sendMessage`。
+> 为什么是「默认全遮」而不是「看着像随机串才遮」：后者会漏掉纯字母的 token、
+> 纯数字的 id 和短 token —— 而漏掉的就是凭据本身。遮错只是不好看，漏掉是泄密。
+
+例子：
+
+| 原地址 | 脱敏后 |
+|---|---|
+| `https://api.telegram.org/botXXXXXX:ABCDEF/sendMessage` | `https://api.telegram.org/bot***/sendMessage` |
+| `https://api.telegram.org/bot<BOT_TOKEN>/sendMessage` | `https://api.telegram.org/bot<BOT_TOKEN>/sendMessage` |
+| `https://hooks.slack.com/services/T00000000/B00000000/abcdefghijklmnopqrstuvwx` | `https://hooks.slack.com/services/***/***/***` |
+| `https://discord.com/api/webhooks/123456789012/AbCdEfGhIjKlMnOpQrStUvWxYz` | `https://discord.com/api/webhooks/***/***` |
+| `https://api.example.com/v1/hook/sk_live_abc123` | `https://api.example.com/v1/hook/***` |
 
 ## 错误处理
 
@@ -188,12 +205,16 @@ webhook 的 `url` 里可能带凭据（Telegram 的 bot token 就在 URL 路径�
 | 服务端返回 4xx/5xx（ProblemDetails） | `code: detail`，如 `merge_cross_project: 不能跨项目合并想法：源想法分属不同项目` | 1 |
 | 响应体不是 JSON（代理返回 HTML、路径写错拿到 SPA 的 index.html） | `invalid_response: 响应不是 JSON（HTTP 502，Content-Type: text/html）；…` | 1 |
 | 缺 `IDEA_BASE_URL` | `missing_config: IDEA_BASE_URL is required（也可以用 --base-url <地址> 临时覆盖）` | 1 |
+| `IDEA_BASE_URL` 写错了（缺 scheme、畸形 IPv6……） | `invalid_config: IDEA_BASE_URL 不是合法的实例地址：…（要带 scheme，如 https://ideas.example.com）` | 1 |
 | 命令行用错（缺 `--body`、没给要改的字段、`--headers` 不是 `键=值`） | `usage_error: …` | 1 |
 | 网络不可达 / 超时 / 连接被拒 | `network_error: …` | 2 |
 | argparse 的用法错误（未知选项、缺必填参数、没给子命令） | argparse 的用法提示 | 2 |
+| 未预期的其它异常（兜底） | `internal_error: <消息>` | 1 |
 
-前四行里的 `missing_config` / `usage_error` / `invalid_response` / `network_error`
-是 **CLI 自己的**错误码；其余的 `code` 都来自服务端。
+表里的 `missing_config` / `invalid_config` / `usage_error` / `invalid_response` /
+`network_error` / `internal_error` 是 **CLI 自己的**错误码；错误码对照表里的其余 `code`
+都来自服务端。CLI 永远只往 stderr 打**一行** `code: detail`，不会吐 Python traceback
+（真实原因靠服务端日志与报告定位）。
 
 ### 错误码对照表
 
@@ -219,7 +240,7 @@ webhook 的 `url` 里可能带凭据（Telegram 的 bot token 就在 URL 路径�
 | `invalid_webhook_name` | webhook 名称为空 | 补上名称 |
 | `invalid_webhook_url` | webhook 的 URL 为空或不是合法绝对地址 | 换成 http(s) 绝对地址 |
 | `invalid_webhook_scope` | scope 不是 `global` / `project` | 用这两个值之一 |
-| `invalid_webhook_project` | scope=project 但没给 project_id，或该项目不存在 | 补一个存在的项目 id |
+| `invalid_webhook_project` | scope 与 project_id 不一致：**scope=project** 却没给 project_id（或该项目不存在）；**scope=global** 却带了 project_id（全局 webhook 不能绑定项目） | scope 与 `--project` 对齐：global 就别给 `--project`；project 就给一个存在的项目 id |
 | `invalid_body_template` | Body 模板不是合法 JSON | 模板本身必须是一个 JSON 文档 |
 | `invalid_event_type` | 订阅的事件名不在 8 种事件类型里 | 用下面那组事件名 |
 | `webhook_not_found` | webhook 不存在 | 重新拉列表，可能是别的设备删了 |
