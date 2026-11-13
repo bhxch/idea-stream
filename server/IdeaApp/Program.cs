@@ -180,19 +180,19 @@ OpenApiExporter.ExportIfRequested(app);
 // 那个 catch-all 会把「路径打错」变成 200 + HTML，而这个 API 是给 agent 读的
 // （契约在 openapi/idea-v1.json）—— agent 只看状态码会把「路径打错」当成成功。
 //
-// ⚠️ 这里用 **Map** 而不是 **MapFallback**：.NET 10 的
-// MapFallback(string pattern, Delegate handler) 会**丢弃 pattern 参数**，
-// 无条件注册默认的 "{*path:nonfile}"（实测：传 "/api/{**rest}" 进去，
-// 注册出来的仍是 "{*path:nonfile}"）—— 那它就是个全局兜底，
-// 会把 /projects、/trash 这些前端路由也吃掉，SPA 直接废掉。
+// 用 **Map** 而不是 **MapFallback**：.NET 10 的 MapFallback 有两族公开重载
+// （(string, RequestDelegate) 与 (string, Delegate)），本轮两次隔离探针
+// 各测到一个，结论相反 —— 传 RequestDelegate 的那族注册出 "/ddd/{**rest}"
+// （Order=int.MaxValue、pattern 被尊重），传 lambda 的那族（lambda 绑定到
+// Delegate 重载）注册出的是 "{*path:nonfile}"、Order=0。
+// 同一个 API 两族重载行为不一致，**不赌它**：显式写 pattern 的 Map 更可控。
 //
-// Map 的字面量段 "api" 让路由优先走字面量转移（胜过 catch-all），
-// 于是 "/api/**" 归这里，其余路径落到下面的 SPA 兜底。
-// 实测（.NET 10）：/api/nonexistent → 这里；/projects、/trash → SPA 兜底；
-// 显式端点（/api/health 等）不受影响。
-//
-// 显式端点不受影响：它们有更具体的路由模板，优先级高于 catch-all。
-// 资源级的 404（webhook 不存在……）也保持原样 ——
+// Map 的字面量段 "api" 让路由优先走字面量转移（胜过 catch-all 模板），
+// 四条验收口径都实测过：
+// /api/nonexistent → 这里（404 + ProblemDetails）；
+// /api/health 等显式端点不受影响；
+// /projects、/trash → 落到下面的 SPA 兜底；
+// 资源级的 404（webhook 不存在……）保持原样 ——
 // 那是端点自己抛的，走的是各自的错误码，不是这个兜底。
 app.Map("/api/{**rest}", () => ApiResults.Run(() =>
     throw new ApiException(404, "api_not_found", "请求的接口不存在。")));
