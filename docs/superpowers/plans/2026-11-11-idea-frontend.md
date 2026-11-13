@@ -630,11 +630,17 @@ export default defineConfig({
 //
 // ⚠️ **光 Directory.CreateDirectory 还不够**（R162，2026-11-13，实施者实测）：
 // `WebRootFileProvider` 是在 `WebApplication.CreateBuilder()` 里就定下来的，
-// 那一刻目录不存在，框架把它留成 `null`（只打一条 warning，**不抛异常**）——
-// 而那个 provider 是进程内固定的：后面再把目录与产物补上，静态文件照样 404
-//（`/` 一律 404，页面白屏）。所以要**显式指一个 `PhysicalFileProvider`**，
+// 那一刻目录不存在，框架会装上一个 `NullFileProvider`（查不到任何文件；
+// 只打一条 warning，**不抛异常**）—— 而那个 provider 是进程内固定的：
+// 后面再把目录与产物补上，静态文件照样 404（`/` 一律 404，页面白屏）。
+// 所以要**显式指一个 `PhysicalFileProvider`**，
 // 「先起后端、后构建」这条路才真的通。
-var webRoot = Path.Combine(builder.Environment.ContentRootPath, "wwwroot");
+//
+// 目录取自 WebRootPath（有人用 WebRootPath 配过别的目录时以它为准），
+// 取不到再回落 "wwwroot"。
+var webRoot = Path.Combine(
+    builder.Environment.ContentRootPath,
+    builder.Environment.WebRootPath ?? "wwwroot");
 Directory.CreateDirectory(webRoot);
 builder.Environment.WebRootFileProvider = new PhysicalFileProvider(webRoot);
 
@@ -658,7 +664,13 @@ API 路径回 **404 + `application/problem+json`**（带 `code`），而不是 H
 ```csharp
 // 未匹配的 /api/** 要按 API 契约回 404 ProblemDetails，不能落到下面的 SPA 兜底：
 // 那个 catch-all 会把「路径打错」变成 200 + HTML，而这个 API 是给 agent 读的。
-app.MapFallback("/api/{**rest}", () => ApiResults.Run(() =>
+//
+// 用 **Map** 而不是 **MapFallback**：.NET 10 的 MapFallback(string pattern, Delegate)
+// 对 pattern 的处理，本轮两次隔离探针的结论相反（一个说它会丢弃 pattern、
+// 无条件注册默认的 "{*path:nonfile}"，另一个说它尊重 pattern）——
+// 拿不准就不赌它。Map 的字面量段 "api" 让路由优先走字面量转移
+// （胜过 catch-all 模板），四条验收口径都实测过。
+app.Map("/api/{**rest}", () => ApiResults.Run(() =>
     throw new ApiException(404, "api_not_found", "请求的接口不存在。")));
 
 app.MapFallbackToFile("index.html");
@@ -671,6 +683,15 @@ app.MapFallbackToFile("index.html");
 - 登记之后要**重新导出 `openapi/idea-v1.json`**（契约里的错误码全集从 `ApiErrorCodes` 生成），
   并同步 skill 计划的错误码对照表；
 - 补一条**hermetic** 的后端测试：「未匹配的 `/api/**` 回 404 + ProblemDetails，不是 HTML」。
+
+**验收口径（四条都要实测）**：
+- `GET /api/nonexistent` → 404 + `application/problem+json` + `code=api_not_found`
+- `GET /api/health` → 200 JSON（别被兜底吃掉）
+- `GET /projects`（以及 `/trash`、`/webhooks`）→ 200 text/html（SPA 兜底仍然生效）
+- `GET /api/ideas/{不存在的 id}` → 404 ProblemDetails（**资源级错误码不能被改写**）
+
+**已知代价**：`/api` 兜底接受任意方法 —— 「端点存在但方法不对」现在报 404 `api_not_found`
+而不是 405。这是「只管 `/api` 的兜底」这一要求的固有代价。
 
 - [ ] **Step 2: 构建并检查产物**
 
