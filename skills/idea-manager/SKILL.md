@@ -1,0 +1,230 @@
+---
+name: idea-manager
+description: 管理本地 idea 记事本（项目、想法、标签、完成状态、合并、回收站、webhook 通知）。当用户要记录、查看、整理、批量操作 idea/想法，或要配置 Telegram 通知时使用。
+---
+
+# idea-manager
+
+把 idea 记事本的 REST API 包成一条命令行：`scripts/idea.py` 是纯标准库的命令行封装
+（`urllib`，无第三方依赖，Python 3.9+ 即可跑），`references/openapi.json` 是后端
+OpenAPI 契约的副本。
+
+**用法**：不要手写 HTTP 请求，直接调 `scripts/idea.py`。
+
+```bash
+# 记一条想法
+scripts/idea.py add "把导出功能改成异步任务" --title "导出" --tags 后端,导出
+
+# 看未完成的想法
+scripts/idea.py list --status open
+
+# 按标签筛（同时带 a 和 b）
+scripts/idea.py list --tags a,b --tag-mode and
+```
+
+## 安装
+
+skill 目录可直接软链到 agent 的 skills 目录（两种格式一致）：
+
+```bash
+ln -s "$PWD/skills/idea-manager" ~/.claude/skills/idea-manager
+# 或
+ln -s "$PWD/skills/idea-manager" ~/.zcode/skills/idea-manager
+# 或直接复制
+cp -r skills/idea-manager ~/.zcode/skills/
+```
+
+自检（打得通就说明目标实例可达、凭证正确）：
+
+```bash
+scripts/idea.py list
+```
+
+## 连接配置（只读环境变量）
+
+命令行**不接受**密码；凭证一律走环境变量。`--help` 里也不会出现密码。
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `IDEA_BASE_URL` | 是 | 实例地址，如 `https://ideas.example.com`。命令行 `--base-url` 可临时覆盖它 |
+| `IDEA_USER` | 否 | nginx basic auth 用户名；与 `IDEA_PASS` 同时存在时发 `Authorization: Basic …` |
+| `IDEA_PASS` | 否 | nginx basic auth 密码 |
+| `IDEA_TOKEN` | 否 | 可选。存在时额外发 `X-Api-Key: <token>` 头 |
+
+`IDEA_BASE_URL` 与 `--base-url` 都没给时，脚本打印
+`missing_config: IDEA_BASE_URL is required` 到 stderr 并以退出码 1 退出。
+
+## 能力清单
+
+全局选项：`--format json|text`（默认 `json`）、`--base-url <url>`。
+两个选项放在子命令前后都认。
+
+| 子命令 | 作用 | 对应 API 路径 |
+|---|---|---|
+| `projects` | 项目列表 | `GET /api/projects` |
+| `project add <name>` | 新建项目 | `POST /api/projects` |
+| `project rename <id> <name>` | 改项目名 | `PATCH /api/projects/{id}` |
+| `project delete <id>` | 删项目（连带其想法进回收站） | `DELETE /api/projects/{id}` |
+| `project restore <id>` | 从回收站恢复项目 | `POST /api/projects/{id}/restore` |
+| `list` | 列想法 | `GET /api/ideas` |
+| `add <content>` | 记一条想法 | `POST /api/ideas` |
+| `update <id>` | 改标题/正文 | `PATCH /api/ideas/{id}` |
+| `tags <id> <tags-csv>` | **覆盖式**设置标签 | `PUT /api/ideas/{id}/tags` |
+| `done <id> [--undo]` | 标记完成/取消完成 | `POST /api/ideas/{id}/complete` |
+| `delete <id>` | 删想法（进回收站） | `DELETE /api/ideas/{id}` |
+| `restore <id>` | 从回收站恢复想法 | `POST /api/ideas/{id}/restore` |
+| `merge <id> [<id> …]` | 多条想法合并成一条 | `POST /api/ideas/merge` |
+| `bulk done <id> [<id> …] [--undo]` | 批量标记完成 | `POST /api/ideas/bulk/complete` |
+| `bulk tags <id> [<id> …] <tags-csv>` | 批量加标签（并集追加，不覆盖） | `POST /api/ideas/bulk/tags` |
+| `bulk delete <id> [<id> …]` | 批量删除 | `POST /api/ideas/bulk/delete` |
+| `trash` | 回收站内容 | `GET /api/trash` |
+| `taglist` | 标签字典（含使用次数） | `GET /api/tags` |
+| `webhook list [--project <id>]` | webhook 列表 | `GET /api/webhooks` |
+| `webhook add --name … --url …` | 新建 webhook | `POST /api/webhooks` |
+| `webhook update <id>` | 改 webhook | `PATCH /api/webhooks/{id}` |
+| `webhook delete <id>` | 删 webhook | `DELETE /api/webhooks/{id}` |
+| `telegram-template` | 打印 Telegram webhook 模板预设 | `GET /api/webhooks/templates/telegram` |
+
+### 各命令的参数
+
+```
+idea.py list [--project <id>] [--status all|open|done] [--tags a,b] [--tag-mode or|and]
+idea.py add <content> [--project <id>] [--title <title>] [--tags a,b]
+idea.py update <id> [--content <content>] [--title <title>]
+idea.py merge <id> [<id> ...] [--content <content>] [--title <title>]
+idea.py bulk tags <id> [<id> ...] <tags-csv>     # 最后一个参数是标签串，其余是 id
+idea.py webhook add --name <name> --url <url> [--body <template>] [--headers <k=v,...>]
+                     [--events <e1,e2>] [--scope global|project] [--project <id>] [--secret <s>]
+idea.py webhook update <id> [--name <name>] [--url <url>] [--body <template>]
+                        [--headers <k=v,...>] [--events <e1,e2>] [--enable|--disable] [--secret <s>]
+```
+
+要点：
+
+- `--tags` / `--events` / `--headers` 都是逗号串；`--headers` 的每一项是 `键=值`。
+- `bulk tags` 的参数顺序是 **id 在前、标签串在最后**：`bulk tags id1 id2 a,b`。
+- `merge` 不给 `--content` 时由服务端拼接（正文用空行分隔）；给了就以 `--content` 为准。
+- `webhook update` **只发送用户真正给出的字段**，没给的字段一个都不发
+  （后端把 `null` 当「不改」，发空串/空数组反而会真的清空）。
+- `webhook add` **不发送 `enabled`**：全局作用域的 webhook 创建后默认禁用，
+  项目作用域的默认启用，由后端按 scope 决定。
+- `--secret` 留空就不发这个键（`null` = 不改、`""` = 清空、非空 = 替换；
+  CLI 不给空串，所以「清空」这一档 CLI 做不到）。
+
+## 典型场景
+
+```bash
+# 1. 记一条想法（正文里的引号/换行照原样送达）
+scripts/idea.py add '引号 " 反斜杠 \ 换行
+<b>标签</b>' --title "带特殊字符" --tags 笔记
+
+# 2. 查未完成的想法
+scripts/idea.py list --status open
+
+# 3. 按标签筛：命中任意一个（默认 or）
+scripts/idea.py list --tags 后端,前端
+#    必须同时带两个标签
+scripts/idea.py list --tags 后端,导出 --tag-mode and
+
+# 4. 批量标记完成
+scripts/idea.py bulk done id1 id2 id3
+#    批量取消完成
+scripts/idea.py bulk done id1 id2 --undo
+
+# 5. 合并几条（源想法被硬删，结果是一条新想法）
+scripts/idea.py merge id1 id2
+#    自己指定合并后的正文
+scripts/idea.py merge id1 id2 --content "合并后的正文"
+
+# 6. 恢复误删的想法
+scripts/idea.py trash                 # 先看回收站
+scripts/idea.py restore <id>
+```
+
+## 输出
+
+- 默认 `--format json`：响应体原样 `json.dumps(…, ensure_ascii=False, indent=2)` 打到 stdout，
+  便于 agent 直接解析。列表是**裸数组**，单个资源是对象。
+- `--format text`：给人看的摘要，列表每行 `id  标题或正文首行`。
+- **webhook 的 `url` 与 `headers` 在两种格式下都脱敏**（见下）。
+
+### 脱敏规则
+
+webhook 的 `url` 里可能带凭据（Telegram 的 bot token 就在 URL 路径里），
+`headers` 里可能带 `Authorization: Bearer …`。CLI 的 stdout 会进 agent 的上下文与日志，
+那就是日志 —— 所以两份输出里都脱敏：
+
+- `url` → 保留 scheme 与 host，路径里 `/bot` 后面那一段换成 `***`
+  （例：`https://api.telegram.org/bot***/sendMessage`）；query 与 fragment 一律丢弃；
+  `<BOT_TOKEN>` 这个占位符**保持原样**（它不是秘密，是给用户替换的提示）。
+- `headers` → 只保留键名，值一律换成 `***`。
+
+## 错误处理
+
+| 情况 | stderr | 退出码 |
+|---|---|---|
+| 服务端返回 4xx/5xx（ProblemDetails） | `code: detail`，如 `merge_cross_project: 不能跨项目合并想法：源想法分属不同项目` | 1 |
+| 响应体不是 JSON（代理返回 HTML、路径写错拿到 SPA 的 index.html） | `invalid_response: 响应不是 JSON（HTTP 502）…` | 1 |
+| 网络不可达 / 超时 / 连接被拒 | `network_error: …` | 2 |
+| 命令行用法错误（参数缺失、取值不对） | argparse 的用法提示 | 2 |
+| 缺少 `IDEA_BASE_URL` | `missing_config: IDEA_BASE_URL is required` | 1 |
+
+**退出码非 0 就意味着操作没成**，不要把它当成功继续往下走。
+
+### 错误码对照表
+
+`code` 是后端给的稳定机器可读错误码（在 ProblemDetails 的扩展字段里）。
+**拿 `code` 分支处理，不要去匹配 `detail` 的文字**（detail 是给人看的，会改）。
+
+| code | 含义 | agent 该怎么办 |
+|---|---|---|
+| `idea_not_found` | 想法不存在 | 重新拉列表，可能是别的设备删了 |
+| `project_not_found` | 项目不存在 | 同上 |
+| `inbox_not_deletable` | 内置收件箱不能删 | 换个项目 |
+| `invalid_content` | 正文为空或全空白 | 补上正文再提交 |
+| `invalid_project_name` | 项目名为空或全空白 | 补上名字 |
+| `invalid_reorder_ids` | 重排的 ids 为空 | 别发空的 reorder |
+| `invalid_sort_mode` | 排序方式不是 `recent` / `manual` | 用这两个值之一 |
+| `setting_key_not_writable` | 该设置项不可经 API 修改 | 只能改 `project.sort_mode` |
+| `invalid_status` | `status` 参数不是 all/open/done | 用这三个值之一 |
+| `invalid_tag_mode` | `tagMode` 不是 or/and | 用这两个值之一 |
+| `invalid_merge_selection` | 合并时少于两条 | 至少选两条 |
+| `merge_cross_project` | 合并的想法不属于同一项目 | 先把它们移到同一项目 |
+| `not_in_trash` | 要恢复的东西不在回收站里 | 先拉 `GET /api/trash` 确认 |
+| `too_many_ideas` | 命中数超过 `Api:MaxIdeasPerResponse`（默认 2000） | 收窄过滤条件（加 projectId / status / tags） |
+| `invalid_webhook_name` | webhook 名称为空 | 补上名称 |
+| `invalid_webhook_url` | webhook 的 URL 为空或不是合法绝对地址 | 换成 http(s) 绝对地址 |
+| `invalid_webhook_scope` | scope 不是 `global` / `project` | 用这两个值之一 |
+| `invalid_webhook_project` | scope=project 但没给 project_id，或该项目不存在 | 补一个存在的项目 id |
+| `invalid_body_template` | Body 模板不是合法 JSON | 模板本身必须是一个 JSON 文档 |
+| `invalid_event_type` | 订阅的事件名不在 8 种事件类型里 | 用下面那组事件名 |
+| `webhook_not_found` | webhook 不存在 | 重新拉列表，可能是别的设备删了 |
+| `api_not_found` | 请求的接口不存在（路径写错了） | 核对命令名对应的 API 路径；完整契约见 `references/openapi.json` |
+| `delivery_not_found` | 投递记录不存在 | 重新拉该 webhook 的投递列表 |
+| `delivery_queue_full` | 投递队列已满（503），**这次手动重投没排上** | 稍后重试；事件路径的队列满是静默丢弃 + 日志，不会返回 503 |
+
+另有 500 的 `internal_error`：服务端兜底码，含义是「未预期的异常，看服务端日志」，
+agent 侧只需当成「重试或报错」，不必分支处理。
+
+### webhook 订阅的 8 种事件类型
+
+`idea.created`、`idea.updated`、`idea.deleted`、`idea.restored`、`idea.merged`、
+`project.created`、`project.updated`、`project.deleted`。
+
+## 完整接口契约
+
+`references/openapi.json` 是 `openapi/idea-v1.json` 的逐字副本（OpenAPI 3.1，25 条路径）：
+每个端点的参数、请求体、响应体 schema、状态码与错误码都在里面。
+
+**CLI 没覆盖的能力**（项目重排 `POST /api/projects/reorder`、设置项 `PUT /api/settings/{key}`、
+webhook 详情与投递记录 `GET /api/webhooks/{id}`、`GET /api/webhooks/{id}/deliveries`、
+手动重投 `POST /api/webhooks/{id}/deliveries/{deliveryId}/retry`、SSE `GET /api/events`）
+直接照契约调 API。
+
+## 端到端测试
+
+```bash
+bash skills/idea-manager/scripts/run-tests.sh
+```
+
+脚本会起一个真实的后端实例（临时 SQLite 库）、跑 `tests/` 下的 unittest，再把后端收掉。
