@@ -626,15 +626,25 @@ export default defineConfig({
 
 ```csharp
 // wwwroot 是前端构建产物的落点，而它被 .gitignore 排除（git 不跟踪空目录）
-// —— 新克隆的仓库里它不存在，静态文件中间件会抛 DirectoryNotFoundException。
-// 先确保它在，再挂中间件。
-Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "wwwroot"));
+// —— 新克隆的仓库里它不存在。
+//
+// ⚠️ **光 Directory.CreateDirectory 还不够**（R162，2026-11-13，实施者实测）：
+// `WebRootFileProvider` 是在 `WebApplication.CreateBuilder()` 里就定下来的，
+// 那一刻目录不存在，框架把它留成 `null`（只打一条 warning，**不抛异常**）——
+// 而那个 provider 是进程内固定的：后面再把目录与产物补上，静态文件照样 404
+//（`/` 一律 404，页面白屏）。所以要**显式指一个 `PhysicalFileProvider`**，
+// 「先起后端、后构建」这条路才真的通。
+var webRoot = Path.Combine(builder.Environment.ContentRootPath, "wwwroot");
+Directory.CreateDirectory(webRoot);
+builder.Environment.WebRootFileProvider = new PhysicalFileProvider(webRoot);
 
 app.UseStaticFiles();                 // 必须在 MapFallbackToFile 之前
 app.MapFallbackToFile("index.html");  // history 模式的深链兜底
 ```
 
 `UseStaticFiles` 没有它，`wwwroot/assets/` 下的 JS/CSS 全部 404（前端页面会白屏）；`MapFallbackToFile` 没有它，`/projects`、`/trash` 这类前端路由直接 404。
+
+**`MapFallbackToFile` 必须是最后一个映射** —— 它是 catch-all，放在它后面的 `MapXxxEndpoints()` 永远不会命中。
 
 - [ ] **Step 2: 构建并检查产物**
 
