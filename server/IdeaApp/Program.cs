@@ -4,9 +4,23 @@ using IdeaApp.Domain;
 using IdeaApp.Endpoints;
 using IdeaApp.Infrastructure;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// wwwroot 是前端构建产物的落点（web/vite.config.ts 的 build.outDir 指向这里），
+// 而它被 .gitignore 排除（git 不跟踪空目录）—— 新克隆的仓库里它不存在。
+//
+// 光 Directory.CreateDirectory 还不够：WebRootFileProvider 是在
+// WebApplication.CreateBuilder() 里就定下来的，那一刻目录不存在，
+// 框架会把它留成 null（只打一条 "The WebRootPath was not found" 警告，
+// 不抛异常）—— 那个 provider 是进程内固定的，后面再把目录与产物补上，
+// 静态文件照样 404（/ 一律 404，页面白屏）。
+// 目录建出来之后自己显式指一个 PhysicalFileProvider，这条路才真的通。
+var webRoot = Path.Combine(builder.Environment.ContentRootPath, "wwwroot");
+Directory.CreateDirectory(webRoot);
+builder.Environment.WebRootFileProvider = new PhysicalFileProvider(webRoot);
 
 // 环境变量前缀 IDEA_：README、spec §16.2 与 skill 计划里的启动命令都用这个前缀
 // （IDEA_Urls= / IDEA_Database__Path= / IDEA_Trash__RetentionDays=）。
@@ -125,6 +139,10 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
         ForwardedHeaders.XForwardedHost
 });
 
+// 静态文件：把 web/ 的 Vite 构建产物发出去。
+// 必须在 MapFallbackToFile 之前 —— 反了的话 wwwroot/assets/ 下的 JS/CSS 全 404，页面白屏。
+app.UseStaticFiles();
+
 // 端点共用的异常包装需要日志器：未预期的异常只进日志，不进响应体。
 ApiResults.UseLogger(app.Logger);
 
@@ -146,6 +164,12 @@ app.MapOpenApi("/openapi/{documentName}.json");
 
 // 导出 OpenAPI 文档到 IDEA_EXPORT_OPENAPI 指定的文件（没设这个环境变量就不导出）。
 OpenApiExporter.ExportIfRequested(app);
+
+// SPA 兜底：前端用 history 模式，/projects、/trash、/webhooks、/projects/{id}/webhooks
+// 都是真实路径。MapFallbackToFile("index.html") 兜住所有没匹配到端点的 GET。
+//
+// 必须是**最后**一个映射 —— 它是 catch-all，放在它后面的 MapXxxEndpoints() 永远不会命中。
+app.MapFallbackToFile("index.html");
 
 app.Run();
 

@@ -3,7 +3,7 @@
 个人自用的 idea 记事本：单用户、单实例，通过 nginx 反代访问。
 
 - **后端**：.NET 10 + SQLite + Native AOT，无 ORM、无反射式序列化。
-- **前端**：原生 JS + CSS，构建产物直接放进后端的 `wwwroot/`。
+- **前端**：Vue 3 + TypeScript + Vite，构建产物直接放进后端的 `wwwroot/`。
 - **agent 接入**：REST API + SSE，外加一份提交进仓库的 OpenAPI 契约。
 
 设计与取舍见 [`docs/superpowers/specs/2026-11-11-idea-manager-design.md`](docs/superpowers/specs/2026-11-11-idea-manager-design.md)。
@@ -19,31 +19,50 @@ server/IdeaApp/            后端应用（.NET 10，Native AOT）
   Infrastructure/          SQL、事件总线、SSE、webhook 投递、OpenAPI 导出
   Contracts/               DTO、请求体、JSON 源生成上下文
   Endpoints/               各资源的端点映射（MapXxx 扩展方法）
-  Program.cs               组合根：注册、端点映射
+  Program.cs               组合根：注册、端点映射、静态文件与 SPA 兜底
+  wwwroot/                 前端构建产物的落点（被 .gitignore 排除，不进仓库）
 server/IdeaApp.Tests/      集成测试（WebApplicationFactory + 真实 SQLite）
 server/scripts/aot-smoke.sh AOT 产物冒烟脚本
 tools/ExportOpenApi/       导出 OpenAPI 文档的小工具
+web/                       前端（Vue 3 + TypeScript + Vite）
+  src/pages/               路由级页面
+  src/components/          可复用组件
+  src/composables/         可复用的组合式函数
+  src/stores/              全局状态
+  src/api/                 后端调用层（REST + SSE）
+  src/lib/                 纯函数工具
+  src/styles/              全局样式
 openapi/idea-v1.json       OpenAPI 3.1 契约快照（提交进仓库，给 agent 用）
 docs/nginx/idea.conf       nginx 反代配置
 docs/superpowers/          规格与计划
 ```
 
-`web/`（前端）与 `skills/idea-manager/`（agent skill）**目前还不存在** ——
-它们分别由前端计划与 skill 计划产出。下面提到这两处的命令，都要等对应的计划落地后才能跑。
+`web/` 已落地（Vue 3 + TypeScript + Vite，详见 [`web/README.md`](web/README.md)）。
+`skills/idea-manager/`（agent skill）**尚未落地** —— 它由 skill 计划产出，
+下面提到它的命令要等那个计划落地后才能跑。
 
 ## 构建
 
 ### 前端
 
-前端计划落地后才有 `web/` 目录，届时构建命令是：
-
 ```bash
-cd web && npm ci && npm run build    # 产物输出到 server/IdeaApp/wwwroot/
+cd web
+npm ci                 # 首次
+npm run build          # 产物输出到 server/IdeaApp/wwwroot/
 ```
 
+开发时用 `npm run dev`（Vite dev server，`/api` 由 proxy 转发到
+`http://127.0.0.1:5080`，**要先起后端**），测试与类型检查分别是
+`npm test`（Vitest + jsdom）和 `npm run typecheck`（vue-tsc）。
+详见 [`web/README.md`](web/README.md)。
+
 前端用 history 模式（`/projects`、`/trash`、`/webhooks` 等都是真实路径），
-服务端用 `MapFallbackToFile("index.html")` 兜底未匹配的 GET 请求 ——
-**这两行接线由前端计划负责**（计划里的 F12），当前后端还没挂静态文件与 SPA 兜底。
+后端用 `MapFallbackToFile("index.html")` 兜底未匹配的 GET 请求 ——
+这两行接线（`UseStaticFiles` + `MapFallbackToFile`）在 `server/IdeaApp/Program.cs` 里。
+
+> ⚠️ **`server/IdeaApp/wwwroot/` 被 `.gitignore` 排除**，构建产物**不进仓库**。
+> 新克隆的仓库里这个目录不存在 —— 跑一次 `npm run build` 才有产物，
+> 否则后端能起、但页面是白屏。
 
 ### 后端
 
@@ -79,6 +98,10 @@ IDEA_PublicBaseUrl=https://ideas.example.com \
 
 **首次启动自动建库建表**并写入内置收件箱（`inbox`），不需要额外的迁移步骤。
 数据库默认在 `data/idea.db`（相对应用目录）。
+
+应用同时把前端页面发在 `/` 上（`wwwroot/` 里的构建产物），
+`/projects`、`/trash`、`/webhooks` 这类前端路由由 `MapFallbackToFile("index.html")` 兜底，
+所以深链直接访问也是 200，不会 404。
 
 ### 配置项
 
