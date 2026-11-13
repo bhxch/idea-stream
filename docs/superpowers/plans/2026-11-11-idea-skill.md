@@ -66,10 +66,13 @@ skills/idea-manager/
     正文含：能力清单表（子命令 → 作用 → 对应 API 路径）、典型场景示例（记一条想法、查未完成、按标签筛、批量标记完成、合并几条、恢复删除的）、环境变量说明、错误码对照表、指向 `references/openapi.json` 的说明。
   - `skills/idea-manager/scripts/run-tests.sh`：可执行脚本，职责为
     1. `dotnet run --project server/IdeaApp` 起后端（后台），`IDEA_Database__Path` 指向临时库；
-    2. 轮询 `http://127.0.0.1:5080/api/health` 直到 200（最多 60 秒）；
+    2. 轮询 `http://127.0.0.1:5080/api/health` 直到 200（最多 60 秒）；**超时要把后端日志打出来并退出 1** ——
+       否则后面的用例会「全部 skip」，看着像全绿；
     3. `IDEA_BASE_URL=http://127.0.0.1:5080 python3 -m unittest discover -s skills/idea-manager/tests -v`；
-    4. 无论成败都杀掉后端进程；
-    5. 用后端退出码作为脚本退出码。
+    4. 无论成败都杀掉后端进程（**先杀子进程再杀父进程**：`dotnet run` 会 fork 子进程，
+       父进程先死的话子进程会被 reparent，`pkill -P` 就捞不到了）；
+    5. 用**测试**的退出码作为脚本退出码（后端是被 trap 杀掉的，它的退出码没有意义）；
+    6. **端口仍被占用就报错退出** —— 否则会连到上一次的旧实例的旧库，测试结果不可信。
 
 - [ ] **Step 1: 复制契约**
 
@@ -141,7 +144,7 @@ idea.py bulk delete <id> [<id> ...]
 idea.py trash
 idea.py taglist
 idea.py webhook list [--project <id>]
-idea.py webhook add --name <name> --url <url> [--body <template>] [--headers <k=v,...>]
+idea.py webhook add --name <name> --url <url> --body <template> [--headers <k=v,...>]
                      [--events <e1,e2>] [--scope global|project] [--project <id>] [--secret <s>]
 idea.py webhook update <id> [--name <name>] [--url <url>] [--body <template>]
                         [--headers <k=v,...>] [--events <e1,e2>] [--enable|--disable] [--secret <s>]
@@ -150,6 +153,21 @@ idea.py telegram-template
 ```
 
 全局选项：`--format json|text`（默认 json）、`--base-url <url>`（覆盖 `IDEA_BASE_URL`）。
+
+> ⚠️ **`webhook add --body` 是必填的**（2026-11-13 实施者核实）：后端的
+> `TemplateRenderer.Validate` 对空模板抛 `ArgumentException` → `invalid_body_template`，
+> 所以「不传 body 模板」在服务端就是一次必然失败的请求。CLI 应当**本地就拦**
+> （`usage_error`，退出码 1），而不是发一个注定被拒的请求。
+>
+> ⚠️ **webhook update 只发用户真正指定的字段**：后端把 `null` 当「不改」
+> （`WebhookService.Update` 每个字段都是 `request.X is null ? existing.X : ...`）——
+> 但发**空串/空数组**会真的清空。`--secret` 留空就**不要发这个键**（三态：`null` 不改、
+> `""` 清空、非空替换）。
+>
+> ⚠️ **`--scope` / `--project` / `--status` / `--tag-mode` 不做本地校验**：
+> 让服务端给稳定的错误码与 detail（`invalid_webhook_scope`、`invalid_webhook_project`、
+> `invalid_status`、`invalid_tag_mode`）—— 这个 skill 的价值就在错误码可读，
+> 本地拦掉反而把信息换成了一句人话。
 
 内部函数签名固定：
 
@@ -246,7 +264,7 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 | `invalid_webhook_name` | webhook 名称为空 | 补上名称 |
 | `invalid_webhook_url` | webhook 的 URL 为空或不是合法绝对地址 | 换成 http(s) 绝对地址 |
 | `invalid_webhook_scope` | scope 不是 `global` / `project` | 用这两个值之一 |
-| `invalid_webhook_project` | scope=project 但没给 project_id，或该项目不存在 | 补一个存在的项目 id |
+| `invalid_webhook_project` | 项目级 webhook 必须指定一个存在的项目；全局 webhook 不能绑定项目 | 补一个存在的项目 id，或去掉 `--project` |
 | `invalid_body_template` | Body 模板不是合法 JSON | 模板本身必须是一个 JSON 文档 |
 | `invalid_event_type` | 订阅的事件名不在 8 种事件类型里 | 用 `EventTypes.All` 里的名字 |
 | `webhook_not_found` | webhook 不存在 | 重新拉列表，可能是别的设备删了 |
@@ -274,7 +292,9 @@ OpenAPI 契约里的错误码说明也是从它生成的。改错误码时三处
 
 Run: `bash skills/idea-manager/scripts/run-tests.sh` → Expected: PASS
 Run: `IDEA_BASE_URL=http://127.0.0.1:5080 python3 skills/idea-manager/scripts/idea.py telegram-template` → Expected: 输出含 `message_thread_id`
-Run: `grep -rn "IDEA_PASS\|Authorization" skills/idea-manager/SKILL.md` → Expected: 无输出（说明书里不出现密码字段的示例值）
+Run: `grep -rnE "IDEA_PASS=|Authorization: Basic [A-Za-z0-9+/=]{8,}|bot[0-9]{6,}:" skills/ openapi/ README.md` → Expected: 无输出（**不出现密码的示例值、Basic 头、真实 bot token**）
+> ⚠️ 注意别写成 `grep "IDEA_PASS"` —— 说明书**必须**写清楚要设哪几个环境变量，
+> 变量名本身出现是对的；要禁的是**值**（`IDEA_PASS=xxx`、Basic 头、真实 token）。
 Run: `grep -rniE "bot[0-9]{6,}:" skills/ openapi/ README.md` → Expected: 无输出（仓库里没有真实 bot token）
 
 - [ ] **Step 4: 提交**
