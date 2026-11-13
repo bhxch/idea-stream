@@ -139,6 +139,15 @@ public sealed class ErrorContractTests
     /// 请求会真的进到端点，框架在绑定 body 时抛 415，再由 <see cref="ApiExceptionHandler"/>
     /// 统一转成 ProblemDetails。
     /// </para>
+    ///
+    /// <para>
+    /// 下面那份 <c>[InlineData]</c> 清单是**手写的**，它必须与「扫源码算出来的
+    /// 带 body 的端点集合」逐条一致 ——
+    /// <see cref="UnsupportedMediaTypeCoverageTests"/> 守着这条交叉核对：
+    /// 扫描有而清单没有（新增端点忘了补用例）会红，
+    /// 清单有而扫描没有（扫描器漏扫）也会红。
+    /// 往清单里加一行时记得同时想想：源码里是不是真的多了个带 body 的端点？
+    /// </para>
     /// </summary>
     [Theory]
     [InlineData("POST", "/api/ideas")]
