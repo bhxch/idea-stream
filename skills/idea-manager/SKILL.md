@@ -24,13 +24,13 @@ scripts/idea.py list --tags a,b --tag-mode and
 
 ## 安装
 
-skill 目录可直接软链到 agent 的 skills 目录（两种格式一致）：
+skill 目录可直接软链到 agent 的 skills 目录（两种格式一致），也可以直接复制：
 
 ```bash
 ln -s "$PWD/skills/idea-manager" ~/.claude/skills/idea-manager
 # 或
 ln -s "$PWD/skills/idea-manager" ~/.zcode/skills/idea-manager
-# 或直接复制
+# 或
 cp -r skills/idea-manager ~/.zcode/skills/
 ```
 
@@ -47,8 +47,8 @@ scripts/idea.py list
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `IDEA_BASE_URL` | 是 | 实例地址，如 `https://ideas.example.com`。命令行 `--base-url` 可临时覆盖它 |
-| `IDEA_USER` | 否 | nginx basic auth 用户名；与 `IDEA_PASS` 同时存在时发 `Authorization: Basic …` |
-| `IDEA_PASS` | 否 | nginx basic auth 密码 |
+| `IDEA_USER` | 否 | nginx basic auth 用户名；与密码变量同时存在时发 basic auth 头 |
+| `IDEA_PASS` | 否 | nginx basic auth 密码（值别写进仓库、别写进命令行） |
 | `IDEA_TOKEN` | 否 | 可选。存在时额外发 `X-Api-Key: <token>` 头 |
 
 `IDEA_BASE_URL` 与 `--base-url` 都没给时，脚本打印
@@ -93,7 +93,7 @@ idea.py add <content> [--project <id>] [--title <title>] [--tags a,b]
 idea.py update <id> [--content <content>] [--title <title>]
 idea.py merge <id> [<id> ...] [--content <content>] [--title <title>]
 idea.py bulk tags <id> [<id> ...] <tags-csv>     # 最后一个参数是标签串，其余是 id
-idea.py webhook add --name <name> --url <url> [--body <template>] [--headers <k=v,...>]
+idea.py webhook add --name <name> --url <url> --body <template> [--headers <k=v,...>]
                      [--events <e1,e2>] [--scope global|project] [--project <id>] [--secret <s>]
 idea.py webhook update <id> [--name <name>] [--url <url>] [--body <template>]
                         [--headers <k=v,...>] [--events <e1,e2>] [--enable|--disable] [--secret <s>]
@@ -103,13 +103,18 @@ idea.py webhook update <id> [--name <name>] [--url <url>] [--body <template>]
 
 - `--tags` / `--events` / `--headers` 都是逗号串；`--headers` 的每一项是 `键=值`。
 - `bulk tags` 的参数顺序是 **id 在前、标签串在最后**：`bulk tags id1 id2 a,b`。
-- `merge` 不给 `--content` 时由服务端拼接（正文用空行分隔）；给了就以 `--content` 为准。
-- `webhook update` **只发送用户真正给出的字段**，没给的字段一个都不发
+  它是**并集追加**（不覆盖原有标签）；要覆盖式改标签用 `tags <id> a,b`。
+- `merge` 不给 `--content` 时由服务端拼接（正文之间用空行分隔）；给了就以 `--content` 为准。
+  源想法会被**硬删**（不在回收站里），合并结果是一条新想法。
+- `update` 与 `webhook update` **只发送用户真正给出的字段**，没给的字段一个都不发
   （后端把 `null` 当「不改」，发空串/空数组反而会真的清空）。
+- `webhook add` **必须给 `--body`**：Body 模板不能为空（后端会拒，CLI 也提前拦下）。
 - `webhook add` **不发送 `enabled`**：全局作用域的 webhook 创建后默认禁用，
   项目作用域的默认启用，由后端按 scope 决定。
-- `--secret` 留空就不发这个键（`null` = 不改、`""` = 清空、非空 = 替换；
+- `--secret` 留空就不发这个键（后端的密钥三态是 `null` = 不改、`""` = 清空、非空 = 替换；
   CLI 不给空串，所以「清空」这一档 CLI 做不到）。
+- `--status` / `--tag-mode` 的取值由**服务端**校验：写错了会拿到 `invalid_status` /
+  `invalid_tag_mode`（退出码 1）。
 
 ## 典型场景
 
@@ -139,37 +144,56 @@ scripts/idea.py merge id1 id2 --content "合并后的正文"
 # 6. 恢复误删的想法
 scripts/idea.py trash                 # 先看回收站
 scripts/idea.py restore <id>
+
+# 7. 配一个 Telegram 通知（token 换成自己的）
+scripts/idea.py telegram-template      # 打印模板：url + Body 模板
+scripts/idea.py webhook add --name "tg" \
+  --url "https://api.telegram.org/bot<你的 token>/sendMessage" \
+  --body '{"chat_id":-1003800671233,"message_thread_id":89,"text":"{{idea.content}}"}' \
+  --events idea.created,idea.updated
 ```
 
 ## 输出
 
 - 默认 `--format json`：响应体原样 `json.dumps(…, ensure_ascii=False, indent=2)` 打到 stdout，
   便于 agent 直接解析。列表是**裸数组**，单个资源是对象。
-- `--format text`：给人看的摘要，列表每行 `id  标题或正文首行`。
+  204（删除成功）没有响应体，这时 stdout 是 `null`。
+- `--format text`：给人看的摘要。列表每行 `id  标题或正文首行`（后面跟 `#标签` 与 `[done]` 标记），
+  单个资源按 `字段: 值` 逐行列。
 - **webhook 的 `url` 与 `headers` 在两种格式下都脱敏**（见下）。
 
 ### 脱敏规则
 
 webhook 的 `url` 里可能带凭据（Telegram 的 bot token 就在 URL 路径里），
-`headers` 里可能带 `Authorization: Bearer …`。CLI 的 stdout 会进 agent 的上下文与日志，
+`headers` 里可能带鉴权头（Bearer 令牌之类）。CLI 的 stdout 会进 agent 的上下文与日志，
 那就是日志 —— 所以两份输出里都脱敏：
 
-- `url` → 保留 scheme 与 host，路径里 `/bot` 后面那一段换成 `***`
-  （例：`https://api.telegram.org/bot***/sendMessage`）；query 与 fragment 一律丢弃；
-  `<BOT_TOKEN>` 这个占位符**保持原样**（它不是秘密，是给用户替换的提示）。
+- `url` → 保留 scheme 与 host；query 与 fragment 一律丢弃（凭据常在 query 里）；
+  路径里可能含凭据的段替换成 `***`：
+  - `/bot<token>`（Telegram 就是这个形状，token 粘在 `bot` 后面）→ `bot***`；
+  - `/bot/<token>` → `***`；
+  - 其它长得像随机串的路径段（长 UUID、随机 token、`键:值` 形状）→ `***`。
+  `<BOT_TOKEN>` 这个占位符**保持原样** —— 它不是秘密，是给用户替换的提示。
 - `headers` → 只保留键名，值一律换成 `***`。
 
+例子：`https://api.telegram.org/botXXXXXX:ABCDEF/sendMessage`
+→ `https://api.telegram.org/bot***/sendMessage`。
+
 ## 错误处理
+
+**退出码非 0 就意味着操作没成**，不要把它当成功继续往下走。
 
 | 情况 | stderr | 退出码 |
 |---|---|---|
 | 服务端返回 4xx/5xx（ProblemDetails） | `code: detail`，如 `merge_cross_project: 不能跨项目合并想法：源想法分属不同项目` | 1 |
-| 响应体不是 JSON（代理返回 HTML、路径写错拿到 SPA 的 index.html） | `invalid_response: 响应不是 JSON（HTTP 502）…` | 1 |
+| 响应体不是 JSON（代理返回 HTML、路径写错拿到 SPA 的 index.html） | `invalid_response: 响应不是 JSON（HTTP 502，Content-Type: text/html）；…` | 1 |
+| 缺 `IDEA_BASE_URL` | `missing_config: IDEA_BASE_URL is required（也可以用 --base-url <地址> 临时覆盖）` | 1 |
+| 命令行用错（缺 `--body`、没给要改的字段、`--headers` 不是 `键=值`） | `usage_error: …` | 1 |
 | 网络不可达 / 超时 / 连接被拒 | `network_error: …` | 2 |
-| 命令行用法错误（参数缺失、取值不对） | argparse 的用法提示 | 2 |
-| 缺少 `IDEA_BASE_URL` | `missing_config: IDEA_BASE_URL is required` | 1 |
+| argparse 的用法错误（未知选项、缺必填参数、没给子命令） | argparse 的用法提示 | 2 |
 
-**退出码非 0 就意味着操作没成**，不要把它当成功继续往下走。
+前四行里的 `missing_config` / `usage_error` / `invalid_response` / `network_error`
+是 **CLI 自己的**错误码；其余的 `code` 都来自服务端。
 
 ### 错误码对照表
 
@@ -205,6 +229,10 @@ webhook 的 `url` 里可能带凭据（Telegram 的 bot token 就在 URL 路径�
 
 另有 500 的 `internal_error`：服务端兜底码，含义是「未预期的异常，看服务端日志」，
 agent 侧只需当成「重试或报错」，不必分支处理。
+
+这张表的权威来源是后端的 `server/IdeaApp/Contracts/ApiErrorCodes.cs` ——
+OpenAPI 契约里的错误码说明也是从它生成的。改错误码时三处要一起改：
+`ApiErrorCodes.cs`、本表、以及后端实际抛错的地方。
 
 ### webhook 订阅的 8 种事件类型
 

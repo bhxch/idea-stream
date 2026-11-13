@@ -33,13 +33,14 @@ web/                       前端（Vue 3 + TypeScript + Vite）
   src/lib/                 纯函数工具
   src/styles/              全局样式
 openapi/idea-v1.json       OpenAPI 3.1 契约快照（提交进仓库，给 agent 用）
+skills/idea-manager/       agent skill（说明书 + 命令行封装 + 契约副本）
 docs/nginx/idea.conf       nginx 反代配置
 docs/superpowers/          规格与计划
 ```
 
 `web/` 已落地（Vue 3 + TypeScript + Vite，详见 [`web/README.md`](web/README.md)）。
-`skills/idea-manager/`（agent skill）**尚未落地** —— 它由 skill 计划产出，
-下面提到它的命令要等那个计划落地后才能跑。
+`skills/idea-manager/`（agent skill）也已落地：把 REST API 包成一条命令行，
+agent 不必手写 HTTP 请求就能管理想法。
 
 ## 构建
 
@@ -197,18 +198,20 @@ nginx 在别的机器上要在代码里显式加 `KnownProxies`，否则这些�
 ## Agent skill
 
 `skills/idea-manager/` 是随项目交付的 agent skill：`SKILL.md` 是说明书，
-`scripts/idea.py` 是纯标准库的命令行封装，`references/openapi.json` 是上面那份契约的副本。
-**该目录由 skill 计划产出，目前还不存在** —— 下面的安装命令等它落地后再用。
+`scripts/idea.py` 是纯标准库的命令行封装（`urllib`，无第三方依赖，Python 3.9+ 即可跑），
+`references/openapi.json` 是上面那份契约的副本。
 
-安装（软链即可，两种 agent 目录格式一致）：
+安装（软链或复制都行，两种 agent 目录格式一致）：
 
 ```bash
 ln -s "$PWD/skills/idea-manager" ~/.claude/skills/idea-manager
 # 或
 ln -s "$PWD/skills/idea-manager" ~/.zcode/skills/idea-manager
+# 或直接复制一份
+cp -r skills/idea-manager ~/.zcode/skills/
 ```
 
-连接配置走环境变量，不进仓库：
+连接配置走环境变量，不进仓库（命令行不接受密码）：
 
 | 变量 | 说明 |
 |---|---|
@@ -217,4 +220,22 @@ ln -s "$PWD/skills/idea-manager" ~/.zcode/skills/idea-manager
 | `IDEA_PASS` | nginx basic auth 密码 |
 | `IDEA_TOKEN` | 可选。若 nginx 侧另外校验 `X-Api-Key` 头则填 |
 
-自检：`idea.py list` —— 打得通就说明目标实例可达、凭证正确。
+自检：
+
+```bash
+python3 skills/idea-manager/scripts/idea.py list
+```
+
+打得通就说明目标实例可达、凭证正确。命令一览与错误码对照表见
+[`skills/idea-manager/SKILL.md`](skills/idea-manager/SKILL.md)：
+
+```bash
+python3 skills/idea-manager/scripts/idea.py add "把导出功能改成异步任务" --tags 后端
+python3 skills/idea-manager/scripts/idea.py list --status open
+```
+
+端到端测试（会起一个真实的后端实例，用临时 SQLite 库）：
+
+```bash
+bash skills/idea-manager/scripts/run-tests.sh
+```

@@ -261,7 +261,10 @@ class LocalServerTest(unittest.TestCase):
         webhook = {
             "id": "wh-1",
             "name": "telegram",
-            "url": "https://api.telegram.org/bot123456789:AAFakeTokenSecret/sendMessage",
+            # 假 token：刻意不用「bot + 一串数字」的形状 ——
+            # 仓库里有一条 grep（bot[0-9]{6,}:）用来确认没有真实 bot token 混进来，
+            # 假 token 也不该让它响。
+            "url": "https://api.telegram.org/botXXXXXX:FAKE-TOKEN/sendMessage",
             "method": "POST",
             "headers": {"Authorization": "Bearer SUPER-SECRET-HEADER"},
             "bodyTemplate": "{}",
@@ -280,8 +283,8 @@ class LocalServerTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
 
         # JSON 输出：token 与 header 的值都不能出现。
-        self.assertNotIn("123456789", out)
-        self.assertNotIn("AAFakeTokenSecret", out)
+        self.assertNotIn("XXXXXX", out)
+        self.assertNotIn("FAKE-TOKEN", out)
         self.assertNotIn("SUPER-SECRET-HEADER", out)
         self.assertIn("api.telegram.org", out)
         self.assertIn("***", out)
@@ -293,7 +296,7 @@ class LocalServerTest(unittest.TestCase):
         # text 输出同样要脱敏。
         code, out, err = run_cli(["--format", "text", "webhook", "list"], base_url=url)
         self.assertEqual(code, 0, err)
-        self.assertNotIn("AAFakeTokenSecret", out)
+        self.assertNotIn("FAKE-TOKEN", out)
         self.assertNotIn("SUPER-SECRET-HEADER", out)
         self.assertIn("***", out)
 
