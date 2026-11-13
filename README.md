@@ -58,7 +58,17 @@ npm run build          # 产物输出到 server/IdeaApp/wwwroot/
 
 前端用 history 模式（`/projects`、`/trash`、`/webhooks` 等都是真实路径），
 后端用 `MapFallbackToFile("index.html")` 兜底未匹配的 GET 请求 ——
-这两行接线（`UseStaticFiles` + `MapFallbackToFile`）在 `server/IdeaApp/Program.cs` 里。
+这几行接线在 `server/IdeaApp/Program.cs` 里：`UseStaticFiles` +
+`MapFallbackToFile`，另外还有**一行 provider 覆盖**
+（`WebRootFileProvider`）—— `wwwroot` 被 gitignore 排除，新克隆的仓库里
+它不存在，光建目录不够，得显式指一个 `PhysicalFileProvider`，
+否则静态文件中间件会拿到查不到任何文件的 provider。
+
+那个 SPA 兜底是 catch-all，会兜住**所有**没匹配到端点的 GET —— 包括 `/api/**`。
+所以 `/api/**` 另有一层兜底（`app.Map("/api/{**rest}", …)`），
+未匹配的 API 路径回 **404 + ProblemDetails**（`code=api_not_found`），
+不是 200 + HTML：这个 API 是给 agent 读的（契约在 `openapi/idea-v1.json`），
+agent 只按状态码判断的话，200 + HTML 会被当成成功。
 
 > ⚠️ **`server/IdeaApp/wwwroot/` 被 `.gitignore` 排除**，构建产物**不进仓库**。
 > 新克隆的仓库里这个目录不存在 —— 跑一次 `npm run build` 才有产物，
@@ -74,11 +84,19 @@ dotnet build IdeaApp.sln
 dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj
 
 # Native AOT 发布（自包含单文件）
+cd web && npm run build && cd ..          # ← 先构建前端，见下面的警告
 dotnet publish server/IdeaApp -c Release -r linux-x64 \
   -p:PublishAot=true -p:InvariantGlobalization=true
 ```
 
 产物在 `server/IdeaApp/bin/Release/net10.0/linux-x64/publish/`：`IdeaApp` 可执行文件 + `wwwroot/`。
+
+> ⚠️ **publish 前必须先 `cd web && npm run build`** ——
+> `wwwroot/` 被 gitignore 排除，仓库里没有它。忘了这一步就会发布一个
+> **空的 wwwroot**：应用照常起、`/api/*` 照常工作，但页面是白屏，
+> 而且**没有任何报错**（静态文件中间件找不到文件而已）。
+> 部署前用 `ls server/IdeaApp/bin/Release/net10.0/linux-x64/publish/wwwroot`
+> 确认 `index.html` 与 `assets/` 都在。
 
 AOT 有自己的坑：JSON 一律走源生成上下文（`IdeaJsonContext`），类型漏登记在开发期能测出来，
 在 AOT 产物下才会炸。改完端点记得跑一遍 AOT 冒烟：
@@ -102,6 +120,9 @@ IDEA_PublicBaseUrl=https://ideas.example.com \
 应用同时把前端页面发在 `/` 上（`wwwroot/` 里的构建产物），
 `/projects`、`/trash`、`/webhooks` 这类前端路由由 `MapFallbackToFile("index.html")` 兜底，
 所以深链直接访问也是 200，不会 404。
+
+`/api/**` 不走那个兜底：未匹配的 API 路径回 **404 + ProblemDetails**
+（`code=api_not_found`），不是 200 + HTML —— 这个 API 是给 agent 读的。
 
 ### 配置项
 

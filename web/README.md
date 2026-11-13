@@ -100,6 +100,23 @@ server/IdeaApp/wwwroot/
 
 `build.emptyOutDir` 为 `true`，每次构建会先清空该目录，别往里手工放文件。
 
+### `npm run preview` —— 预览构建产物
+
+```bash
+cd web
+npm run build
+npm run preview
+```
+
+用 Vite 的静态服务器预览刚构建出来的产物（默认 `http://localhost:4173/`）。
+
+`/api` 照样通：Vite 的 `preview.proxy` 默认就是 `server.proxy`，
+所以它和 `npm run dev` 一样把 `/api` 转发到 `http://127.0.0.1:5080` ——
+**后端仍然要起着**。深链（`/projects` 等）由 Vite 自己的 SPA 兜底处理。
+
+它比 `npm run dev` 少一层开发期处理（HMR、快速刷新），
+适合「构建产物对不对」的验收。
+
 ### `npm test` —— 单元测试
 
 ```bash
