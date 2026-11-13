@@ -116,7 +116,8 @@ IDEA_PublicBaseUrl=https://ideas.example.com \
 ```
 
 **首次启动自动建库建表**并写入内置收件箱（`inbox`），不需要额外的迁移步骤。
-数据库默认在 `data/idea.db`（相对应用目录）。
+数据库默认在 `data/idea.db` —— 相对路径以**应用目录**（可执行文件所在目录）为基准，
+**与当前工作目录无关**（见下面的「配置项」一节）。
 
 应用同时把前端页面发在 `/` 上（`wwwroot/` 里的构建产物），
 `/projects`、`/trash`、`/webhooks` 这类前端路由由 `MapFallbackToFile("index.html")` 兜底，
@@ -136,7 +137,7 @@ IDEA_PublicBaseUrl=https://ideas.example.com \
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `Urls` | `http://127.0.0.1:5080` | Kestrel 监听地址（只绑回环，对外走 nginx） |
-| `Database:Path` | `data/idea.db` | SQLite 文件路径，相对路径以应用目录为基准 |
+| `Database:Path` | `data/idea.db` | SQLite 文件路径。**相对路径以应用目录为基准，与当前工作目录无关** |
 | `Trash:RetentionDays` | `30` | 回收站保留天数。**页面与 API 都不可改** |
 | `PublicBaseUrl` | 空 | 用于生成 `{{idea.url}}`，如 `https://ideas.example.com` |
 | `Api:MaxIdeasPerResponse` | `2000` | 单次列表返回的最大条数，超过则 400 |
@@ -145,6 +146,24 @@ IDEA_PublicBaseUrl=https://ideas.example.com \
 | `Webhook:MaxDeliveryRecords` | `500` | 每个 webhook 保留的投递记录条数 |
 | `Sse:BufferSize` | `500` | 服务端事件缓冲条数（供 `Last-Event-ID` 补发） |
 | `Sse:HeartbeatSeconds` | `25` | SSE 心跳间隔（发 `: ping` 注释帧，防中间代理掐断空闲连接） |
+
+#### 「应用目录」是哪个目录
+
+`Database:Path` 的相对路径锚在**应用目录**上，也就是可执行文件所在目录
+（代码里是 `AppContext.BaseDirectory`）：
+
+| 跑法 | 应用目录 | `data/idea.db` 落在 |
+|---|---|---|
+| AOT 单文件发布（`/opt/idea/IdeaApp`） | `/opt/idea/` | `/opt/idea/data/idea.db` |
+| `dotnet run`（开发） | `server/IdeaApp/bin/Debug/net10.0/` | `server/IdeaApp/bin/Debug/net10.0/data/idea.db` |
+
+**不能按当前工作目录解析**：用 systemd 跑且没设 `WorkingDirectory` 时 CWD 是 `/`，
+库文件会落到 `/data/idea.db` —— 不可预期、可能没权限，也可能误伤别的数据。
+开发时想让库文件落在项目目录，显式给绝对路径即可：
+
+```bash
+IDEA_Database__Path="$PWD/server/IdeaApp/data/idea.db" dotnet run --project server/IdeaApp
+```
 
 另有一个只认环境变量的开关：`IDEA_EXPORT_OPENAPI=<路径>` —— 设了它，应用启动后会把
 OpenAPI 文档写到该文件（见「OpenAPI 文档」一节）。

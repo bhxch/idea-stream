@@ -7,7 +7,7 @@ namespace IdeaApp.Infrastructure;
 /// <summary>
 /// SQLite 连接工厂。负责建库建表、写入内置收件箱，并按需打开带 PRAGMA 的连接。
 /// </summary>
-public sealed class SqliteDatabase(string databasePath)
+public sealed class SqliteDatabase
 {
     /// <summary>建表脚本作为嵌入资源的逻辑名。</summary>
     private const string SchemaResourceName = "IdeaApp.Infrastructure.schema.sql";
@@ -15,8 +15,54 @@ public sealed class SqliteDatabase(string databasePath)
     /// <summary>时间戳在库中的统一格式：UTC ISO-8601。</summary>
     public const string TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffffffZ";
 
-    /// <summary>数据库文件的绝对路径（相对路径按当前工作目录解析）。</summary>
-    public string DatabasePath { get; } = ResolveDatabasePath(databasePath);
+    /// <summary>
+    /// 相对路径的基准目录：**应用目录**（可执行文件所在目录）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 不能用当前工作目录（CWD）：用 systemd 跑且**没设** <c>WorkingDirectory</c> 时
+    /// CWD 是 <c>/</c>，按 CWD 解析相对路径会把库文件落到 <c>/data/idea.db</c> ——
+    /// 不可预期、可能没权限，也可能误伤别的数据。文档承诺的是「相对应用目录」。
+    /// </para>
+    /// <para>
+    /// <c>AppContext.BaseDirectory</c> 在 AOT 单文件发布下是**可执行文件所在的目录**
+    /// （例如 <c>/opt/idea/</c>）；在 <c>dotnet run</c> 下是
+    /// <c>server/IdeaApp/bin/Debug/net10.0/</c>（不是项目目录）。
+    /// 两种情况的实际落点都写在 README 的「配置项」一节里。
+    /// </para>
+    /// </remarks>
+    public static string AppDirectory => AppContext.BaseDirectory;
+
+    /// <summary>
+    /// 建一个指向指定 SQLite 文件的工厂。
+    /// </summary>
+    /// <param name="databasePath">
+    /// 数据库文件路径。相对路径以 <see cref="AppDirectory"/>（应用目录）为基准，
+    /// **与当前工作目录无关**；绝对路径原样使用。
+    /// </param>
+    public SqliteDatabase(string databasePath)
+        : this(databasePath, AppDirectory)
+    {
+    }
+
+    /// <summary>
+    /// 建一个指向指定 SQLite 文件的工厂，并显式给出相对路径的基准目录。
+    /// </summary>
+    /// <param name="databasePath">数据库文件路径（相对或绝对）。</param>
+    /// <param name="baseDirectory">相对路径的基准目录。</param>
+    internal SqliteDatabase(string databasePath, string baseDirectory)
+    {
+        DatabasePath = ResolveDatabasePath(databasePath, baseDirectory);
+
+        var directory = Path.GetDirectoryName(DatabasePath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+    }
+
+    /// <summary>数据库文件的绝对路径（相对路径以应用目录为基准）。</summary>
+    public string DatabasePath { get; }
 
     /// <summary>
     /// 打开一个连接，并已执行 <c>PRAGMA journal_mode=WAL</c> 与 <c>PRAGMA foreign_keys=ON</c>。
@@ -137,15 +183,23 @@ public sealed class SqliteDatabase(string databasePath)
         DateTimeOffset.ParseExact(text, TimestampFormat, CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
 
-    /// <summary>相对路径按当前工作目录解析，并确保所在目录存在。</summary>
-    private static string ResolveDatabasePath(string path)
+    /// <summary>
+    /// 解析数据库路径：相对路径以 <paramref name="baseDirectory"/>（应用目录）为基准。
+    /// </summary>
+    /// <remarks>
+    /// 刻意**不看当前工作目录**：同一份配置在不同的工作目录下必须落在同一个地方
+    /// （systemd 不设 <c>WorkingDirectory</c> 时 CWD 是 <c>/</c>）。
+    /// </remarks>
+    internal static string ResolveDatabasePath(string path, string baseDirectory)
     {
-        var fullPath = Path.GetFullPath(path);
-        var directory = Path.GetDirectoryName(fullPath);
-        if (!string.IsNullOrEmpty(directory))
+        if (string.IsNullOrWhiteSpace(path))
         {
-            Directory.CreateDirectory(directory);
+            throw new ArgumentException("数据库路径不能为空。", nameof(path));
         }
+
+        var fullPath = Path.IsPathRooted(path)
+            ? Path.GetFullPath(path)
+            : Path.GetFullPath(Path.Combine(baseDirectory, path));
 
         return fullPath;
     }
