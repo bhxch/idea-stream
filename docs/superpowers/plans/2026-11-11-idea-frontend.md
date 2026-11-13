@@ -590,6 +590,7 @@ it('距底 32px 以内视为贴底', () => { /* scrollTop=568（距底 32）→ 
 - Modify: `web/vite.config.ts`（确认 outDir）
 - Create: `web/README.md`
 - Modify: `README.md`（根）
+- Modify: `server/IdeaApp/Program.cs`（**组合根增量接线**：确保 `wwwroot/` 存在 + `UseStaticFiles` + `MapFallbackToFile`）—— ⚠️ **只增量加，不要整体替换组合根**，它含前 14 个后端 task 累积的注册
 
 **Interfaces:**
 - Produces: `npm run build` 产出 `server/IdeaApp/wwwroot/index.html` 与 `assets/`。
@@ -654,6 +655,11 @@ Run: `cd web && npm test && npm run typecheck` → Expected: 全部通过、无�
 - [ ] **Step 5: 提交**
 
 ```bash
-git add web/ README.md
+git add web/ README.md server/IdeaApp/Program.cs
 git commit -m "chore(web): 集成 Vite 构建产物到后端 wwwroot 并补齐说明"
 ```
+
+> ⚠️ **`server/IdeaApp/wwwroot/` 被 `.gitignore` 排除**（git 不跟踪空目录）——
+> 构建产物**不进仓库**，新克隆的仓库里要先 `npm run build` 才有产物。
+> `Program.cs` 里要**先 `Directory.CreateDirectory` 确保它存在**再挂 `UseStaticFiles` ——
+> 否则新克隆的仓库里静态文件中间件会抛 `DirectoryNotFoundException`（R114 已实测过这个坑）。
