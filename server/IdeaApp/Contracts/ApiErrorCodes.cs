@@ -82,6 +82,9 @@ public static class ApiErrorCodes
         new("delivery_not_found", 404, "投递记录不存在"),
         new("idea_not_found", 404, "想法不存在"),
         new("project_not_found", 404, "项目不存在"),
+        new("skill_endpoint_not_found", 404, "/skill 下的路径没有对应端点（拼错了 skill 名或路径）"),
+        new("skill_file_not_found", 404, "分发副本里没有这个文件（路径穿越的尝试也走这里）"),
+        new("skill_not_distributed", 404, "服务端没有分发 skill 内容（分发副本的目录不存在或缺少入口文件）"),
         new("webhook_not_found", 404, "webhook 不存在"),
 
         // 415：请求的媒体类型不对。

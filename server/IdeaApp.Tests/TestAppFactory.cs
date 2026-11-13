@@ -35,12 +35,17 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
     /// 测「目标端点卡住」时用大值 —— 默认 10 秒一到，请求就超时了，
     /// 卡住的状态会被超时解除（并发位腾出来、请求记录被写回）。
     /// </param>
+    /// <param name="skillPath">
+    /// 覆盖 <c>Skill:Path</c>（skill 分发副本的位置）；不给就用仓库里的内容源
+    /// （<c>skills/idea-manager/</c>）。测「服务端没分发 skill 内容」时给一个不存在的目录。
+    /// </param>
     public TestAppFactory(
         int? maxIdeasPerResponse = null,
         IEventPublisher? publisher = null,
         int? sseHeartbeatSeconds = null,
         int? webhookMaxAttempts = null,
-        int? webhookTimeoutSeconds = null)
+        int? webhookTimeoutSeconds = null,
+        string? skillPath = null)
     {
         _tempDirectory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
         DatabasePath = Path.Combine(_tempDirectory, "idea.db");
@@ -49,6 +54,7 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
         SseHeartbeatSeconds = sseHeartbeatSeconds;
         WebhookMaxAttempts = webhookMaxAttempts;
         WebhookTimeoutSeconds = webhookTimeoutSeconds;
+        SkillPath = skillPath ?? Path.Combine(RepoPaths.Root, "skills", "idea-manager");
     }
 
     /// <summary>本次测试实例使用的 SQLite 文件路径。</summary>
@@ -69,6 +75,9 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
     /// <summary>本次测试实例覆盖的单次请求超时秒数（null = 用应用默认值）。</summary>
     public int? WebhookTimeoutSeconds { get; }
 
+    /// <summary>本次测试实例使用的 skill 分发副本目录。</summary>
+    public string SkillPath { get; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -79,7 +88,8 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
                 ["Api:MaxIdeasPerResponse"] = MaxIdeasPerResponse?.ToString(CultureInfo.InvariantCulture),
                 ["Sse:HeartbeatSeconds"] = SseHeartbeatSeconds?.ToString(CultureInfo.InvariantCulture),
                 ["Webhook:MaxAttempts"] = WebhookMaxAttempts?.ToString(CultureInfo.InvariantCulture),
-                ["Webhook:TimeoutSeconds"] = WebhookTimeoutSeconds?.ToString(CultureInfo.InvariantCulture)
+                ["Webhook:TimeoutSeconds"] = WebhookTimeoutSeconds?.ToString(CultureInfo.InvariantCulture),
+                ["Skill:Path"] = SkillPath
             }));
 
         var publisher = Publisher;

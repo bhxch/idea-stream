@@ -11,6 +11,7 @@ public sealed class AppOptions
     public ApiOptions Api { get; set; } = new();
     public WebhookOptions Webhook { get; set; } = new();
     public SseOptions Sse { get; set; } = new();
+    public SkillOptions Skill { get; set; } = new();
     public string? PublicBaseUrl { get; set; }
 }
 
@@ -62,4 +63,11 @@ public sealed class SseOptions
     /// 做成配置项是为了能测：默认的 25 秒没法写测试。
     /// </remarks>
     public int HeartbeatSeconds { get; set; } = 25;
+}
+
+/// <summary>skill 分发副本的位置。</summary>
+public sealed class SkillOptions
+{
+    /// <summary>分发副本的根目录。相对路径按应用目录解析。</summary>
+    public string Path { get; set; } = "skill/idea-manager";
 }

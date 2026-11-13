@@ -87,6 +87,10 @@ builder.Services.AddSingleton<TagService>();
 builder.Services.AddSingleton<TrashService>();
 builder.Services.AddSingleton<WebhookRepository>();
 builder.Services.AddSingleton<WebhookService>();
+// skill 分发副本的目录视图：路径按 Skill:Path 解析（相对路径按应用目录），
+// 清单与取文件都要用到它。
+builder.Services.AddSingleton(sp => new SkillCatalog(
+    sp.GetRequiredService<IOptions<AppOptions>>().Value.Skill.Path));
 builder.Services.AddSingleton<DeliveryRepository>();
 builder.Services.AddSingleton<DeliveryService>();
 
@@ -209,6 +213,9 @@ app.MapTagEndpoints();
 app.MapEventEndpoints();
 app.MapTrashEndpoints();
 app.MapWebhookEndpoints();
+// skill 内容分发端点。必须排在 SPA 兜底之前 ——
+// 兜底是 catch-all，会把 /skill/** 下没匹配到的路径变成 200 + index.html。
+app.MapSkillEndpoints();
 
 // OpenAPI 文档端点：/openapi/v1.json（文档名不是 v1 时返回 404）。
 app.MapOpenApi("/openapi/{documentName}.json");

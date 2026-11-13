@@ -37,6 +37,23 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      skill 分发副本：内容源（仓库里的 skills/idea-manager/）随产物一起走。
+      显式列出要带的文件，不整目录拷 —— 内容源里可能混着开发侧的残留
+      （__pycache__、测试），整目录拷会把它们一起发出去。
+      Link 用正斜杠：MSBuild 在 Unix 上不保证把反斜杠转成目录分隔符。
+    -->
+    <Content Include="../../skills/idea-manager/SKILL.md"
+             Link="skill/idea-manager/SKILL.md"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../../skills/idea-manager/references/**/*.md"
+             Link="skill/idea-manager/references/%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- 测试要能调用 internal 的测试缝（见 Domain/MonotonicGuid.cs）。 -->
     <InternalsVisibleTo Include="IdeaApp.Tests" />
   </ItemGroup>

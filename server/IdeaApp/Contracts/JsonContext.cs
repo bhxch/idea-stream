@@ -26,6 +26,10 @@ namespace IdeaApp.Contracts;
 [JsonSerializable(typeof(TrashEntryDto))]
 [JsonSerializable(typeof(HealthResponse))]
 [JsonSerializable(typeof(WebhookTemplateDto))]
+// skill 分发副本的清单：清单端点返回静态类型 SkillManifestDto，
+// 少了这一条，AOT 产物下清单端点直接 500（清单里的文件数组同理）。
+[JsonSerializable(typeof(SkillManifestDto))]
+[JsonSerializable(typeof(SkillFileDto[]))]
 [JsonSerializable(typeof(IdeaDto[]))]
 [JsonSerializable(typeof(ProjectDto[]))]
 [JsonSerializable(typeof(TagDto[]))]

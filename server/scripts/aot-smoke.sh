@@ -416,5 +416,16 @@ check_endpoint "/api/settings/Trash.RetentionDays" "400" \
     PUT \
     '{"value":"30"}'
 
+echo "==> GET /skill/idea-manager/version"
+# 清单端点：返回静态类型 SkillManifestDto。AOT 下少登记它，这里就是 500。
+check_endpoint "/skill/idea-manager/version" "200" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("version", out var version) && version.GetString() != null && root.TryGetProperty("entry", out var entry) && entry.GetString() == "SKILL.md" && root.TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.Array'
+
+echo "==> GET /skill/idea-manager/SKILL.md"
+# 内容端点返回的是 markdown（不是 JSON），用 curl 直接断言状态码与内容类型。
+SKILL_CODE="$(curl -sS -o "$WORK_DIR/skill.md" -w '%{http_code}' "$BASE_URL/skill/idea-manager/SKILL.md")"
+[[ "$SKILL_CODE" == "200" ]] || fail "/skill/idea-manager/SKILL.md 期望 HTTP 200，实际 $SKILL_CODE"
+grep -q '^---' "$WORK_DIR/skill.md" || fail "取到的 SKILL.md 不像 markdown（没有 frontmatter）"
+
 echo "PASS: AOT 产物下所有被检查的端点都返回预期状态码与响应体"
 exit 0
