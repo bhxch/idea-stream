@@ -250,6 +250,7 @@ git commit -m "feat(skill): 实现 idea 命令行封装与端到端测试"
 | `invalid_body_template` | Body 模板不是合法 JSON | 模板本身必须是一个 JSON 文档 |
 | `invalid_event_type` | 订阅的事件名不在 8 种事件类型里 | 用 `EventTypes.All` 里的名字 |
 | `webhook_not_found` | webhook 不存在 | 重新拉列表，可能是别的设备删了 |
+| `api_not_found` | 请求的接口不存在（路径写错了） | 核对命令名对应的 API 路径；完整契约见 `references/openapi.json` |
 | `delivery_not_found` | 投递记录不存在 | 重新拉该 webhook 的投递列表 |
 | `delivery_queue_full` | 投递队列已满（503），**这次手动重投没排上** | 稍后重试；事件路径的队列满是静默丢弃 + 日志，不会返回 503 |
 
