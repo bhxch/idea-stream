@@ -405,7 +405,8 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 
 **Files:**
 - Create: `web/src/components/ProjectSidebar.vue`、`web/src/components/ProjectTabs.vue`
-- Modify: `web/src/pages/HomePage.vue`、`web/src/styles/base.css`
+- Modify: `web/src/pages/HomePage.vue`（**两版布局的样式写在它自己的 scoped style 里**，不进 base.css —— base.css 只管全局默认值）
+- Modify: `web/src/styles/base.css`（**只加一行注释**：1024px 是全局断点，`.page` 的内边距规则与 HomePage 的两版布局共用同一个值，改一处要同步另一处）
 
 **Interfaces:**
 - Produces:
@@ -492,6 +493,12 @@ it('useTagMode 非法值回落 or', () => { /* 预置 'xxx' */ });
 > **F5+F6 已建、F11 要消费的既有契约**：
 > - `MessageList` 与 `MessageItem` 的编辑/标签保存是**回调 prop**（`onSaveContent`/`onSaveTags`，返回 `Promise<SaveOutcome>`，三态 `'saved' | 'failed' | 'busy'`），**不是 emit** —— F3 骨架里的占位 emit `edit`/`edit-tags` 已在 F5 删除（没有承载者，且 emit 拿不到返回值）。`'busy'` 表示**压根没发出去**（被同一条目上的在飞保护挡下）：调用方要能分清它和 `'failed'`，否则被挡下的那次改动会静默丢掉。
 > - `stores/ideas.ts` 的 `focusIdeaId`（合并后新条目的 id）**不会自动复位** —— F11 消费时必须能容忍「id 不在列表里」（例如该条目已被删或不在当前过滤结果内）。
+>
+> **F11 评审后的控制器裁定（2026-11-13，实施者照此修）**：
+> - **滚动与定位必须发生在 DOM 更新之后。** Vue 的 `watch` 默认 `flush:'pre'` —— 回调在组件重渲染**之前**跑：此时新条目还没进 DOM，`querySelector` 找不到它，`scrollHeight` 也还是旧值。定位/滚动一律用 `flush:'post'` 或 `await nextTick()`；`init()` 里「打开页面就滚到底」那一步，遇到深链锚点时不能把锚点挤出视野。
+> - **`applyEvent` 的调用方只传项目维度的过滤条件**（`projectId` 照旧，`status:'all'`、`tags:[]`），状态/标签的过滤交给显示层（`visibleIdeas`）做。理由：现在把「改成不符合过滤」的条目从**数据集**里删掉，用户切回别的过滤条件时那条就找不回来了（要整表重拉才回来）—— 这与「过滤在客户端做」的前提冲突。`applyEvent` 纯函数自身的契约与它的测试**不动**。
+> - **项目事件的失败必须有兜底**：`loadProjects()` / `switchProject()` 抛错不能变成未处理的 Promise rejection，页面上也要给提示。
+> - **滚动跟随与深链定位抽成可单测的 composable** —— 不要继续往 `HomePage.vue` 里堆（它已经 1151 行了）。
 
 **Files:**
 - Modify: `web/src/lib/merge.ts`（从占位改为实现）
