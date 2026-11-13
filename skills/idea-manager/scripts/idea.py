@@ -80,6 +80,15 @@ BASE_URL = ""
 # --------------------------------------------------------------------------
 
 
+def _one_line(value: Any) -> str:
+    """把一段文本压成**一行**：换行与连续空白都变成单个空格。
+
+    错误输出占一行是硬约定（agent 侧要的是能读的一行）：
+    异常消息里带换行是常事，不压掉就会把「一行」这个约定破掉。
+    """
+    return " ".join(str(value).split())
+
+
 class CliError(Exception):
     """CLI 自己的错误：一对 (code, detail)，渲染成 stderr 上的一行。"""
 
@@ -91,7 +100,8 @@ class CliError(Exception):
         self.detail = detail
 
     def render(self) -> str:
-        return "{}: {}".format(self.code, self.detail)
+        # 一行是硬约定（agent 侧要的是能读的一行）：detail 里带了换行就压掉。
+        return "{}: {}".format(self.code, _one_line(self.detail))
 
 
 class ApiError(CliError):
@@ -454,15 +464,24 @@ def _split_csv(value: Optional[str]) -> List[str]:
 
 
 def _parse_headers(value: Optional[str]) -> Dict[str, str]:
-    """``k=v,k2=v2`` → 字典。"""
+    """``k=v,k2=v2`` → 字典。
+
+    用法错误时**不回显那一项**：--headers 的内容是凭据（``Authorization: Bearer …``），
+    回显进 stderr 就等于把它打进 agent 的上下文与日志 ——
+    规矩是「skill 不得把 webhook 的 url 或 headers 打进日志或错误信息」。
+    只报「第几项」与「哪儿不对」。
+    """
     headers: Dict[str, str] = {}
-    for item in _split_csv(value):
+    for index, item in enumerate(_split_csv(value), start=1):
         if "=" not in item:
-            raise CliError("usage_error", "--headers 的每一项都要是 键=值，收到：{}".format(item))
+            raise CliError(
+                "usage_error",
+                "--headers 的第 {} 项不是 键=值 的形式（内容不回显：它可能是凭据）".format(index),
+            )
         key, _, val = item.partition("=")
         key = key.strip()
         if not key:
-            raise CliError("usage_error", "--headers 的键不能为空")
+            raise CliError("usage_error", "--headers 的第 {} 项的键为空".format(index))
         headers[key] = val.strip()
     return headers
 
@@ -894,7 +913,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception as exc:  # noqa: BLE001 —— 兜底：干净地失败，别吐 traceback
         # 未预期的异常也要守住「stderr 一行 + 退出码非 0」的契约：
         # agent 侧要的是能读的一行，真实原因靠服务端日志与报告定位。
-        print("internal_error: {}".format(exc), file=sys.stderr)
+        # 异常信息里可能有换行（多行异常消息），压成一行。
+        print("internal_error: {}".format(_one_line(exc)), file=sys.stderr)
         return 1
 
     return 0

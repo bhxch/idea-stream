@@ -186,6 +186,10 @@ CLI 的 stdout 会进 agent 的上下文与日志，那就是日志 —— 所�
     （`bot<BOT_TOKEN>123456789:FAKEfake` → `bot<BOT_TOKEN>***`）；
   - `/bot<token>`（Telegram 就是这个形状，token 粘在 `bot` 后面）→ `bot***`。
 - `headers` → 只保留键名，值一律换成 `***`。
+- **错误信息里也不回显 headers 的内容**：`--headers` 的用法错误只报「第几项不对」
+  （`usage_error: --headers 的第 1 项不是 键=值 的形式（内容不回显：它可能是凭据）`）。
+  stderr 同样会进 agent 的上下文与日志 —— 回显那一项等于把凭据抄进日志。
+  连键名也不回显：漏了 `=` 的那一项，键名那一半也可能就是凭据。
 
 > 为什么是「默认全遮」而不是「看着像随机串才遮」：后者会漏掉纯字母的 token、
 > 纯数字的 id 和短 token —— 而漏掉的就是凭据本身。遮错只是不好看，漏掉是泄密。
@@ -221,6 +225,7 @@ CLI 的 stdout 会进 agent 的上下文与日志，那就是日志 —— 所�
 `network_error` / `internal_error` 是 **CLI 自己的**错误码；错误码对照表里的其余 `code`
 都来自服务端。**CLI 自己的错误**只往 stderr 打**一行** `code: detail`，
 不会吐 Python traceback（真实原因靠服务端日志与报告定位）。
+「一行」是硬约定：detail 里的换行会被压成空格（异常消息常带换行）。
 argparse 的用法错误不在此列：它打的是多行 usage 提示、退出码 2（见上表）。
 
 ### 错误码对照表

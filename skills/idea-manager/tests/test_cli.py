@@ -11,6 +11,7 @@ CLI 一律以子进程调用：端到端测的是「agent 实际会用的那条�
 包括 stdout/stderr 的分工与退出码。
 """
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -26,6 +27,14 @@ SCRIPT = os.path.join(HERE, os.pardir, "scripts", "idea.py")
 SCRIPT = os.path.normpath(SCRIPT)
 
 BASE_URL = os.environ.get("IDEA_BASE_URL", "").strip()
+
+
+def _load_idea_module():
+    """按路径加载 idea.py（测它的内部函数时用）。"""
+    spec = importlib.util.spec_from_file_location("idea_under_test", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def run_cli(args, env=None, base_url=None):
@@ -339,6 +348,79 @@ class LocalServerTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("--body", err)
         self.assertEqual(out, "")
+
+    def test_headers_usage_error_does_not_echo_the_credential(self):
+        """--headers 的用法错误不许把那一项打进 stderr。
+
+        stderr 会进 agent 的上下文与日志，而 headers 里装的就是凭据
+        （``Authorization: Bearer …``）：回显出来等于泄密。
+        规矩：skill 不得把 webhook 的 url 或 headers 打进日志或错误信息。
+        """
+        credential = "Authorization Bearer eyJhbGciOiJIUzI1NiJ9.SUPER-SECRET"
+
+        code, out, err = run_cli(
+            [
+                "webhook",
+                "add",
+                "--name",
+                "带鉴权头",
+                "--url",
+                "https://example.com/hook",
+                "--body",
+                "{}",
+                "--headers",
+                credential,
+            ],
+            base_url="http://127.0.0.1:1",
+        )
+
+        self.assertEqual(code, 1)
+        self.assertNotIn("Traceback", err)
+        # 凭据一个字符都不许出现。
+        self.assertNotIn("eyJhbGciOiJIUzI1NiJ9", err)
+        self.assertNotIn("SUPER-SECRET", err)
+        self.assertNotIn(credential, err)
+
+        # 但要说清是哪儿错了：报第几项，不报内容。
+        self.assertIn("usage_error", err)
+        self.assertIn("第 1 项", err)
+
+        # 错误输出仍然只占一行。
+        self.assertEqual(1, len(err.strip().splitlines()))
+        self.assertEqual(out, "")
+
+    def test_headers_usage_error_with_empty_key_does_not_echo_the_value(self):
+        """键为空的那一项同样不回显 —— 值也可能是凭据。"""
+        code, out, err = run_cli(
+            [
+                "webhook",
+                "add",
+                "--name",
+                "带鉴权头",
+                "--url",
+                "https://example.com/hook",
+                "--body",
+                "{}",
+                "--headers",
+                "=SUPER-SECRET",
+            ],
+            base_url="http://127.0.0.1:1",
+        )
+
+        self.assertEqual(code, 1)
+        self.assertNotIn("SUPER-SECRET", err)
+        self.assertIn("usage_error", err)
+        self.assertIn("第 1 项", err)
+        self.assertEqual(out, "")
+
+    def test_error_output_is_always_a_single_line(self):
+        """错误输出只占一行是硬约定：detail 里的换行要压掉。"""
+        module = _load_idea_module()
+
+        self.assertEqual("a b c", module._one_line("a\nb  c"))
+
+        # CliError 的渲染同样只占一行。
+        self.assertEqual("usage_error: a b", module.CliError("usage_error", "a\nb").render())
 
     def test_non_telegram_webhook_tokens_are_redacted(self):
         """非 Telegram 的 webhook token 也不能原样进 stdout。
