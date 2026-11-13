@@ -439,7 +439,7 @@ Expected: 全部 PASS。
 ## 第一步：取说明书
 
     scripts/fetch.py                      # 索引页：有哪些能力、怎么调、细节去哪找
-    scripts/fetch.py references/errors.md # 按索引页里的路由表取某一份细节
+    scripts/fetch.py <路径>               # 按索引页里的路由表取某一份细节
     scripts/fetch.py /openapi/v1.json     # 完整接口契约
 
 ## 第二步：按索引页给的姿势调 API
@@ -822,8 +822,10 @@ agent 现在用 curl + 服务端实时发的 /openapi/v1.json 直接调 API。
 [Fact] public void Shell_frontmatter_matches_the_content_source()
 // 薄壳与索引页的 frontmatter 块逐字相同。
 
-[Fact] public void Shell_body_contains_no_api_paths()
-// 薄壳 frontmatter 之后的正文里不含 "/api/"。
+[Fact] public void Shell_body_contains_no_server_file_names()
+// 薄壳 frontmatter 之后的正文里不出现三个串：
+//   "/api/"（API 路径）、"references/"（服务端的目录名）、"SKILL.md"（服务端的入口文件名）。
+// 薄壳只许说「本文件」与「scripts/fetch.py」—— 服务端有哪些文件由服务端自己说。
 
 [Fact] public void Index_page_is_at_most_150_lines()
 // 索引页行数 ≤ 150。
