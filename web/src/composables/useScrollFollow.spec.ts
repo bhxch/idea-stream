@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shallowRef } from 'vue';
+import { ref, shallowRef, watch } from 'vue';
 import { useScrollFollow } from './useScrollFollow';
 
 /**
@@ -30,7 +30,7 @@ function setContentHeight(element: HTMLElement, scrollHeight: number): void {
 }
 
 describe('useScrollFollow', () => {
-  it('贴底时新内容自动滚动到底部', () => {
+  it('贴底时新内容自动滚动到底部', async () => {
     const element = makeContainer(1000, 400, 600);
     const follow = useScrollFollow(shallowRef<HTMLElement | null>(element));
 
@@ -38,43 +38,43 @@ describe('useScrollFollow', () => {
 
     // 来了一条新消息：内容变高了。
     setContentHeight(element, 1200);
-    follow.onNewContent();
+    await follow.onNewContent();
 
     // 跟着滚到底（1200 - 400）。
     expect(element.scrollTop).toBe(800);
     expect(follow.pendingCount.value).toBe(0);
   });
 
-  it('未贴底时不抢滚动，pendingCount 增加', () => {
+  it('未贴底时不抢滚动，pendingCount 增加', async () => {
     const element = makeContainer(1000, 400, 0);
     const follow = useScrollFollow(shallowRef<HTMLElement | null>(element));
 
     expect(follow.atBottom.value).toBe(false);
 
     setContentHeight(element, 1200);
-    follow.onNewContent();
+    await follow.onNewContent();
 
     // 位置不动（用户正在往上翻看，不能抢滚动）。
     expect(element.scrollTop).toBe(0);
     expect(follow.pendingCount.value).toBe(1);
   });
 
-  it('距底 32px 以内视为贴底', () => {
+  it('距底 32px 以内视为贴底', async () => {
     const element = makeContainer(1000, 400, 568);
     const follow = useScrollFollow(shallowRef<HTMLElement | null>(element));
 
     expect(follow.atBottom.value).toBe(true);
 
-    follow.onNewContent();
+    await follow.onNewContent();
     expect(element.scrollTop).toBe(600);
   });
 
-  it('滚动事件更新是否贴底，滚回底部后新内容计数清零', () => {
+  it('滚动事件更新是否贴底，滚回底部后新内容计数清零', async () => {
     const element = makeContainer(1000, 400, 0);
     const follow = useScrollFollow(shallowRef<HTMLElement | null>(element));
 
     // 用户往上翻看了：计数涨了。
-    follow.onNewContent();
+    await follow.onNewContent();
     expect(follow.pendingCount.value).toBe(1);
     expect(follow.atBottom.value).toBe(false);
 
@@ -85,11 +85,11 @@ describe('useScrollFollow', () => {
     expect(follow.pendingCount.value).toBe(0);
   });
 
-  it('scrollToBottom 滚到底并清零计数', () => {
+  it('scrollToBottom 滚到底并清零计数', async () => {
     const element = makeContainer(1000, 400, 0);
     const follow = useScrollFollow(shallowRef<HTMLElement | null>(element));
 
-    follow.onNewContent();
+    await follow.onNewContent();
     expect(follow.pendingCount.value).toBe(1);
 
     follow.scrollToBottom();
@@ -97,5 +97,25 @@ describe('useScrollFollow', () => {
     expect(element.scrollTop).toBe(600);
     expect(follow.atBottom.value).toBe(true);
     expect(follow.pendingCount.value).toBe(0);
+  });
+
+  it('DOM 更新之后才滚：内容变高后要滚到新的底部', async () => {
+    // 回归用例：滚动发生在 DOM 更新**之前**时，`scrollHeight` 还是旧值，
+    // 算出来的滚动位置不对 —— 新条目落在视野外（而且不会触发 scroll 事件，
+    // 「是否贴底」也不更新，下一条内容来了才会突然跳到底）。
+    const element = makeContainer(1000, 400, 600);
+    const follow = useScrollFollow(shallowRef<HTMLElement | null>(element));
+    expect(follow.atBottom.value).toBe(true);
+
+    // 模拟 Vue：数据变了 → 组件重渲染 → DOM 这时才变高（post flush）。
+    const rendered = ref(0);
+    watch(rendered, () => setContentHeight(element, 1200), { flush: 'post' });
+
+    // 新内容来了（此刻 DOM 还没更新，高度还是旧的 1000）。
+    rendered.value = 1;
+    await follow.onNewContent();
+
+    // 滚到了**新**底部（1200 - 400），不是旧高度算出来的 600。
+    expect(element.scrollTop).toBe(800);
   });
 });
