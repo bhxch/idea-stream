@@ -115,7 +115,7 @@ public sealed class UnsupportedMediaTypeCoverageTests
     /// <item>要比的正是「运行期真跑的那批用例」，读属性等于直接读运行期输入本身，
     /// 而不是读一份副本。</item>
     /// </list>
-///     </para>
+    /// </para>
     /// <para>
     /// 反射拿不到时（方法改名了）直接抛错，不静默当成空清单 ——
     /// 空清单会让「手写有、扫描没有」那个方向全红，仍然是红的，不会静默放过。
