@@ -214,7 +214,7 @@ CLI 的 stdout 会进 agent 的上下文与日志，那就是日志 —— 所�
 |---|---|---|
 | 服务端返回 4xx/5xx（ProblemDetails） | `code: detail`，如 `merge_cross_project: 不能跨项目合并想法：源想法分属不同项目` | 1 |
 | 响应体不是 JSON（代理返回 HTML、路径写错拿到 SPA 的 index.html） | `invalid_response: 响应不是 JSON（HTTP 502，Content-Type: text/html）；…` | 1 |
-| 请求体超过服务端上限（HTTP 413；经 nginx 4 MiB，直连 Kestrel 30,000,000 字节） | 两条路径**同一个码** `http_413`：经 nginx → `http_413: 请求体超过上限（nginx 的 client_max_body_size）。`；直连 Kestrel → `http_413: HTTP 413` | 1 |
+| 请求体超过服务端上限（HTTP 413；经 nginx 4 MiB（4194304 字节），直连 Kestrel 30,000,000 字节） | 两条路径**同一个码** `http_413`：经 nginx → `http_413: 请求体超过上限（nginx 的 client_max_body_size）。`；直连 Kestrel → `http_413: HTTP 413` | 1 |
 | 缺 `IDEA_BASE_URL` | `missing_config: IDEA_BASE_URL is required（也可以用 --base-url <地址> 临时覆盖）` | 1 |
 | `IDEA_BASE_URL` 写错了（缺 scheme、畸形 IPv6……） | `invalid_config: IDEA_BASE_URL 不是合法的实例地址：…（要带 scheme，如 https://ideas.example.com）` | 1 |
 | 命令行用错（缺 `--body`、没给要改的字段、`--headers` 不是 `键=值`） | `usage_error: …` | 1 |

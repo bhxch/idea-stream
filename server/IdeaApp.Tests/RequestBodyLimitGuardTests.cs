@@ -25,10 +25,28 @@ namespace IdeaApp.Tests;
 /// </para>
 ///
 /// <para>
-/// 归一约定：nginx 的 <c>k</c>/<c>m</c>/<c>g</c> 后缀与文档里的
-/// <c>KB</c>/<c>MB</c>/<c>GB</c>/<c>KiB</c>/<c>MiB</c>/<c>GiB</c> 一律按
-/// <b>1024 进位</b>算（与 nginx 的 <c>m</c> 一致），
-/// 所以「4m」与「4 MiB」归一后都是 4194304 字节，可以直接比。
+/// <b>单位口径（别搞混）：</b>
+/// <list type="number">
+/// <item>nginx 的 <c>k</c>/<c>m</c>/<c>g</c> 后缀 → <b>1024</b> 进位（nginx 自己的语义）：
+/// 所以配置里的 <c>4m</c> = 4 MiB = <b>4194304</b> 字节。</item>
+/// <item>文档里的二进制单位（<c>KiB</c>/<c>MiB</c>/<c>GiB</c>）→ 也是 1024 进位。</item>
+/// <item>文档里的十进制单位（<c>KB</c>/<c>MB</c>/<c>GB</c>）→ 按惯例是 <b>1000</b> 进位：
+/// 「4 MB」说的是 4,000,000 字节，与 nginx 的 <c>4m</c> 不是一回事。
+/// 所以守卫要求文档把上限写成**精确字节数**（「4 MiB（4194304 字节）」），
+/// 免得读者按 1,000,000 去理解 —— 只写「4 MB」的话，数字对不对根本没法核对。</item>
+/// </list>
+/// </para>
+///
+/// <para>
+/// <b>生效的上限</b>取配置里所有 <c>client_max_body_size</c> 的<b>最小值</b>：
+/// nginx 里 location 层的指令会覆盖 server 层的那条，location 里的更小值才是实际生效的那个。
+/// 只看第一条（server 层）的话，将来往某个 location 里加一条更小的上限，守卫就看不见了。
+/// </para>
+///
+/// <para>
+/// <b>散文里的上限声明要锚定上下文</b>：只有「在谈上限」且「在谈 nginx」的那一句里的数字
+/// 才算数 —— 否则将来 SKILL.md 里多一句无关的体积话（例如「把 body 压到 1MB 以内」）
+/// 就会把守卫带偏（误报），或者反过来：把「4 MiB」改成有歧义的「4 MB」它还照样绿（放过）。
 /// </para>
 ///
 /// <para>
@@ -72,10 +90,31 @@ public sealed class RequestBodyLimitGuardTests
         @"client_max_body_size\s+(?<value>\d[\d,]*[a-zA-Z]*)",
         RegexOptions.CultureInvariant);
 
-    /// <summary>文档里的散文写法：<c>4 MiB</c> / <c>4MB</c>。</summary>
+    /// <summary>文档里的散文写法（大小）：<c>4 MiB</c> / <c>4MB</c>。</summary>
     private static readonly Regex SkillProseSizePattern = new(
-        @"(?<value>\d[\d,]*\s*(?:KiB|MiB|GiB|KB|MB|GB))(?![A-Za-z])",
+        @"(?<number>\d[\d,]*)\s*(?<unit>KiB|MiB|GiB|KB|MB|GB)(?![A-Za-z])",
         RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// 文档里的**精确写法**：<c>4 MiB（4194304 字节）</c>。
+    /// </summary>
+    /// <remarks>
+    /// 大小紧跟着精确字节数 —— 只有这种写法才核得对，
+    /// 也只有这种写法才认得出「4 MB」到底说的是 4,000,000 还是 4,194,304。
+    /// </remarks>
+    private static readonly Regex SkillPreciseSizePattern = new(
+        @"(?<number>\d[\d,]*)\s*(?<unit>KiB|MiB|GiB|KB|MB|GB)\s*[（(]\s*(?<bytes>\d[\d,]*)\s*字节",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// 「上限」这类词：说明这一句在谈上限，才算「上限声明」。
+    /// </summary>
+    /// <remarks>
+    /// 用来把「把 body 压到 1MB 以内」这种无关的体积话挡在外面（误报）。
+    /// </remarks>
+    private static readonly Regex LimitLanguagePattern = new(
+        @"上限|限额|限制|最多|不超过|最大|limit|max",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
     /// SKILL.md 里 **Kestrel 那一行**上的字节数：<c>Kestrel … 30,000,000 字节</c>。
@@ -100,6 +139,11 @@ public sealed class RequestBodyLimitGuardTests
     /// <summary>named location 里的 <c>return 413 '…';</c>。</summary>
     private static readonly Regex ReturnJsonPattern = new(
         @"return\s+(?<status>\d{3})\s+'(?<json>[^']*)'",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>有序列表项（<c>1. </c>）。</summary>
+    private static readonly Regex OrderedListItemPattern = new(
+        @"^\d+[.)]\s",
         RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -127,24 +171,88 @@ public sealed class RequestBodyLimitGuardTests
     /// <summary>
     /// 部署配置里的 nginx 上限 ↔ SKILL.md 里 agent 看到的那个数字。
     /// </summary>
+    /// <remarks>
+    /// SKILL.md 里 nginx 的上限可以写成两种形式，都认：
+    /// nginx 自己的指令写法（<c>client_max_body_size 4m</c>），
+    /// 与散文写法（<c>4 MiB（4194304 字节）</c>）。
+    /// 散文写法必须带精确字节数 —— 见
+    /// <see cref="The_skill_doc_states_the_nginx_limit_with_exact_bytes"/>。
+    /// </remarks>
     [Fact]
     public void The_nginx_body_limit_in_the_deploy_config_matches_the_skill_doc()
     {
         var configured = ReadNginxLimit(NginxConfigPath);
-        var documented = ReadSkillNginxLimits();
+        var claims = ReadSkillNginxClaims();
 
         Assert.True(
-            documented.Count > 0,
+            claims.Count > 0,
             $"在 {SkillDocPath} 里找不到 nginx 的请求体上限 —— "
-            + $"请写成 `client_max_body_size <值>` 的形式（当前 {NginxConfigPath} 里的是 {configured} 字节），"
-            + "或直接写「4 MiB」这样的散文写法，否则 agent 看到的部署上限是空的。");
+            + $"请在讲 nginx 上限的那一句里写出上限（当前 {NginxConfigPath} 里生效的上限是 {configured} 字节），"
+            + "写成「4 MiB（4194304 字节）」这样的形式（带精确字节数），"
+            + "否则 agent 看到的部署上限是空的。");
 
-        foreach (var (written, source) in documented)
+        foreach (var claim in claims)
         {
+            var written = claim.ExactBytes ?? claim.DirectiveBytes;
+
+            Assert.True(
+                written.HasValue,
+                $"SKILL.md 第 {claim.Line} 行写的 nginx 请求体上限（{claim.Raw}）没有精确字节数 —— "
+                + $"请写成「4 MiB（{configured} 字节）」这样的形式，"
+                + "别只写「4 MB」这种有歧义的写法（有人会按 1,000,000 理解，那就错了）。"
+                + $"原文：{Snippet(claim)}");
+
             Assert.True(
                 configured == written,
-                $"SKILL.md 写的 nginx 请求体上限（{source} = {written} 字节）"
-                + $"与 docs/nginx/idea.conf 的 client_max_body_size（{configured} 字节）不一致，请同步。");
+                $"SKILL.md 第 {claim.Line} 行写的 nginx 请求体上限（{claim.Raw} = {written} 字节）"
+                + $"与 {NginxConfigPath} 里生效的上限（{configured} 字节）不一致，请同步。"
+                + $"原文：{Snippet(claim)}");
+        }
+    }
+
+    /// <summary>
+    /// SKILL.md 里 nginx 那个上限必须写成**精确字节数**（<c>4 MiB（4194304 字节）</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 「4 MiB」还行（MiB 就是 1024 进位），「4 MB」就有歧义了 ——
+    /// 按惯例那是 4,000,000，与 nginx 的 <c>4m</c>（4,194,304）不是一回事。
+    /// 守卫认「单位 + 精确字节数」这一种写法，并把两者的进位核对一遍：
+    /// 单位说 1000 进位、字节数却是 1024 进位的结果 —— 自相矛盾，红。
+    /// </para>
+    /// <para>
+    /// 没有精确字节数的话，人根本没法核对那个数字对不对（也核不了），
+    /// 所以宁可要求写精确值。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void The_skill_doc_states_the_nginx_limit_with_exact_bytes()
+    {
+        var claims = ReadSkillNginxClaims();
+        var prose = claims.Where(claim => claim.IsProse).ToList();
+
+        Assert.True(
+            prose.Count > 0,
+            $"在 {SkillDocPath} 里找不到 nginx 请求体上限的散文写法 —— "
+            + "请在讲 nginx 上限的那一句里写成「4 MiB（4194304 字节）」这样的形式。");
+
+        foreach (var claim in prose)
+        {
+            Assert.True(
+                claim.ExactBytes.HasValue,
+                $"SKILL.md 第 {claim.Line} 行写 nginx 的请求体上限只写了「{claim.Raw}」，没有精确字节数 —— "
+                + "请写成「4 MiB（4194304 字节）」这样的形式：只写「4 MB」是有歧义的"
+                + "（有人按 1,000,000 理解，那就错了），写精确字节数才核得对。"
+                + $"原文：{Snippet(claim)}");
+
+            var expected = LabelBytes(claim.Number, claim.Unit);
+
+            Assert.True(
+                expected == claim.ExactBytes,
+                $"SKILL.md 第 {claim.Line} 行的「{claim.Raw}（{claim.ExactBytes} 字节）」自相矛盾 —— "
+                + $"「{claim.Unit}」按 {LabelBase(claim.Unit)} 进位是 {expected} 字节，"
+                + $"和写出来的字节数对不上。nginx 的 `m` 是 1024 进位，请写成「4 MiB（4194304 字节）」。"
+                + $"原文：{Snippet(claim)}");
         }
     }
 
@@ -179,6 +287,58 @@ public sealed class RequestBodyLimitGuardTests
                     $"{origin}:{SourceText.LineNumber(text, index)} 出现了 {token}"
                     + " —— 应用一旦自己设了请求体上限，直连路径的上限就不再是框架默认值，"
                     + "SKILL.md 里写的数字与「框架默认上限」那条守卫都要跟着改。");
+            }
+        }
+
+        Assert.True(offenders.Count == 0, string.Join("；", offenders));
+    }
+
+    /// <summary>
+    /// 应用**也没有在配置文件里**改请求体上限。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 只扫源码是不够的：将来有人用 <c>appsettings.json</c> 的
+    /// <c>Kestrel:Limits:MaxRequestBodySize</c> 改上限（这是 .NET 里最常见的写法），
+    /// 源码里一个关键字都没有，SKILL.md 里那句「框架默认值」就成了假话。
+    /// </para>
+    /// <para>
+    /// 所以这里把 <c>server/IdeaApp</c> 下的 <c>appsettings*.json</c> 也扫一遍：
+    /// 只要出现 <c>Kestrel</c> 配置段或 <c>MaxRequestBodySize</c>，就红。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void The_app_does_not_configure_the_request_body_limit_in_appsettings()
+    {
+        var offenders = new List<string>();
+
+        foreach (var file in AppSettingsFiles())
+        {
+            var origin = Path.GetRelativePath(RepoPaths.Root, file);
+            var text = File.ReadAllText(file);
+            JsonElement root;
+
+            try
+            {
+                using var document = JsonDocument.Parse(text);
+                root = document.RootElement.Clone();
+            }
+            catch (JsonException error)
+            {
+                offenders.Add(
+                    $"{origin} 不是合法 JSON（{error.Message}）—— 守卫读不了它，"
+                    + "没法确认里面有没有配请求体上限。");
+
+                continue;
+            }
+
+            foreach (var hit in FindKestrelSettings(root))
+            {
+                offenders.Add(
+                    $"{origin} 里出现了 {hit} —— 上限改成用配置配了，"
+                    + "直连 Kestrel 的上限就不再是框架默认值（30,000,000 字节），"
+                    + "SKILL.md 里写的数字要跟着改，"
+                    + "「框架默认上限」那条守卫也只认框架默认值。");
             }
         }
 
@@ -310,56 +470,210 @@ public sealed class RequestBodyLimitGuardTests
             + "要两条路径同一个码（http_413），这里必须**不带** code。");
     }
 
+    /// <summary>SKILL.md 里 nginx 上限的一条声明。</summary>
+    /// <param name="Line">行号（从 1 开始）。</param>
+    /// <param name="Clause">出处（那一小段文字）。</param>
+    /// <param name="IsProse">是不是散文写法（<c>4 MiB</c>），而不是指令写法。</param>
+    /// <param name="ExactBytes">散文写法旁边写出的精确字节数（没写就是 <c>null</c>）。</param>
+    /// <param name="DirectiveBytes">指令写法（<c>client_max_body_size 4m</c>）里的值。</param>
+    /// <param name="Raw">原始写法。</param>
+    /// <param name="Number">原始写法里的数字。</param>
+    /// <param name="Unit">原始写法里的单位。</param>
+    private sealed record NginxClaim(
+        int Line,
+        string Clause,
+        bool IsProse,
+        long? ExactBytes,
+        long? DirectiveBytes,
+        string Raw,
+        string Number,
+        string Unit);
+
     /// <summary>读部署配置里的 nginx 上限（字节）。</summary>
+    /// <remarks>
+    /// 取的是所有 <c>client_max_body_size</c> 里的**最小值**：nginx 里 location 层的指令
+    /// 覆盖 server 层的那条，location 里的更小值才是实际生效的上限。
+    /// </remarks>
     private static long ReadNginxLimit(string path) =>
         ParseNginxLimit(StripHashComments(File.ReadAllText(path)), path);
 
-    /// <summary>从一段 nginx 配置文本里读出 <c>client_max_body_size</c>（字节）。</summary>
+    /// <summary>从一段 nginx 配置文本里读出生效的 <c>client_max_body_size</c>（字节）。</summary>
     private static long ParseNginxLimit(string text, string origin)
     {
-        var match = NginxLimitPattern.Match(text);
+        var limits = new List<(long Bytes, string Raw)>();
+
+        foreach (Match match in NginxLimitPattern.Matches(text))
+        {
+            var raw = match.Groups["value"].Value;
+
+            Assert.True(
+                TryParseSize(raw, out var bytes),
+                $"{origin} 里的 client_max_body_size 的值认不出来：{raw}");
+
+            limits.Add((bytes, raw));
+        }
 
         Assert.True(
-            match.Success,
+            limits.Count > 0,
             $"{origin} 里找不到 `client_max_body_size` —— "
             + "守卫对请求体上限失明了，请确认指令还在。");
 
-        Assert.True(
-            TryParseSize(match.Groups["value"].Value, out var bytes),
-            $"{origin} 里的 client_max_body_size 的值认不出来：{match.Groups["value"].Value}");
-
-        return bytes;
+        // 生效的上限 = 最小的那条（location 里的更小值覆盖 server 层的）。
+        return limits.Min(limit => limit.Bytes);
     }
 
     /// <summary>
-    /// 读 SKILL.md 里 nginx 的那个上限（字节）。
+    /// 读 SKILL.md 里 nginx 的那些上限声明。
     /// </summary>
     /// <remarks>
-    /// 两处写法都认：nginx 自己的指令写法（<c>client_max_body_size 4m</c>）
-    /// 与散文写法（<c>4 MiB</c> / <c>4MB</c>）。两处必须归一成同一个值。
+    /// <para>
+    /// **锚定上下文**：一条声明要么是 nginx 自己的指令写法（<c>client_max_body_size 4m</c>），
+    /// 要么是散文写法（<c>4 MiB</c>）—— 而散文写法还要同时满足两个条件：
+    /// </para>
+    /// <list type="number">
+    /// <item>它所在的**块**（列表项 / 段落 / 表格行）里提到过 nginx；</item>
+    /// <item>它所在的**那一段**在谈上限（「上限」「不超过」这类词）。</item>
+    /// </list>
+    /// <para>
+    /// 这样「把 body 压到 1MB 以内」这种无关的体积话不会被当成上限声明（不误报），
+    /// 而「上限是 4 MB」这种真的在说 nginx 上限的话一定会被认出来（不放过）。
+    /// </para>
     /// </remarks>
-    private static List<(long Value, string Source)> ReadSkillNginxLimits()
+    private static List<NginxClaim> ReadSkillNginxClaims()
     {
-        var text = File.ReadAllText(SkillDocPath);
-        var limits = new List<(long Value, string Source)>();
+        var lines = File.ReadAllLines(SkillDocPath);
+        var claims = new List<NginxClaim>();
 
-        foreach (Match match in SkillNginxDirectivePattern.Matches(text))
+        foreach (var block in TextBlocks(lines))
         {
-            if (TryParseSize(match.Groups["value"].Value, out var bytes))
+            // 这个块压根没提 nginx → 与 nginx 的上限无关。
+            if (!MentionsNginx(block.Text))
             {
-                limits.Add((bytes, match.Groups["value"].Value));
+                continue;
+            }
+
+            for (var index = block.Start; index <= block.End; index++)
+            {
+                var line = lines[index];
+
+                foreach (var unit in ContextUnits(line))
+                {
+                    var talksAboutLimit = LimitLanguagePattern.IsMatch(unit);
+
+                    foreach (var clause in SplitClauses(unit))
+                    {
+                        var directive = SkillNginxDirectivePattern.Match(clause);
+
+                        if (directive.Success)
+                        {
+                            var raw = directive.Groups["value"].Value;
+
+                            if (TryParseSize(raw, out var directiveBytes))
+                            {
+                                claims.Add(
+                                    new NginxClaim(
+                                        index + 1,
+                                        clause,
+                                        false,
+                                        null,
+                                        directiveBytes,
+                                        raw,
+                                        SizeNumber(raw),
+                                        SizeUnit(raw)));
+                            }
+                        }
+
+                        foreach (Match size in SkillProseSizePattern.Matches(clause))
+                        {
+                            // 这一段在谈上限吗？这一小句在谈 nginx 吗？
+                            if (!talksAboutLimit || !MentionsNginx(clause))
+                            {
+                                continue;
+                            }
+
+                            var precise = SkillPreciseSizePattern.Match(clause, size.Index);
+                            long? exact = null;
+
+                            if (precise.Success
+                                && precise.Index == size.Index
+                                && TryParseNumber(precise.Groups["bytes"].Value, out var bytes))
+                            {
+                                exact = bytes;
+                            }
+
+                            claims.Add(
+                                new NginxClaim(
+                                    index + 1,
+                                    clause,
+                                    true,
+                                    exact,
+                                    null,
+                                    size.Value.Trim(),
+                                    size.Groups["number"].Value,
+                                    size.Groups["unit"].Value));
+                        }
+                    }
+                }
             }
         }
 
-        foreach (Match match in SkillProseSizePattern.Matches(text))
-        {
-            if (TryParseSize(match.Groups["value"].Value, out var bytes))
-            {
-                limits.Add((bytes, match.Groups["value"].Value));
-            }
-        }
+        return claims;
+    }
 
-        return limits;
+    /// <summary>应用的配置文件（<c>appsettings*.json</c>，跳过 bin/obj）。</summary>
+    private static IEnumerable<string> AppSettingsFiles() =>
+        Directory
+            .EnumerateFiles(RepoPaths.AppSource, "appsettings*.json", SearchOption.AllDirectories)
+            .Where(path => !path.Contains(
+                $"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                StringComparison.Ordinal))
+            .Where(path => !path.Contains(
+                $"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}",
+                StringComparison.Ordinal))
+            .OrderBy(path => path, StringComparer.Ordinal);
+
+    /// <summary>在 JSON 里找 Kestrel 相关的配置。</summary>
+    /// <remarks>
+    /// 认 <c>Kestrel</c> 配置段（哪怕里面还没写上限）与 <c>MaxRequestBodySize</c>。
+    /// </remarks>
+    private static IEnumerable<string> FindKestrelSettings(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (string.Equals(property.Name, "Kestrel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        yield return "Kestrel 配置段";
+                    }
+                    else if (string.Equals(
+                        property.Name,
+                        "MaxRequestBodySize",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        yield return "MaxRequestBodySize";
+                    }
+
+                    foreach (var nested in FindKestrelSettings(property.Value))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    foreach (var nested in FindKestrelSettings(item))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+        }
     }
 
     /// <summary>设计文档 §16.3 里的 nginx 片段（代码块内容）。</summary>
@@ -398,6 +712,100 @@ public sealed class RequestBodyLimitGuardTests
             text.Split('\n')
                 .Where(line => !line.TrimStart().StartsWith('#'))
                 .ToArray());
+
+    /// <summary>文档里的一段文字（列表项 / 段落 / 表格行）。</summary>
+    /// <param name="Start">起始行号（从 0 开始）。</param>
+    /// <param name="End">结束行号（从 0 开始，含）。</param>
+    /// <param name="Text">整段文字。</param>
+    private sealed record TextBlock(int Start, int End, string Text);
+
+    /// <summary>
+    /// 把文档切成「块」：列表项、段落、表格行各算一块。
+    /// </summary>
+    /// <remarks>
+    /// 块是「这一段在谈什么」的上下文边界：
+    /// 讲 nginx 上限的那个列表项自成一个块，与其它段落分开。
+    /// </remarks>
+    private static List<TextBlock> TextBlocks(string[] lines)
+    {
+        var blocks = new List<TextBlock>();
+        var start = -1;
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var trimmed = lines[index].TrimStart();
+            var blank = trimmed.Length == 0;
+
+            var startsBlock = blank
+                || trimmed.StartsWith("- ", StringComparison.Ordinal)
+                || trimmed.StartsWith("* ", StringComparison.Ordinal)
+                || trimmed.StartsWith("+ ", StringComparison.Ordinal)
+                || trimmed.StartsWith("|", StringComparison.Ordinal)
+                || trimmed.StartsWith("#", StringComparison.Ordinal)
+                || OrderedListItemPattern.IsMatch(trimmed);
+
+            if (startsBlock)
+            {
+                if (start >= 0)
+                {
+                    blocks.Add(new TextBlock(start, index - 1, string.Join("\n", lines[start..index])));
+                }
+
+                start = blank ? -1 : index;
+                continue;
+            }
+
+            start = start < 0 ? index : start;
+        }
+
+        if (start >= 0)
+        {
+            blocks.Add(new TextBlock(start, lines.Length - 1, string.Join("\n", lines[start..])));
+        }
+
+        return blocks;
+    }
+
+    /// <summary>
+    /// 把一行拆成「上下文单元」：普通行就是一整行，表格行按**单元格**拆。
+    /// </summary>
+    /// <remarks>
+    /// 表格行必须按单元格拆：一格里前半段在讲 nginx 的上限、后半段在讲别的，
+    /// 不拆开的话后半段那句无关的体积话会被前半段的 nginx 语境带偏（误报）。
+    /// </remarks>
+    private static IEnumerable<string> ContextUnits(string line)
+    {
+        var trimmed = line.TrimStart();
+
+        if (trimmed.StartsWith("|", StringComparison.Ordinal))
+        {
+            return trimmed
+                .Split('|')
+                .Select(cell => cell.Trim())
+                .Where(cell => cell.Length > 0);
+        }
+
+        return new[] { line };
+    }
+
+    /// <summary>
+    /// 把一行切成「小句」（逗号、顿号、句号……）。
+    /// </summary>
+    /// <remarks>
+    /// 刻意**不**按半角逗号切：<c>30,000,000</c> 里的逗号是千分位，不是断句。
+    /// </remarks>
+    private static IEnumerable<string> SplitClauses(string line) =>
+        line.Split(
+            new[] { '，', '、', '；', '。', '！', '？', ';', '!', '?' },
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>这段话里提到 nginx 吗（大小写不敏感）。</summary>
+    private static bool MentionsNginx(string text) =>
+        text.Contains("nginx", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>出处那一小段（截断一下，够定位就行）。</summary>
+    private static string Snippet(NginxClaim claim) =>
+        claim.Clause.Length <= 80 ? claim.Clause : claim.Clause[..80] + "…";
 
     /// <summary>
     /// 取出 named location 的块内容（<c>{ … }</c> 之间的部分）。
@@ -483,7 +891,9 @@ public sealed class RequestBodyLimitGuardTests
         }
     }
 
-    /// <summary>把大小字面量归一成字节（1024 进位）。</summary>
+    /// <summary>
+    /// 把 nginx 的大小字面量归一成字节（<b>1024</b> 进位，与 nginx 的 <c>k</c>/<c>m</c>/<c>g</c> 一致）。
+    /// </summary>
     private static bool TryParseSize(string raw, out long bytes)
     {
         bytes = 0;
@@ -518,6 +928,58 @@ public sealed class RequestBodyLimitGuardTests
 
         return true;
     }
+
+    /// <summary>大小字面量里的数字部分。</summary>
+    private static string SizeNumber(string raw)
+    {
+        var match = SizeLiteralPattern.Match(raw.Trim());
+
+        return match.Success ? match.Groups["number"].Value : raw.Trim();
+    }
+
+    /// <summary>大小字面量里的单位部分。</summary>
+    private static string SizeUnit(string raw)
+    {
+        var match = SizeLiteralPattern.Match(raw.Trim());
+
+        return match.Success ? match.Groups["unit"].Value : string.Empty;
+    }
+
+    /// <summary>
+    /// 散文里的单位按**惯例**折成多少字节。
+    /// </summary>
+    /// <remarks>
+    /// 二进制单位（<c>KiB</c>/<c>MiB</c>/<c>GiB</c>）是 1024 进位，
+    /// 十进制单位（<c>KB</c>/<c>MB</c>/<c>GB</c>）按惯例是 1000 进位 ——
+    /// 「4 MB」说的是 4,000,000，不是 4,194,304。
+    /// </remarks>
+    private static long LabelBytes(string number, string unit)
+    {
+        if (!TryParseNumber(number, out var value))
+        {
+            return 0;
+        }
+
+        return unit.ToLowerInvariant() switch
+        {
+            "kib" => value * 1024L,
+            "mib" => value * 1024L * 1024,
+            "gib" => value * 1024L * 1024 * 1024,
+            "kb" => value * 1000L,
+            "mb" => value * 1000L * 1000,
+            "gb" => value * 1000L * 1000 * 1000,
+            _ => value
+        };
+    }
+
+    /// <summary>这个单位是 1024 进位还是 1000 进位（写给失败信息看）。</summary>
+    private static string LabelBase(string unit) =>
+        unit.ToLowerInvariant() switch
+        {
+            "kib" or "mib" or "gib" => "1024",
+            "kb" or "mb" or "gb" => "1000",
+            _ => "1"
+        };
 
     /// <summary>解析带千分位的数字（<c>30,000,000</c>）。</summary>
     private static bool TryParseNumber(string raw, out long value) =>
