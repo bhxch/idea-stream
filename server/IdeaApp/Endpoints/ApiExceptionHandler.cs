@@ -67,7 +67,7 @@ public sealed class ApiExceptionHandler(ILogger<ApiExceptionHandler> logger) : I
 
         if (failure is not null)
         {
-            // 请求本身不合法：400/413 + 对应的错误码。
+            // 请求本身不合法：400/415 + 对应的错误码。
             logger.LogWarning(exception, "请求体绑定失败（{Code}）", failure.Code);
 
             var problem = ApiResults.ProblemResponse(

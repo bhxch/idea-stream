@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 using System.Text.RegularExpressions;
 using IdeaApp.Contracts;
 
@@ -326,7 +325,7 @@ public sealed class ApiErrorCodeTests
         var codes = new Dictionary<string, int>(StringComparer.Ordinal);
         var problems = new List<string>();
 
-        var source = StripComments(text);
+        var source = SourceText.StripComments(text);
 
         foreach (Match callSite in CallSitePattern.Matches(source))
         {
@@ -337,7 +336,7 @@ public sealed class ApiErrorCodeTests
             if (!match.Success || match.Index != callSite.Index)
             {
                 problems.Add(
-                    $"{origin}:{LineNumber(source, callSite.Index)} 的 ApiException 抛出点扫不出来"
+                    $"{origin}:{SourceText.LineNumber(source, callSite.Index)} 的 ApiException 抛出点扫不出来"
                     + "（状态码必须是 400 或 StatusCodes.Status400BadRequest 这样的字面量/常量，"
                     + "错误码必须是字符串字面量）");
                 continue;
@@ -360,7 +359,7 @@ public sealed class ApiErrorCodeTests
                 if (!constant.Success)
                 {
                     problems.Add(
-                        $"{origin}:{LineNumber(source, callSite.Index)} 的状态码 {statusText} 认不出来"
+                        $"{origin}:{SourceText.LineNumber(source, callSite.Index)} 的状态码 {statusText} 认不出来"
                         + "（只认 400 这样的字面量，或 StatusCodes.Status400BadRequest 这样的常量）");
                     continue;
                 }
@@ -371,7 +370,7 @@ public sealed class ApiErrorCodeTests
             if (!CodeConventionPattern.IsMatch(code))
             {
                 problems.Add(
-                    $"{origin}:{LineNumber(source, callSite.Index)} 的错误码 {code} "
+                    $"{origin}:{SourceText.LineNumber(source, callSite.Index)} 的错误码 {code} "
                     + "不符合 [a-z0-9_]+ 约定");
                 continue;
             }
@@ -391,163 +390,6 @@ public sealed class ApiErrorCodeTests
         }
 
         return new ScanResult(codes, problems);
-    }
-
-    /// <summary>
-    /// 去掉源码里的注释（字符串/字符字面量的内容原样保留）。
-    /// </summary>
-    /// <remarks>
-    /// 注释里常写着示例代码（<c>/// catch (...) =&gt; ApiException(400, "x", …)</c>），
-    /// 不去掉的话守卫会把它当成真的抛出点；反过来，被注释掉的抛出点
-    /// 也不该算数。字面量里的 <c>//</c> 不是注释，所以不能简单按行首砍。
-    /// </remarks>
-    private static string StripComments(string text)
-    {
-        var builder = new StringBuilder(text.Length);
-        var index = 0;
-
-        while (index < text.Length)
-        {
-            var current = text[index];
-
-            if (current == '"')
-            {
-                var end = SkipStringLiteral(text, index);
-                builder.Append(text, index, end - index);
-                index = end;
-                continue;
-            }
-
-            if (current == '\'')
-            {
-                var end = SkipCharLiteral(text, index);
-                builder.Append(text, index, end - index);
-                index = end;
-                continue;
-            }
-
-            if (current == '/' && index + 1 < text.Length && text[index + 1] == '/')
-            {
-                while (index < text.Length && text[index] != '\n')
-                {
-                    builder.Append(' ');
-                    index++;
-                }
-
-                continue;
-            }
-
-            if (current == '/' && index + 1 < text.Length && text[index + 1] == '*')
-            {
-                builder.Append("  ");
-                index += 2;
-
-                while (index < text.Length
-                    && !(text[index] == '*' && index + 1 < text.Length && text[index + 1] == '/'))
-                {
-                    builder.Append(text[index] == '\n' ? '\n' : ' ');
-                    index++;
-                }
-
-                if (index < text.Length)
-                {
-                    builder.Append("  ");
-                    index += 2;
-                }
-
-                continue;
-            }
-
-            builder.Append(current);
-            index++;
-        }
-
-        return builder.ToString();
-    }
-
-    /// <summary>跳过一个字符串字面量，返回它结束后的下标。</summary>
-    /// <remarks>
-    /// 三种写法都要认：普通 <c>"…"</c>（<c>\</c> 转义）、逐字 <c>@"…"</c>（<c>""</c> 转义）、
-    /// 原始 <c>"""…"""</c>。
-    /// </remarks>
-    private static int SkipStringLiteral(string text, int index)
-    {
-        if (index + 2 < text.Length && text[index + 1] == '"' && text[index + 2] == '"')
-        {
-            var closing = text.IndexOf("\"\"\"", index + 3, StringComparison.Ordinal);
-            return closing < 0 ? text.Length : closing + 3;
-        }
-
-        var verbatim = index > 0 && text[index - 1] == '@';
-        var cursor = index + 1;
-
-        while (cursor < text.Length)
-        {
-            var current = text[cursor];
-
-            if (!verbatim && current == '\\')
-            {
-                cursor += 2;
-                continue;
-            }
-
-            if (current == '"')
-            {
-                if (verbatim && cursor + 1 < text.Length && text[cursor + 1] == '"')
-                {
-                    cursor += 2;
-                    continue;
-                }
-
-                return cursor + 1;
-            }
-
-            cursor++;
-        }
-
-        return text.Length;
-    }
-
-    /// <summary>跳过一个字符字面量，返回它结束后的下标。</summary>
-    private static int SkipCharLiteral(string text, int index)
-    {
-        var cursor = index + 1;
-
-        while (cursor < text.Length)
-        {
-            var current = text[cursor];
-
-            if (current == '\\')
-            {
-                cursor += 2;
-                continue;
-            }
-
-            if (current == '\'')
-            {
-                return cursor + 1;
-            }
-
-            cursor++;
-        }
-
-        return text.Length;
-    }
-
-    /// <summary>下标所在行（从 1 开始）。</summary>
-    private static int LineNumber(string text, int index)
-    {
-        var line = 1;
-
-        for (var cursor = 0; cursor < index && cursor < text.Length; cursor++)
-        {
-            if (text[cursor] == '\n')
-            {
-                line++;
-            }
-        }
-
-        return line;
     }
 
     /// <summary>扫端点源码：声明的错误码 → 状态码。</summary>
