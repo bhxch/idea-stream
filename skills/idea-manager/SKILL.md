@@ -214,7 +214,7 @@ CLI 的 stdout 会进 agent 的上下文与日志，那就是日志 —— 所�
 |---|---|---|
 | 服务端返回 4xx/5xx（ProblemDetails） | `code: detail`，如 `merge_cross_project: 不能跨项目合并想法：源想法分属不同项目` | 1 |
 | 响应体不是 JSON（代理返回 HTML、路径写错拿到 SPA 的 index.html） | `invalid_response: 响应不是 JSON（HTTP 502，Content-Type: text/html）；…` | 1 |
-| 请求体超过服务端上限（HTTP 413；经 nginx 默认 4MB，直连 Kestrel 约 30MB） | 响应体是空的 → `http_413: HTTP 413`；响应体不是 JSON（nginx 的 HTML）→ `invalid_response: 响应不是 JSON（HTTP 413，Content-Type: text/html）；…` | 1 |
+| 请求体超过服务端上限（HTTP 413；经 nginx 4 MiB，直连 Kestrel 30,000,000 字节） | 两条路径**同一个码** `http_413`：经 nginx → `http_413: 请求体超过上限（nginx 的 client_max_body_size）。`；直连 Kestrel → `http_413: HTTP 413` | 1 |
 | 缺 `IDEA_BASE_URL` | `missing_config: IDEA_BASE_URL is required（也可以用 --base-url <地址> 临时覆盖）` | 1 |
 | `IDEA_BASE_URL` 写错了（缺 scheme、畸形 IPv6……） | `invalid_config: IDEA_BASE_URL 不是合法的实例地址：…（要带 scheme，如 https://ideas.example.com）` | 1 |
 | 命令行用错（缺 `--body`、没给要改的字段、`--headers` 不是 `键=值`） | `usage_error: …` | 1 |
@@ -233,24 +233,30 @@ argparse 的用法错误不在此列：它打的是多行 usage 提示、退出�
 但响应体是空的、或者是个没有 `code` 字段的 JSON —— CLI 拿不到业务错误码，
 就按状态码造一个 `http_413` / `http_502` 这样的码。
 **要按状态码分支时看这个码**，别去错误码对照表里找（那儿没有它）。
+这个码里最常遇到的两个：**413 = 请求体太大**（不是业务错误，见下）、**502 = 网关/上游挂了**。
 
 **HTTP 413（请求体太大）不是 API 的业务错误**：错误码对照表里没有它，服务端也来不及生成
-ProblemDetails —— 请求体在**读 body 阶段**就被拒掉了，所以**响应体是空的、没有 `code`**。
-CLI 报什么码取决于响应体长什么样（见上表）：
-- 响应体是空的（Kestrel 直接拒收）→ CLI 造一个 `http_413`：`http_413: HTTP 413`；
-- 响应体不是 JSON（经 nginx 时，nginx 自己回的是 HTML）→ CLI 报 `invalid_response`。
+ProblemDetails —— 请求体在**读 body 阶段**就被拒掉了。
 
-两种都表示「请求体太大」：**把 body 调小再试**，别去错误码对照表里找它。
+**两条部署路径给 agent 的是同一个码 `http_413`**，按码分支即可，**不必知道走了哪条路**：
+- **经 nginx（仓库自带的 `docs/nginx/idea.conf`）** → nginx 先撞上自己的
+  `client_max_body_size`，回的是**结构化 JSON**（ProblemDetails 形状，但**刻意没有 `code` 字段**）→
+  CLI 报 `http_413: 请求体超过上限（nginx 的 client_max_body_size）。`；
+- **直连 Kestrel** → 框架在读 body 阶段直接拒掉，回的是**空响应体** →
+  CLI 报 `http_413: HTTP 413`。
+
+两种形态的 **detail 文字不一样**，但**码一样**：都表示「请求体太大」，
+处理办法也一样 —— **把 body 调小再试**，别去错误码对照表里找它。
 
 上限分两种部署形态（两个上限都不是本项目配的）：
 - **经 nginx（仓库自带的 `docs/nginx/idea.conf`）** → `client_max_body_size 4m`，
-  上限是 **4MB**，而且 413 是 **nginx 自己回的 HTML** →
-  `invalid_response: 响应不是 JSON（HTTP 413，Content-Type: text/html）；…`。
+  上限是 **4 MiB（4194304 字节）**（nginx 的 `m` 是 1024 进位）。
   那个上限在 `docs/nginx/idea.conf` 里可改。
-- **直连 Kestrel** → 默认约 **30MB**（项目没配 `MaxRequestBodySize`），
-  响应体**是空的** → `http_413: HTTP 413`。
+- **直连 Kestrel** → 框架默认上限 **30,000,000 字节**（项目没配 `MaxRequestBodySize`），
+  响应体**是空的**。
 
-改了 nginx 的 `client_max_body_size` 或 Kestrel 的请求体上限，这里也要跟着改。
+改了 nginx 的 `client_max_body_size` 或 Kestrel 的请求体上限，这里也要跟着改 ——
+`server/IdeaApp.Tests` 里有守卫盯着这几个数字，对不上时测试会红。
 
 ### 错误码对照表
 
