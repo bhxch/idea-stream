@@ -44,6 +44,30 @@ namespace IdeaApp.Tests;
 /// </para>
 ///
 /// <para>
+/// <b><c>0</c> 是「不限」，不是「最小的上限」</b>：nginx 里 <c>client_max_body_size 0;</c>
+/// 表示不限体积。取最小值时要把 0 排除掉（否则 min 会把 0 当成最严的上限）；
+/// 配置里只有 0 → 视为「不限」，守卫没有数字可比，
+/// 因此也<b>不会去要求文档写具体字节数</b>（更不会要求写「0 字节」）。
+/// </para>
+///
+/// <para>
+/// <b>应用自己有没有改上限</b>只看 <c>Kestrel:Limits:MaxRequestBodySize</c> 这一个键：
+/// .NET 里请求体上限只由它决定（<c>Kestrel</c> 段绑定到 <c>KestrelServerOptions</c>，
+/// 其 <c>Limits</c> 段绑定到 <c>KestrelLimits</c>，其中只有 <c>MaxRequestBodySize</c>
+/// 是请求体上限）。<c>Kestrel</c> 段里的其它配置（<c>Endpoints</c>、
+/// <c>Limits:MaxRequestHeadersTotalSize</c> 等）与请求体上限<b>无关</b> ——
+/// 比如按 ASP.NET 官方写法配 HTTPS 端点时，那不叫「上限改成用配置配了」。
+/// </para>
+///
+/// <para>
+/// <b>解析 appsettings 的口径与 ASP.NET Core 一致</b>：JSON 配置提供程序
+/// （dotnet/runtime 的 <c>JsonConfigurationFileParser</c>）用的是
+/// <c>CommentHandling = Skip</c> + <c>AllowTrailingCommas = true</c>，
+/// 所以带 <c>//</c> 注释或尾逗号的 appsettings.json 在应用里<b>读得进去</b>，
+/// 守卫不该因为它「不是严格 JSON」就判它非法。
+/// </para>
+///
+/// <para>
 /// <b>散文里的上限声明要锚定上下文</b>：只有「在谈上限」且「在谈 nginx」的那一句里的数字
 /// 才算数 —— 否则将来 SKILL.md 里多一句无关的体积话（例如「把 body 压到 1MB 以内」）
 /// 就会把守卫带偏（误报），或者反过来：把「4 MiB」改成有歧义的「4 MB」它还照样绿（放过）。
@@ -73,6 +97,21 @@ public sealed class RequestBodyLimitGuardTests
             "superpowers",
             "specs",
             "2026-11-11-idea-manager-design.md");
+
+    /// <summary>
+    /// 解析 appsettings 用的选项 —— 与 ASP.NET Core 的 JSON 配置提供程序一致。
+    /// </summary>
+    /// <remarks>
+    /// dotnet/runtime 的 <c>JsonConfigurationFileParser</c> 用的就是
+    /// <c>CommentHandling = Skip</c> + <c>AllowTrailingCommas = true</c>：
+    /// 带 <c>//</c> 注释或尾逗号的 appsettings.json 在应用里**读得进去**，
+    /// 守卫不该因为它「不是严格 JSON」就判它非法（那会把人往错方向带）。
+    /// </remarks>
+    private static readonly JsonDocumentOptions AppsettingsJsonOptions = new()
+    {
+        CommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
 
     /// <summary>nginx 指令：<c>client_max_body_size 4m;</c>。</summary>
     private static readonly Regex NginxLimitPattern = new(
@@ -161,6 +200,12 @@ public sealed class RequestBodyLimitGuardTests
             StripHashComments(DesignNginxSnippet()),
             "设计文档 §16.3 的 nginx 片段");
 
+        // 「不限」（client_max_body_size 0）没有数字可比：不去要求文档写具体字节数。
+        if (!configured.HasValue || !documented.HasValue)
+        {
+            return;
+        }
+
         Assert.True(
             configured == documented,
             $"设计文档 §16.3 的 nginx 片段里的 client_max_body_size（{documented} 字节）"
@@ -182,6 +227,14 @@ public sealed class RequestBodyLimitGuardTests
     public void The_nginx_body_limit_in_the_deploy_config_matches_the_skill_doc()
     {
         var configured = ReadNginxLimit(NginxConfigPath);
+
+        // nginx 配的是「不限」（client_max_body_size 0）→ 没有数字可比，
+        // 守卫不去要求文档写具体字节数（也不要求写「0 字节」）。
+        if (!configured.HasValue)
+        {
+            return;
+        }
+
         var claims = ReadSkillNginxClaims();
 
         Assert.True(
@@ -303,8 +356,21 @@ public sealed class RequestBodyLimitGuardTests
     /// 源码里一个关键字都没有，SKILL.md 里那句「框架默认值」就成了假话。
     /// </para>
     /// <para>
-    /// 所以这里把 <c>server/IdeaApp</c> 下的 <c>appsettings*.json</c> 也扫一遍：
-    /// 只要出现 <c>Kestrel</c> 配置段或 <c>MaxRequestBodySize</c>，就红。
+    /// 所以这里把 <c>server/IdeaApp</c> 下的 <c>appsettings*.json</c> 也扫一遍。
+    /// </para>
+    /// <para>
+    /// <b>只认「真的配了上限」</b>：.NET 里请求体上限只由
+    /// <c>Kestrel:Limits:MaxRequestBodySize</c> 这一个键决定。
+    /// <c>Kestrel</c> 段里的其它配置（<c>Endpoints</c>、
+    /// <c>Limits:MaxRequestHeadersTotalSize</c> 等）与请求体上限无关 ——
+    /// 例如按 ASP.NET 官方写法配 HTTPS 端点（<c>Kestrel:Endpoints:Http</c>）时，
+    /// 那不叫「上限改成用配置配了」，不能拿来判红。
+    /// </para>
+    /// <para>
+    /// 解析用的选项与 ASP.NET Core 的 JSON 配置提供程序一致
+    /// （<c>CommentHandling = Skip</c>、<c>AllowTrailingCommas = true</c>）：
+    /// 带 <c>//</c> 注释或尾逗号的 appsettings.json 在应用里**读得进去**，
+    /// 不能因为它「不是严格 JSON」就说守卫读不了它。
     /// </para>
     /// </remarks>
     [Fact]
@@ -320,22 +386,24 @@ public sealed class RequestBodyLimitGuardTests
 
             try
             {
-                using var document = JsonDocument.Parse(text);
+                using var document = JsonDocument.Parse(text, AppsettingsJsonOptions);
                 root = document.RootElement.Clone();
             }
             catch (JsonException error)
             {
                 offenders.Add(
                     $"{origin} 不是合法 JSON（{error.Message}）—— 守卫读不了它，"
-                    + "没法确认里面有没有配请求体上限。");
+                    + "没法确认里面有没有配请求体上限。"
+                    + "请确认它能被 ASP.NET Core 的 JSON 配置提供程序读进去"
+                    + "（那份提供程序允许注释与尾逗号，所以这里报错说明 JSON 真的坏了）。");
 
                 continue;
             }
 
-            foreach (var hit in FindKestrelSettings(root))
+            foreach (var limit in FindRequestBodyLimits(root))
             {
                 offenders.Add(
-                    $"{origin} 里出现了 {hit} —— 上限改成用配置配了，"
+                    $"{origin} 配了请求体上限（{limit.Path} = {limit.Value}）—— 上限改成用配置配了，"
                     + "直连 Kestrel 的上限就不再是框架默认值（30,000,000 字节），"
                     + "SKILL.md 里写的数字要跟着改，"
                     + "「框架默认上限」那条守卫也只认框架默认值。");
@@ -343,6 +411,61 @@ public sealed class RequestBodyLimitGuardTests
         }
 
         Assert.True(offenders.Count == 0, string.Join("；", offenders));
+    }
+
+    /// <summary>
+    /// 「有 Kestrel 段」与「配了请求体上限」是**两件事** —— 守卫只认后者。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// .NET 里 <c>Kestrel</c> 段绑定到 <c>KestrelServerOptions</c>，其 <c>Limits</c> 段
+    /// 绑定到 <c>KestrelLimits</c>；后者里面只有 <c>MaxRequestBodySize</c> 是请求体上限。
+    /// 其余的（<c>Endpoints</c>、<c>MaxRequestHeadersTotalSize</c>……）与请求体上限无关。
+    /// </para>
+    /// <para>
+    /// 将来有人按 ASP.NET 官方写法加 <c>"Kestrel": {"Endpoints": {"Http": {…}}}</c>
+    /// 来配 HTTPS 端点时，守卫**不能**说「上限改成用配置配了」——
+    /// 那个结论是错的，方向会把人带偏。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void The_appsettings_guard_only_flags_a_configured_request_body_limit()
+    {
+        // 只配了 Kestrel:Endpoints（配 HTTPS 端点的正规写法）→ 与请求体上限无关。
+        var endpointsOnly = FindRequestBodyLimits(
+            ParseJson("""{"Kestrel": {"Endpoints": {"Http": {"Url": "https://localhost:5001"}}}}""")).ToList();
+
+        Assert.True(
+            endpointsOnly.Count == 0,
+            "只配了 Kestrel:Endpoints（没配请求体上限）不该被当成「上限改成用配置配了」—— "
+            + $"Kestrel 段里的 Endpoints 与请求体上限无关（却找到了 {endpointsOnly.Count} 处）。");
+
+        // 只配了别的 Limits 项 → 同样与请求体上限无关。
+        var otherLimitsOnly = FindRequestBodyLimits(
+            ParseJson("""{"Kestrel": {"Limits": {"MaxRequestHeadersTotalSize": 32768}}}""")).ToList();
+
+        Assert.True(
+            otherLimitsOnly.Count == 0,
+            "只配了 Kestrel:Limits:MaxRequestHeadersTotalSize（没配请求体上限）"
+            + "不该被当成「上限改成用配置配了」—— 请求体上限只由 MaxRequestBodySize 决定"
+            + $"（却找到了 {otherLimitsOnly.Count} 处）。");
+
+        // 配了上限 → 必须被认出来。
+        var limits = FindRequestBodyLimits(
+            ParseJson("""{"Kestrel": {"Limits": {"MaxRequestBodySize": 4194304}}}""")).ToList();
+
+        Assert.True(
+            limits.Count == 1,
+            "配了 Kestrel:Limits:MaxRequestBodySize 就该被认出来"
+            + $"（上限改成用配置配了）—— 没认出来，守卫对 appsettings 失明了（找到 {limits.Count} 处）。");
+
+        Assert.True(
+            limits[0].Path == "Kestrel:Limits:MaxRequestBodySize",
+            $"配了上限时要说清是哪个键：{limits[0].Path}。");
+
+        Assert.True(
+            limits[0].Value == "4194304",
+            $"Kestrel:Limits:MaxRequestBodySize 的值认错了：{limits[0].Value}。");
     }
 
     /// <summary>
@@ -493,12 +616,22 @@ public sealed class RequestBodyLimitGuardTests
     /// <remarks>
     /// 取的是所有 <c>client_max_body_size</c> 里的**最小值**：nginx 里 location 层的指令
     /// 覆盖 server 层的那条，location 里的更小值才是实际生效的上限。
+    /// <para>
+    /// <c>0</c> 除外 —— nginx 里 <c>client_max_body_size 0;</c> 表示**不限**，
+    /// 它不参与「最严上限」的计算。配置里只有 0 → 返回 <c>null</c>（不限），
+    /// 守卫没有数字可比，因此也不会去要求文档写具体字节数。
+    /// </para>
     /// </remarks>
-    private static long ReadNginxLimit(string path) =>
+    private static long? ReadNginxLimit(string path) =>
         ParseNginxLimit(StripHashComments(File.ReadAllText(path)), path);
 
-    /// <summary>从一段 nginx 配置文本里读出生效的 <c>client_max_body_size</c>（字节）。</summary>
-    private static long ParseNginxLimit(string text, string origin)
+    /// <summary>
+    /// 从一段 nginx 配置文本里读出生效的 <c>client_max_body_size</c>（字节）。
+    /// </summary>
+    /// <returns>
+    /// 生效的上限（字节）；配置里只有 <c>0</c>（不限）时返回 <c>null</c>。
+    /// </returns>
+    private static long? ParseNginxLimit(string text, string origin)
     {
         var limits = new List<(long Bytes, string Raw)>();
 
@@ -518,8 +651,17 @@ public sealed class RequestBodyLimitGuardTests
             $"{origin} 里找不到 `client_max_body_size` —— "
             + "守卫对请求体上限失明了，请确认指令还在。");
 
+        // 0 = 不限（nginx 的语义）：不参与「最严上限」的计算，
+        // 否则取 min 会把 0 当成最小的上限（然后逼着文档写「0 字节」）。
+        var effective = limits.Where(limit => limit.Bytes > 0).ToList();
+
+        if (effective.Count == 0)
+        {
+            return null;
+        }
+
         // 生效的上限 = 最小的那条（location 里的更小值覆盖 server 层的）。
-        return limits.Min(limit => limit.Bytes);
+        return effective.Min(limit => limit.Bytes);
     }
 
     /// <summary>
@@ -632,47 +774,86 @@ public sealed class RequestBodyLimitGuardTests
                 StringComparison.Ordinal))
             .OrderBy(path => path, StringComparer.Ordinal);
 
-    /// <summary>在 JSON 里找 Kestrel 相关的配置。</summary>
+    /// <summary>appsettings 里「配了请求体上限」的一处。</summary>
+    /// <param name="Path">配置的路径（形如 <c>Kestrel:Limits:MaxRequestBodySize</c>）。</param>
+    /// <param name="Value">配的值（原文）。</param>
+    private sealed record RequestBodyLimit(string Path, string Value);
+
+    /// <summary>
+    /// 在 JSON 里找**配了请求体上限**的地方 —— 只认 <c>Kestrel:Limits:MaxRequestBodySize</c>。
+    /// </summary>
     /// <remarks>
-    /// 认 <c>Kestrel</c> 配置段（哪怕里面还没写上限）与 <c>MaxRequestBodySize</c>。
+    /// <para>
+    /// 「有 Kestrel 段」不等于「配了请求体上限」：<c>Kestrel</c> 段里的
+    /// <c>Endpoints</c>（配 HTTPS 端点的正规写法）、<c>Limits</c> 里的其它项
+    /// 都与请求体上限无关，不能拿来判「上限改成用配置配了」。
+    /// </para>
+    /// <para>
+    /// 键名按**不区分大小写**匹配（.NET 的配置绑定就是这样的）。
+    /// </para>
     /// </remarks>
-    private static IEnumerable<string> FindKestrelSettings(JsonElement element)
+    private static IEnumerable<RequestBodyLimit> FindRequestBodyLimits(JsonElement element)
     {
-        switch (element.ValueKind)
+        if (element.ValueKind == JsonValueKind.Object)
         {
-            case JsonValueKind.Object:
-                foreach (var property in element.EnumerateObject())
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, "Kestrel", StringComparison.OrdinalIgnoreCase)
+                    && property.Value.ValueKind == JsonValueKind.Object)
                 {
-                    if (string.Equals(property.Name, "Kestrel", StringComparison.OrdinalIgnoreCase))
+                    foreach (var limit in FindLimitsOf(property.Value))
                     {
-                        yield return "Kestrel 配置段";
-                    }
-                    else if (string.Equals(
-                        property.Name,
-                        "MaxRequestBodySize",
-                        StringComparison.OrdinalIgnoreCase))
-                    {
-                        yield return "MaxRequestBodySize";
-                    }
-
-                    foreach (var nested in FindKestrelSettings(property.Value))
-                    {
-                        yield return nested;
+                        yield return limit;
                     }
                 }
 
-                break;
-
-            case JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray())
+                foreach (var nested in FindRequestBodyLimits(property.Value))
                 {
-                    foreach (var nested in FindKestrelSettings(item))
-                    {
-                        yield return nested;
-                    }
+                    yield return nested;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                foreach (var nested in FindRequestBodyLimits(item))
+                {
+                    yield return nested;
+                }
+            }
+        }
+    }
+
+    /// <summary>在 <c>Kestrel</c> 段里找 <c>Limits:MaxRequestBodySize</c>。</summary>
+    private static IEnumerable<RequestBodyLimit> FindLimitsOf(JsonElement kestrel)
+    {
+        if (kestrel.ValueKind != JsonValueKind.Object)
+        {
+            yield break;
+        }
+
+        foreach (var property in kestrel.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, "Limits", StringComparison.OrdinalIgnoreCase)
+                || property.Value.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            foreach (var limit in property.Value.EnumerateObject())
+            {
+                if (!string.Equals(limit.Name, "MaxRequestBodySize", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
                 }
 
-                break;
+                yield return new RequestBodyLimit(
+                    "Kestrel:Limits:MaxRequestBodySize",
+                    limit.Value.ValueKind == JsonValueKind.String
+                        ? limit.Value.GetString() ?? string.Empty
+                        : limit.Value.GetRawText());
+            }
         }
     }
 
@@ -889,6 +1070,16 @@ public sealed class RequestBodyLimitGuardTests
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// 解析一段 JSON（按 appsettings 的口径：允许注释与尾逗号）；解析不了就抛。
+    /// </summary>
+    private static JsonElement ParseJson(string json)
+    {
+        using var document = JsonDocument.Parse(json, AppsettingsJsonOptions);
+
+        return document.RootElement.Clone();
     }
 
     /// <summary>
