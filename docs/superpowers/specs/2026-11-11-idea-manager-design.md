@@ -543,7 +543,7 @@ public interface IEventHandler
 | `Webhook:MaxDeliveryRecords` | `500` | 每个 webhook 保留的投递记录条数 |
 | `Sse:BufferSize` | `500` | 服务端事件缓冲条数（供 `Last-Event-ID` 补发） |
 | `Sse:HeartbeatSeconds` | `25` | SSE 心跳间隔（发 `: ping` 注释帧，防中间代理掐断空闲连接） |
-| `Cors:Origins` | 空 | 预留：仅当前端独立部署时才需要；同源部署留空 |
+| `Cors:Origins` | 空 | 预留：**当前未实现**（`AppOptions` 里没有这个键）；仅当前端独立部署时才需要；同源部署留空 |
 
 ## 16. 部署
 
