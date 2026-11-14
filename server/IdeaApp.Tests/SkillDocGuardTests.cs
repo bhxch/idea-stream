@@ -167,10 +167,16 @@ public sealed class SkillDocGuardTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 认的是「<c>rm</c> + 短选项里带 <c>r</c>（或 <c>R</c>）」的那些写法
-    /// （<c>-r</c>、<c>-rf</c>、<c>-fr</c>……）**与长选项** <c>--recursive</c>：
-    /// 早先只认短选项，<c>rm --recursive "${TARGET}"</c> 这种写法能溜过去 ——
-    /// 而它删掉的正是同一个目录。
+    /// 认的是「<c>rm</c> 之后的**整个选项串**里有没有一个递归选项」：
+    /// <b>任意一个</b>选项是递归的（<c>-r</c> / <c>-R</c> / <c>--recursive</c>，
+    /// 短选项可组合，如 <c>-rf</c> / <c>-fr</c>）就算。
+    /// </para>
+    /// <para>
+    /// 早先的判据只认「<b>紧跟 <c>rm</c> 之后</b>的那一个选项」，
+    /// 于是选项串里排在后面的递归选项能溜过去 ——
+    /// <c>rm -i -r "${TARGET}"</c>、<c>rm --force --recursive "${TARGET}"</c>、
+    /// <c>rm --no-preserve-root -rf "${TARGET}"</c> 删掉的**正是同一个目录**，
+    /// 却一条都判不出来。
     /// </para>
     /// <para>
     /// <b><c>--dir</c>（= <c>-d</c>）不算递归</b>：GNU rm 的 <c>--dir</c> 是
@@ -183,7 +189,8 @@ public sealed class SkillDocGuardTests
     /// </para>
     /// </remarks>
     private static readonly Regex RecursiveRemovePattern = new(
-        @"\brm\s+(?:-[A-Za-z]*r|--recursive\b)",
+        @"\brm\s+(?:-{1,2}[A-Za-z][A-Za-z0-9-]*\s+)*"
+        + @"(?<![-\w])(?:-[A-Za-z]*r[A-Za-z]*|--recursive)(?![A-Za-z0-9-])",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -898,6 +905,12 @@ public sealed class SkillDocGuardTests
         Assert.Matches(RecursiveRemovePattern, "rm -r \"${TARGET}\"");
         // 长选项也是目录级的删除：早先只认短选项，`rm --recursive` 能溜过去。
         Assert.Matches(RecursiveRemovePattern, "rm --recursive \"${TARGET}\"");
+        // 递归选项**排在选项串的后面**也是目录级的删除：
+        // 早先只认「紧跟 rm 之后的那一个选项」，`rm -i -r` / `rm --force --recursive`
+        // 这类写法整条都判不出来 —— 它们删掉的却是同一个目录。
+        Assert.Matches(RecursiveRemovePattern, "rm -i -r \"${TARGET}\"");
+        Assert.Matches(RecursiveRemovePattern, "rm --force --recursive \"${TARGET}\"");
+        Assert.Matches(RecursiveRemovePattern, "rm --no-preserve-root -rf \"${TARGET}\"");
         // 但 --dir（= -d）**不是**递归：GNU rm 里它的意思是「不删空目录」，
         // 删的是单个文件 —— 当成递归会误拦将来合法的 `rm --dir <某文件>`。
         Assert.DoesNotMatch(RecursiveRemovePattern, "rm --dir \"${TARGET}/x\"");
@@ -949,6 +962,11 @@ public sealed class SkillDocGuardTests
     /// 真递归：<c>rm -r</c> / <c>rm -R</c> / <c>rm -rf</c> / <c>rm -fr</c> /
     /// <c>rm --recursive</c> —— 这些必须红。
     /// </para>
+    /// <para>
+    /// <b>递归选项排在选项串的后面也是递归</b>：<c>rm -i -r</c>、
+    /// <c>rm --force --recursive</c> 删掉的与 <c>rm -rf</c> 是同一个目录。
+    /// 早先的判据只认「紧跟 <c>rm</c> 之后的那一个选项」，这两条能溜过去。
+    /// </para>
     /// </remarks>
     [Fact]
     public void The_install_script_guard_catches_only_real_recursive_removals()
@@ -960,8 +978,14 @@ public sealed class SkillDocGuardTests
         Assert.NotEmpty(RecursiveRemoveOffenders("rm -fr \"${TARGET}\"\n"));
         Assert.NotEmpty(RecursiveRemoveOffenders("rm --recursive \"${TARGET}\"\n"));
 
+        // 红：递归选项**不是紧跟 rm 的那一个**（早先的判据在这里漏了一大片）。
+        Assert.NotEmpty(RecursiveRemoveOffenders("rm -i -r \"${TARGET}\"\n"));
+        Assert.NotEmpty(RecursiveRemoveOffenders("rm --force --recursive \"${TARGET}\"\n"));
+        Assert.NotEmpty(RecursiveRemoveOffenders("rm --no-preserve-root -rf \"${TARGET}\"\n"));
+
         // 绿：不是递归 —— 删文件、删空目录，以及 --dir（= -d）。
         Assert.Empty(RecursiveRemoveOffenders("rm -f \"${TARGET}/x\"\n"));
+        Assert.Empty(RecursiveRemoveOffenders("rm --force \"${TARGET}/x\"\n"));
         Assert.Empty(RecursiveRemoveOffenders("rmdir \"${TARGET}/references\"\n"));
         Assert.Empty(RecursiveRemoveOffenders("rm --dir \"${TARGET}/x\"\n"));
         Assert.Empty(RecursiveRemoveOffenders("rm -d \"${TARGET}/x\"\n"));
