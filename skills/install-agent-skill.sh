@@ -98,5 +98,8 @@ echo
 echo "自检（打得通就说明地址对、凭据对、服务端分发了 skill 内容）："
 echo "  IDEA_BASE_URL=... ${TARGET}/scripts/fetch.py"
 echo
+echo "注意：agent 需要重新扫一遍本地 skill 目录才会发现这个 skill ——"
+echo "当前会话里还看不到的话，新开一个会话试试。"
+echo
 echo "装到别处（agent 的 skills 目录名不一样时）："
 echo "  bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager"

@@ -249,6 +249,10 @@ agent skill 的**权威内容在服务端**：应用把 `skills/idea-manager/`�
 
 ### 安装
 
+**薄壳是从这个仓库装的** —— 服务端只分发手册正文，薄壳那两个文件（指针与取件器）
+不在分发副本里：手上没有这个仓库就装不了。
+（前提是服务端跑着、发布产物里带着分发副本 —— 见「部署」一节。）
+
 装的是**拷贝**，不是软链 —— 软链 `skills/idea-manager/`（内容源）会把内容源当成薄壳装过去，
 agent 手上就握着一份与服务端不同步的说明书：
 
@@ -259,6 +263,10 @@ bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager
 
 脚本是幂等的：目标目录里认得出的旧形状残留会被清掉，不认识的文件只警告、不删。
 薄壳的约定是「那个目录里只有两个文件」—— 留着别的东西，agent 可能会直接去读它。
+
+装完之后 agent 需要**重新扫一遍本地 skill 目录**才会发现它；
+当前会话里还看不到这个 skill 的话，新开一个会话试试
+（不同 agent 运行时刷新本地目录的时机不一样）。
 
 装完之后 agent 读到的就是薄壳那份 `SKILL.md`（指针）—— 它自己会先跑 `scripts/fetch.py`
 取说明书，不需要谁去提醒它。
@@ -284,13 +292,16 @@ export IDEA_PASS='<密码>'
 # export IDEA_TOKEN='<令牌>'    # nginx 侧另外校验 X-Api-Key 时才需要
 ```
 
+**这些变量得在 agent 跑命令的那个环境里也有** —— 你在另一个终端里 `export` 的，agent 看不见。
+启动 agent 之前先 `export`，或者写进 agent 的启动配置（**别把密码写进仓库**）。
+
 ### 取说明书
 
 取件器是纯标准库脚本，**Python 3.9+** 就能跑（第三方依赖一个都没有）。
 下面假设上面那几个变量已经 `export` 过了：
 
 ```bash
-SKILL=~/.zcode/skills/idea-manager      # 装到哪儿就是哪儿
+SKILL=~/.zcode/skills/idea-manager      # 装到哪儿就是哪儿（与上面安装时的目标目录一致）
 
 python3 "$SKILL/scripts/fetch.py"                        # 索引页：有哪些能力、怎么调、细节去哪找
 python3 "$SKILL/scripts/fetch.py" references/errors.md   # 按索引页里的路由表取某一份细节
@@ -310,6 +321,7 @@ python3 "$SKILL/scripts/fetch.py" /openapi/v1.json       # 完整接口契约
 复制过去就能跑：
 
 ```bash
+# 路径要跟实际安装位置一致（装到 ~/.claude/skills/idea-manager 就改这一行）
 SKILL=~/.zcode/skills/idea-manager
 IDEA_BASE_URL=https://ideas.example.com \
 IDEA_USER=ideauser IDEA_PASS='<密码>' \
@@ -366,7 +378,7 @@ JSON
 ```
 
 完整契约在服务端的 `/openapi/v1.json`（实时发）。仓库根的 `openapi/idea-v1.json` 是同一份的
-快照，**skill 分发副本里没有第二份契约** —— agent 手上这一份是服务端运行时发的。
+快照，但那是**仓库里的事** —— 分发副本里**没有第二份契约**，agent 手上这一份是服务端运行时发的。
 调用姿势、错误码全表、逐端点参数与可照抄的完整例子都在手册里：
 [`skills/idea-manager/SKILL.md`](skills/idea-manager/SKILL.md) 是索引页，
 它给的路由表指向 `references/` 下那几份。

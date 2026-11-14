@@ -131,7 +131,9 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 | `scripts/fetch.py /openapi/v1.json` | 服务端的完整契约 |
 
 完整契约在服务端的 `/openapi/v1.json` —— **实时发**，契约里有全部路径。
-仓库根的 `openapi/idea-v1.json` 是同一份的快照，**skill 分发副本里没有第二份契约**。
+**skill 分发副本里没有第二份契约**：仓库根的 `openapi/idea-v1.json` 是同一份的快照，
+但那是**仓库里的事** —— 分发副本取不到它（`fetch.py openapi/idea-v1.json` 会 `not_found`），
+服务端也不发它。要契约就取 `/openapi/v1.json`。
 也可以直接
 `curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"`
 （这个端点同样要 basic auth，没凭据时删掉 `-u`）。
