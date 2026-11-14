@@ -365,36 +365,34 @@ public sealed class SkillDocGuardTests
     /// 垃圾文件不进**分发副本**靠的是 csproj 的 <c>references/**/*.md</c> glob
     /// （<c>SkillCatalog</c> 只排除 <c>__pycache__</c> 段，其余文件一律进清单）。
     /// </para>
+    /// <para>
+    /// <b>「只剩 <c>__pycache__</c> 的空壳目录」也放过</b>（判据是<b>目录里装了什么</b>，
+    /// 不是<b>目录叫什么</b>）：旧检出的工作区里，<c>scripts/</c>、<c>tests/</c> 这类目录的源码
+    /// 早随旧命令行封装一起删了，但 <c>__pycache__/</c> 命中 <c>.gitignore</c> ——
+    /// <b>git 合并不会清理被忽略的目录</b>，目录壳会一直留在那儿
+    /// （谁在这仓库跑过旧的端到端脚本，谁就有一份）。这是每个旧检出的常态，
+    /// 不是谁改了内容源 —— 所以它不该把守卫弄红。
+    /// </para>
+    /// <para>
+    /// 但壳里只要还有别的东西（哪怕只剩一个 <c>.py</c>），那就是真内容混进了内容源，
+    /// 仍然要红 —— 见 <see cref="IsResidueOnlyDirectory"/>。
+    /// </para>
     /// </remarks>
     [Fact]
     public void Content_source_contains_only_the_shipped_files()
     {
-        foreach (var entry in Directory
-            .EnumerateFileSystemEntries(RepoPaths.SkillDocs)
-            .OrderBy(path => path, StringComparer.Ordinal))
-        {
-            if (IsResiduePath(entry))
-            {
-                continue;
-            }
+        var unexpected = UnexpectedDirectChild(RepoPaths.SkillDocs);
 
-            var name = Path.GetFileName(entry);
-
-            if (name == "SKILL.md" || (name == "references" && Directory.Exists(entry)))
-            {
-                continue;
-            }
-
-            Assert.Fail(
-                $"内容源里多了不该有的东西：{name} —— "
-                + "只允许「SKILL.md」与「references」目录。");
-        }
+        Assert.True(
+            unexpected is null,
+            $"内容源里多了不该有的东西：{unexpected} —— "
+            + "只允许「SKILL.md」与「references」目录。");
 
         foreach (var directory in Directory
             .EnumerateDirectories(RepoPaths.SkillReferences, "*", SearchOption.AllDirectories)
             .OrderBy(path => path, StringComparer.Ordinal))
         {
-            if (IsResiduePath(directory))
+            if (IsResiduePath(RepoPaths.SkillDocs, directory))
             {
                 continue;
             }
@@ -406,13 +404,60 @@ public sealed class SkillDocGuardTests
 
         foreach (var file in Directory
             .EnumerateFiles(RepoPaths.SkillReferences, "*", SearchOption.AllDirectories)
-            .Where(path => !IsResiduePath(path))
+            .Where(path => !IsResiduePath(RepoPaths.SkillDocs, path))
             .OrderBy(path => path, StringComparer.Ordinal))
         {
             Assert.True(
                 file.EndsWith(".md", StringComparison.Ordinal),
                 $"references/ 下只允许 .md：{Path.GetRelativePath(RepoPaths.Root, file)} —— "
                 + "命令层与契约副本都已经删掉了，references/ 是分发给 agent 的纯文档。");
+        }
+    }
+
+    /// <summary>
+    /// 只剩 <c>__pycache__</c> 的空壳目录：守卫放过；壳里再有别的东西：守卫红。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 样本用临时目录造（不碰真实的内容源）：先造一个「只含 <c>__pycache__</c> 的目录」，
+    /// 守卫必须绿；再往同一个目录里放一个真实文件，守卫必须红。
+    /// </para>
+    /// <para>
+    /// 这条守卫要挡的是「真内容混进内容源」，所以判据必须是<b>目录里装了什么</b> ——
+    /// 空壳与真内容在目录名上长得一模一样，只按名字判就会两头出错。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Residue_only_directory_is_tolerated_but_real_content_is_not()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var contentSource = Path.Combine(root, "skills", "idea-manager");
+            var scripts = Path.Combine(contentSource, "scripts");
+
+            Directory.CreateDirectory(Path.Combine(contentSource, "references"));
+            Directory.CreateDirectory(Path.Combine(scripts, "__pycache__"));
+            File.WriteAllText(Path.Combine(contentSource, "SKILL.md"), "# 索引页\n");
+            File.WriteAllText(
+                Path.Combine(scripts, "__pycache__", "idea.cpython-314.pyc"),
+                "旧命令行封装编译出来的字节码\n");
+
+            // 只含 __pycache__ 的空壳 → 放过（git 不会清理 gitignore 的目录，这是每个旧检出的常态）
+            Assert.Null(UnexpectedDirectChild(contentSource));
+
+            // 同一个目录里放一个真实文件 → 真内容混进来了 → 红
+            File.WriteAllText(Path.Combine(scripts, "idea.py"), "print('旧命令行封装')\n");
+
+            Assert.Equal("scripts", UnexpectedDirectChild(contentSource));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
         }
     }
 
@@ -738,12 +783,97 @@ public sealed class SkillDocGuardTests
     /// </remarks>
     private static bool HasExcludedSegment(string path)
     {
-        return SegmentsOf(path).Any(segment => segment == ExcludedDirectoryName);
+        return SegmentsOf(RepoPaths.SkillDocs, path).Any(segment => segment == ExcludedDirectoryName);
+    }
+
+    /// <summary>
+    /// 内容源里那个「不该有的直接子项」的名字；一个都没有就 <c>null</c>。
+    /// </summary>
+    /// <param name="contentSource">内容源根目录。</param>
+    /// <remarks>
+    /// <para>
+    /// 直接子项只允许 <c>SKILL.md</c> 与 <c>references/</c>；此外还有两类放过：
+    /// 本身就是残留的（点开头的目录/文件、<c>__pycache__</c> 段、系统垃圾文件），
+    /// 以及<b>只剩残留的空壳目录</b>（见 <see cref="IsResidueOnlyDirectory"/>）。
+    /// </para>
+    /// <para>
+    /// 返回 offending 的名字而不是就地断言，是为了能拿临时目录当样本测这条判据
+    /// （见 <see cref="Residue_only_directory_is_tolerated_but_real_content_is_not"/>）。
+    /// </para>
+    /// </remarks>
+    private static string? UnexpectedDirectChild(string contentSource)
+    {
+        foreach (var entry in Directory
+            .EnumerateFileSystemEntries(contentSource)
+            .OrderBy(path => path, StringComparer.Ordinal))
+        {
+            if (IsResiduePath(contentSource, entry))
+            {
+                continue;
+            }
+
+            var name = Path.GetFileName(entry);
+
+            if (name == "SKILL.md" || (name == "references" && Directory.Exists(entry)))
+            {
+                continue;
+            }
+
+            // 旧检出留下的空壳目录：里面除了 __pycache__ 之类什么都没有 → 放过。
+            if (Directory.Exists(entry) && IsResidueOnlyDirectory(contentSource, entry))
+            {
+                continue;
+            }
+
+            return name;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 这个目录是不是<b>除了残留之外什么都没有</b>（旧检出留下的空壳）。
+    /// </summary>
+    /// <param name="contentSource">内容源根目录（残留按相对于它算）。</param>
+    /// <param name="directory">要判的那个目录。</param>
+    /// <remarks>
+    /// <para>
+    /// 判据是「这个目录里除了 <c>__pycache__</c> 之外是不是空的」，
+    /// <b>不是</b>「这个目录名在不在白名单里」——
+    /// 白名单式的判据会漏掉各种叫法（<c>scripts/</c>、<c>tests/</c>、<c>notes/</c> …），
+    /// 而残留的空壳恰恰是「目录名无所谓、里面空不空才重要」。
+    /// </para>
+    /// <para>
+    /// <b>为什么放过</b>：旧命令行封装（<c>scripts/idea.py</c>、<c>tests/test_cli.py</c>）
+    /// 早删了，但它们旁边的 <c>__pycache__/</c> 命中 <c>.gitignore</c> ——
+    /// <b>git 合并不会清理被忽略的目录</b>，目录壳会一直留在工作区里。
+    /// 谁在这仓库跑过旧的端到端脚本，谁就有一份；这是每个旧检出的常态，
+    /// 不是谁改了内容源 —— 让它红只会被学会无视。
+    /// </para>
+    /// <para>
+    /// <b>但壳里还有别的东西就要红</b>：哪怕只剩一个 <c>.py</c>，那也是真内容
+    /// 混进了分发给 agent 的内容源 —— 那正是这条守卫要拦的东西。
+    /// </para>
+    /// </remarks>
+    private static bool IsResidueOnlyDirectory(string contentSource, string directory)
+    {
+        foreach (var entry in Directory
+            .EnumerateFileSystemEntries(directory, "*", SearchOption.AllDirectories))
+        {
+            if (!IsResiduePath(contentSource, entry))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
     /// 这条路径是不是「残留」—— 内容源里不该有、也不该让形状守卫红的东西。
     /// </summary>
+    /// <param name="contentSource">内容源根目录（判据按**相对于它**的路径算）。</param>
+    /// <param name="path">要判的那条路径。</param>
     /// <remarks>
     /// <para>
     /// 判据：<b>相对于内容源根</b>的路径里，有任何一段以点开头，或有 <c>__pycache__</c> 段。
@@ -758,15 +888,16 @@ public sealed class SkillDocGuardTests
     /// <para>
     /// <b>普通目录不放行</b>（<c>scripts/</c>、<c>tests/</c>、<c>notes/</c> 那些）：
     /// 那些是真该被红的东西 —— 守卫红一次，人就学会无视守卫。
+    /// （只含 <c>__pycache__</c> 的空壳目录是另一回事，见 <see cref="IsResidueOnlyDirectory"/>。）
     /// </para>
     /// <para>
     /// 必须按**相对路径**判：仓库自己就躺在 <c>.worktrees/</c> 里，
     /// 拿绝对路径判点开头会把整棵树都当成残留。
     /// </para>
     /// </remarks>
-    private static bool IsResiduePath(string path)
+    private static bool IsResiduePath(string contentSource, string path)
     {
-        var segments = SegmentsOf(path);
+        var segments = SegmentsOf(contentSource, path);
 
         // 不在内容源里的路径（相对路径带 ..）：不当残留处理 ——
         // 那样会被静默跳过，而这条判据说的是「内容源里的残留」。
@@ -782,9 +913,9 @@ public sealed class SkillDocGuardTests
     }
 
     /// <summary>路径相对内容源根之后的各段（相对路径，绕开仓库自己所在的 <c>.worktrees/</c>）。</summary>
-    private static string[] SegmentsOf(string path)
+    private static string[] SegmentsOf(string contentSource, string path)
     {
-        return Path.GetRelativePath(RepoPaths.SkillDocs, path)
+        return Path.GetRelativePath(contentSource, path)
             .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
