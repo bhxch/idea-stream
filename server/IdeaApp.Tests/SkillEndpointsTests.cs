@@ -474,6 +474,61 @@ public sealed class SkillEndpointsTests
     }
 
     /// <summary>
+    /// 超过大小上限的那一份：**不在清单里**，取它也回 404；正常的那一份照旧。
+    /// </summary>
+    /// <remarks>
+    /// 「多大算分发副本的一部分」只有一处定义（<c>SkillCatalog</c> 里的那条上限），
+    /// 清单枚举与取文件端点用的是同一条。两处各写一份时，漂动的方向是
+    /// 「清单里列着、取文件端点取不到」—— 取件器照清单逐个下载，拿到 404 就
+    /// 整次同步作废（临时目录删掉），agent 手上**一份手册都拿不到**
+    /// （不是「少一个文件」）。
+    /// </remarks>
+    [Fact]
+    public async Task A_file_over_the_size_limit_is_neither_listed_nor_served()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(directory, "SKILL.md"), "# 索引页\n");
+            await File.WriteAllTextAsync(Path.Combine(directory, "small.md"), "小的一份\n");
+            await File.WriteAllBytesAsync(
+                Path.Combine(directory, "big.md"),
+                new byte[(4 * 1024 * 1024) + 1]);
+
+            using var factory = new TestAppFactory(skillPath: directory);
+            using var client = factory.CreateClient();
+
+            // 清单里没有它：清单里永远不会出现取文件端点取不到的文件。
+            using var manifest = await client.GetAsync("/skill/idea-manager/version");
+            var manifestBody = await manifest.Content.ReadAsStringAsync();
+
+            Assert.DoesNotContain("big.md", manifestBody, StringComparison.Ordinal);
+
+            // 正常的那一份照旧在清单里。
+            Assert.Contains("small.md", manifestBody, StringComparison.Ordinal);
+
+            // 取超限的那一份 → 404（当「副本里没有这个文件」）。
+            using var response = await client.GetAsync("/skill/idea-manager/big.md");
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Equal("skill_file_not_found", ReadCode(await response.Content.ReadAsStringAsync()));
+
+            // 正常的那一份照旧取得到。
+            using var ok = await client.GetAsync("/skill/idea-manager/small.md");
+
+            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+            Assert.Equal("小的一份\n", await ok.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// 分发副本的路径没配（空串）→ 404 + <c>skill_not_distributed</c>，不是 500。
     /// </summary>
     /// <remarks>

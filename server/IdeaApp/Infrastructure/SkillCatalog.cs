@@ -15,8 +15,15 @@ namespace IdeaApp.Infrastructure;
 /// </para>
 ///
 /// <para>
-/// <b>哪些路径算分发副本的一部分，只有一处定义</b>（<see cref="IsDistributedPath"/>）：
-/// 枚举清单与取文件端点都用它。两个地方各写一份时迟早会漂移。
+/// <b>「什么算分发副本的一部分」只有一处定义</b>，两问都在这里：
+/// <list type="bullet">
+/// <item><b>哪些路径算</b>（<see cref="IsDistributedPath"/>）；</item>
+/// <item><b>多大算</b>（<see cref="IsDistributedSize"/>）。</item>
+/// </list>
+/// 枚举清单与取文件端点都用它们。两处各写一份时迟早会漂移 ——
+/// 清单里列着一份取文件端点取不到的文件，取件器照清单逐个下载、
+/// 拿到 404 → 整次同步作废 → agent 手上**一份手册都拿不到**
+/// （不是「少一个文件」）。
 /// </para>
 /// </summary>
 public sealed class SkillCatalog
@@ -26,6 +33,20 @@ public sealed class SkillCatalog
 
     /// <summary>开发侧的残留目录：不出现在清单里，也不该被分发出去。</summary>
     private const string ExcludedDirectoryName = "__pycache__";
+
+    /// <summary>
+    /// 分发副本里一份文件的大小上限（4 MiB）。
+    /// </summary>
+    /// <remarks>
+    /// 「多大算分发副本的一部分」与「哪些路径算」是同一个问题的两面，
+    /// 所以两者住在同一个地方（这个类）。
+    /// <para>
+    /// 分发副本里每份都是几十 KB 的文档，4 MiB 已经是宽得离谱的上限：
+    /// 超了的那一份**不该在分发副本里**，按「副本里没有这个文件」处理
+    /// （清单里不列它、取文件端点回 404）。
+    /// </para>
+    /// </remarks>
+    public const long MaxFileBytes = 4 * 1024 * 1024;
 
     /// <summary>UTF-8（不带 BOM）：版本串是**字节**的哈希，编码必须定死。</summary>
     private static readonly UTF8Encoding Utf8 = new(encoderShouldEmitUTF8Identifier: false);
@@ -142,12 +163,81 @@ public sealed class SkillCatalog
     /// <returns>解析成功且文件存在时为 true。</returns>
     /// <remarks>
     /// 拒绝的情形一律返回 false（不回错误、不抛异常）：绝对路径、含 <c>..</c> 段的路径、
-    /// 解析后跑到副本目录之外的路径、**不属于分发副本的路径**（见 <see cref="IsDistributedPath"/>），
+    /// 解析后跑到副本目录之外的路径、**不属于分发副本的路径或大小**
+    /// （见 <see cref="IsDistributedPath"/> 与 <see cref="IsDistributedSize"/>），
     /// 以及副本里根本没有的文件。
     /// </remarks>
     public bool TryResolveFile(string? relativePath, out string fullPath)
     {
         fullPath = string.Empty;
+
+        if (!TryResolveCandidate(relativePath, out var candidate))
+        {
+            return false;
+        }
+
+        // 超限的那一份**不在分发副本里**（与枚举清单同一条判据）：
+        // 清单里永远不会出现取文件端点取不到的文件。
+        if (!IsDistributedSizeOf(candidate))
+        {
+            return false;
+        }
+
+        fullPath = candidate;
+
+        return true;
+    }
+
+    /// <summary>
+    /// 这个相对路径是不是「副本里确实有、但超了大小上限」。
+    /// </summary>
+    /// <param name="relativePath">相对路径（用 <c>/</c> 分隔）。</param>
+    /// <param name="length">超限那份的实际大小（不是超限时是 0）。</param>
+    /// <returns>副本里有它、但它超了上限时为 true。</returns>
+    /// <remarks>
+    /// 给取文件端点把 404 的详情说清楚用：「副本里没有这个文件」与
+    /// 「副本里有，但它超了上限」是两回事 —— 后者要让人知道该去改哪一头
+    /// （把那份文件改小，或者从分发副本里拿掉）。
+    /// <para>
+    /// 解析与判定都复用同一处实现（<see cref="TryResolveCandidate"/> 与
+    /// <see cref="IsDistributedSize"/>）：规则只有一份，详情只是多问一句。
+    /// </para>
+    /// </remarks>
+    public bool IsOverSizeLimit(string? relativePath, out long length)
+    {
+        length = 0;
+
+        if (!TryResolveCandidate(relativePath, out var candidate))
+        {
+            return false;
+        }
+
+        var size = LengthOf(candidate);
+
+        if (size <= MaxFileBytes)
+        {
+            return false;
+        }
+
+        length = size;
+
+        return true;
+    }
+
+    /// <summary>
+    /// 把相对路径解析成副本里的绝对路径（<b>只管路径</b>，不管大小）。
+    /// </summary>
+    /// <param name="relativePath">相对路径（用 <c>/</c> 分隔）。</param>
+    /// <param name="candidate">解析成功时给出绝对路径，否则是空串。</param>
+    /// <returns>路径合法、落在副本目录之下、且副本里确实有这个文件时为 true。</returns>
+    /// <remarks>
+    /// 「路径」与「大小」是同一个问题的两面，但判据不同：
+    /// 解析只回答「这个路径是不是副本里的一个文件」，大小由
+    /// <see cref="IsDistributedSize"/> 单独回答。
+    /// </remarks>
+    private bool TryResolveCandidate(string? relativePath, out string candidate)
+    {
+        candidate = string.Empty;
 
         if (string.IsNullOrWhiteSpace(relativePath))
         {
@@ -182,11 +272,11 @@ public sealed class SkillCatalog
             return false;
         }
 
-        string candidate;
+        string resolved;
 
         try
         {
-            candidate = Path.GetFullPath(Path.Combine(Root, relativePath));
+            resolved = Path.GetFullPath(Path.Combine(Root, relativePath));
         }
         catch (ArgumentException)
         {
@@ -201,30 +291,36 @@ public sealed class SkillCatalog
         }
 
         // 双保险：解析之后必须还在副本目录之下。
-        if (!candidate.StartsWith(Root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        if (!resolved.StartsWith(Root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
         {
             return false;
         }
 
-        if (!File.Exists(candidate))
+        if (!File.Exists(resolved))
         {
             return false;
         }
 
-        fullPath = candidate;
+        candidate = resolved;
 
         return true;
     }
 
     /// <summary>
-    /// 递归枚举副本里的全部文件（跳过开发侧的残留目录），按相对路径升序。
+    /// 递归枚举副本里的全部文件（跳过开发侧的残留目录与超限的那一份），按相对路径升序。
     /// </summary>
+    /// <remarks>
+    /// <b>超限的那一份不进清单</b>：清单里永远不会出现取文件端点取不到的文件 ——
+    /// 取件器照清单逐个下载，拿到 404 就整次同步作废（agent 手上**一份手册都拿不到**，
+    /// 不是「少一个文件」）。
+    /// </remarks>
     private IEnumerable<(string RelativePath, string FullPath)> EnumerateFiles()
     {
         return Directory
             .EnumerateFiles(Root, "*", SearchOption.AllDirectories)
             .Select(path => (RelativePath: ToRelativePath(path), FullPath: path))
             .Where(file => IsDistributedPath(file.RelativePath))
+            .Where(file => IsDistributedSizeOf(file.FullPath))
             // 按路径升序：版本串与清单的顺序都取决于它，
             // 必须与取件器那侧一致（那边按字节序排）。
             .OrderBy(file => file.RelativePath, StringComparer.Ordinal);
@@ -234,7 +330,7 @@ public sealed class SkillCatalog
     /// 这个相对路径算不算「分发副本的一部分」。
     /// </summary>
     /// <remarks>
-    /// **枚举清单与取文件共用这一条规则**：同一个概念只许有一份定义。
+    /// <b>枚举清单与取文件共用这一条规则</b>：同一个概念只许有一份定义。
     /// 两处各写一份时，迟早会漂移 —— 清单里有而取文件端点取不到
     /// （agent 按索引页的路由表去取就 404），或者反过来（清单里没有、
     /// 取文件却给得出去）。
@@ -246,6 +342,38 @@ public sealed class SkillCatalog
     /// </remarks>
     private static bool IsDistributedPath(string relativePath) =>
         !relativePath.Split('/', '\\').Any(segment => segment == ExcludedDirectoryName);
+
+    /// <summary>这份文件的大小算不算「分发副本的一部分」（超上限就不算）。</summary>
+    /// <remarks>
+    /// 与 <see cref="IsDistributedPath"/> 是一对：「哪些路径算」与「多大算」合起来
+    /// 才是「什么算分发副本的一部分」。两问都只有一处定义（这里）。
+    /// </remarks>
+    public static bool IsDistributedSize(long length) => length <= MaxFileBytes;
+
+    /// <summary>这份文件（按大小）算不算分发副本的一部分；量不到大小就不算。</summary>
+    /// <remarks>
+    /// 量不到大小（枚举到它之后它刚好被删掉 / 权限被抽掉）时当「不在分发副本里」：
+    /// 那就是「副本里没有这个文件」，不是服务端故障。
+    /// </remarks>
+    private static bool IsDistributedSizeOf(string fullPath)
+    {
+        var length = LengthOf(fullPath);
+
+        return length >= 0 && IsDistributedSize(length);
+    }
+
+    /// <summary>这份文件的大小（字节）；量不到就是 -1。</summary>
+    private static long LengthOf(string fullPath)
+    {
+        try
+        {
+            return new FileInfo(fullPath).Length;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return -1;
+        }
+    }
 
     /// <summary>文件在副本里的相对路径（统一用 <c>/</c> 分隔）。</summary>
     private string ToRelativePath(string fullPath) =>

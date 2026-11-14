@@ -43,15 +43,15 @@ public static class SkillEndpoints
     /// 分发副本里一份文件的大小上限（4 MiB）。
     /// </summary>
     /// <remarks>
-    /// 取文件端点要把整个文件**读进内存** —— 那条路上没有闸门的话，
-    /// 一份超大文件就能把内存吃光。所以这里是**限长读**：
-    /// 最多读上限 + 1 字节，超了就不给（见 <see cref="ReadDistributedFile"/>）。
+    /// 定义在 <see cref="SkillCatalog"/> 那儿（「多大算分发副本的一部分」只有一处定义）：
+    /// 清单枚举与取文件端点用的是同一个上限。
     /// <para>
-    /// 分发副本里每份都是几十 KB 的文档，4 MiB 已经是宽得离谱的上限：
-    /// 超了的那一份**不该在分发副本里**，按「没有这个文件」处理。
+    /// 这道闸门是**兜底**：正常情况下超限的那一份根本不在清单里，
+    /// 取件器压根不会来要它（清单里有而取不到 → 整次同步作废 → agent 一份手册都拿不到）。
+    /// 它挡的是「清单生成之后文件才变大」那一种（TOCTOU）。
     /// </para>
     /// </remarks>
-    private const long MaxFileBytes = 4 * 1024 * 1024;
+    private const long MaxFileBytes = SkillCatalog.MaxFileBytes;
 
     public static IEndpointRouteBuilder MapSkillEndpoints(this IEndpointRouteBuilder app)
     {
@@ -85,6 +85,16 @@ public static class SkillEndpoints
 
                 if (!catalog.TryResolveFile(path, out var fullPath))
                 {
+                    // 「副本里没有这个文件」与「副本里有，但它超了上限」是两回事：
+                    // 后者要让人知道该去改哪一头（把那份文件改小，或从副本里拿掉）。
+                    if (catalog.IsOverSizeLimit(path, out var length))
+                    {
+                        throw new ApiException(
+                            404,
+                            "skill_file_not_found",
+                            TooLargeDetail(string.IsNullOrEmpty(path) ? fullPath : path, length));
+                    }
+
                     throw new ApiException(
                         404,
                         "skill_file_not_found",
