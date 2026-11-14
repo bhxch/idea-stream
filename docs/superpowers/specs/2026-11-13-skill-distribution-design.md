@@ -541,7 +541,7 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 | 守卫 | 断言 | 为什么 |
 |---|---|---|
 | 手册 ↔ 端点（双向） | 手册里出现的每个 `方法 /api/...` 必须在端点集合里；端点集合里每个端点必须在手册里被提到（索引页能力清单或 `references/api.md`） | 双向都堵死：既不让手册描述不存在的接口，也不让服务加了能力而手册没写 |
-| 错误码表 ↔ `ApiErrorCodes` | `references/errors.md` 两张表的并集 == `ApiErrorCodes.All` | 杀掉「错误码漂移」 |
+| 错误码表 ↔ `ApiErrorCodes` | `references/errors.md` 的**「## 服务端错误码」那张表**的 code 集合 == `ApiErrorCodes.All`（表二装的是取件器自己的码，不参与比对；`internal_error` 不在 `All` 里，在正文说明即可、不进表格行） | 杀掉「错误码漂移」 |
 | frontmatter 一致 | 薄壳的 frontmatter == 内容源 `SKILL.md` 的 frontmatter | 薄壳是 agent 侧唯一要维护的东西，description 不该悄悄过期 |
 | 薄壳正文无 API 路径 | 薄壳 `SKILL.md` 的 **frontmatter 之后的正文**里，不出现任何 `/api/...` 路径 | §8.5 的可执行版本 |
 | 契约不再有副本 | `skills/idea-manager/references/openapi.json` 不存在；内容源里没有第二份契约 | 防止有人又 `cp` 一份回来，重新制造漂移 |
