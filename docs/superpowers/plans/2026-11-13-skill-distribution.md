@@ -714,12 +714,16 @@ git commit -m "feat(api): webhook 的 url 与 headers 默认遮蔽回传
   排除 `/skill/**`；每个路径写全它的每个方法）。
 - `## 路由表`：五行的「要什么 → 读哪份」。
 - `## 最易错的坑`：六条 —
-  1. 覆盖式设标签是 `PUT /api/ideas/{id}/tags`；并集追加是 `POST /api/ideas/bulk/tags`。
-  2. `PATCH` 只发要改的字段：`null` = 不改；发空串 / 空数组会**真的清空**。
+  1. 覆盖式设标签是 `PUT /api/ideas/{id}/tags`；并集追加是 `POST /api/ideas/bulk/tags`
+     （但它给 `replace: true` 时也是覆盖式 —— `tags` 漏了就把标签清空）。
+  2. `PATCH` 只发要改的字段：`null` = 不改；空串 / 空数组**常常**是「真的清空」——
+     但想法的 `content` 与项目的 `name` 给空串是 400，项目的 `name` 还**必填**。
   3. `POST /api/webhooks` 必须给 body 模板；`scope=global` 不能带 `projectId`，
      `scope=project` 必须带一个存在的项目 id。
   4. `POST /api/ideas/merge` 会**硬删**源想法（不在回收站里）。
   5. webhook 的 url 与 headers 默认是**遮蔽版**，拿到的不是原值。
+  6. `done` **必填**（`POST /api/ideas/{id}/complete` 与 `POST /api/ideas/bulk/complete`）：
+     不给 = `false` = **取消完成**，服务端不报错。
 - `## 错误的最短约定`：4xx/5xx 回 ProblemDetails，带机器可读的 `code`；按 `code` 分支，别匹配 `detail` 文字。
 - `## 契约位置`：`/openapi/v1.json`（取法：`scripts/fetch.py /openapi/v1.json`）。
 
