@@ -6,22 +6,52 @@
 # （skills/idea-manager/）是两个东西 —— 软链内容源会把里面的索引页
 # 当成薄壳装过去，agent 手上就又握着一份会过期的副本。
 #
-# **目标目录是这个 skill 专用的**：装进去的应该只有薄壳的两个文件。
+# **目标目录必须是一个 skill 目录**：里面有 SKILL.md，或者目录名就叫
+# idea-manager。脚本要删的是「旧形状 skill 的确定残留」
+# （references/、tests/、scripts/idea.py……），而 references 与 tests
+# 是极常见的目录名 —— 对着家目录跑一遍脚本就会把它们删掉。
+# 所以：**先确认目标像 skill 目录，再删**；不像就只警告、不删。
+#
 # 旧的安装说明教的是 `cp -r skills/idea-manager ~/.zcode/skills/`，
 # 装出来正是同一个目录 —— 里面会剩下旧的 references/ 与旧的命令层脚本。
 # 留着它们，薄壳说的「本目录只有两个文件」当场不成立，agent 也可能直接
-# 去读那份过期手册（正是这套改造要消除的东西）。所以这里把**旧形状的
-# 确定残留**删掉；其它不认识的条目只警告、不删。
+# 去读那份过期手册（正是这套改造要消除的东西）。所以在 skill 目录里
+# 把**旧形状的确定残留**删掉；其它不认识的条目只警告、不删。
 #
 # 脚本自己不读也不写凭据：连接配置由 agent 运行时从环境变量读
 # （取件器的命令行不接受密码）。
 #
 # 用法：bash skills/install-agent-skill.sh [目标目录]
+#       bash skills/install-agent-skill.sh --help
 #       默认目标：~/.zcode/skills/idea-manager
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE="${ROOT}/skills/idea-manager-client"
+
+usage() {
+  cat <<'USAGE'
+用法：bash skills/install-agent-skill.sh [目标目录]
+
+  把 agent 侧的薄壳（SKILL.md + scripts/fetch.py）装到目标目录。
+
+  目标目录必须是一个 skill 目录：里面有 SKILL.md，或者目录名就叫 idea-manager。
+  不像 skill 目录时，脚本只警告，不会删掉里面的任何东西。
+
+  默认目标：~/.zcode/skills/idea-manager
+
+例子：
+  bash skills/install-agent-skill.sh
+  bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager
+USAGE
+}
+
+case "${1:-}" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+esac
 
 if [ "$#" -ge 1 ]; then
   TARGET="$1"
@@ -39,32 +69,63 @@ if [ ! -f "${SOURCE}/SKILL.md" ] || [ ! -f "${SOURCE}/scripts/fetch.py" ]; then
   exit 1
 fi
 
+# 目标像不像一个 skill 目录？
+#
+# **不像就只警告、不删**：要删的那几样（references/、tests/）是极常见的
+# 目录名，`bash skills/install-agent-skill.sh ~` 会把 ~/references 与 ~/tests
+# 删掉 —— 那是用户自己的东西，不是 skill 的残留。
+looks_like_skill_dir() {
+  if [ -f "${TARGET}/SKILL.md" ]; then
+    return 0
+  fi
+
+  if [ "$(basename "${TARGET}")" = "idea-manager" ]; then
+    return 0
+  fi
+
+  return 1
+}
+
+CLEAN_STALE=0
+if looks_like_skill_dir; then
+  CLEAN_STALE=1
+else
+  echo "警告：${TARGET} 不像是一个 skill 目录（没有 SKILL.md，目录名也不是 idea-manager）——" >&2
+  echo "      只覆盖 SKILL.md 与 scripts/fetch.py，**不清理**里面的任何东西。" >&2
+fi
+
+# 旧 skill 形状的确定残留：删掉。
+#
+# 只删这几种**认得出来**的旧形状 —— 它们一定是上一代 skill 留下的，
+# 留着只会让 agent 读到过期内容。别的条目不认得，就不乱动（只警告）。
+#
+# **清理在 mkdir 之前**：先把 "${TARGET}/scripts" 建出来、再按 skill 布局
+# 删它里面的东西，是把「本来不存在的东西」变成存在之后又去动它 ——
+# 顺序反过来才不会。
+if [ "$CLEAN_STALE" -eq 1 ]; then
+  remove_path() {
+    local path="$1"
+    if [ -d "$path" ] && [ ! -L "$path" ]; then
+      rm -rf "${path}"
+    elif [ -e "$path" ] || [ -L "$path" ]; then
+      rm -f "${path}"
+    fi
+  }
+
+  for stale in "references" "tests" "scripts/idea.py" "scripts/run-tests.sh"; do
+    if [ -e "${TARGET}/${stale}" ] || [ -L "${TARGET}/${stale}" ]; then
+      remove_path "${TARGET}/${stale}"
+      echo "清掉了旧 skill 的残留：${stale}"
+    fi
+  done
+fi
+
 mkdir -p "${TARGET}/scripts"
 
 # 幂等：目标目录已存在就覆盖这两个文件（目录里的其它东西不动）。
 cp "${SOURCE}/SKILL.md" "${TARGET}/SKILL.md"
 cp "${SOURCE}/scripts/fetch.py" "${TARGET}/scripts/fetch.py"
 chmod +x "${TARGET}/scripts/fetch.py"
-
-# 旧 skill 形状的确定残留：删掉。
-#
-# 只删这几种**认得出来**的旧形状 —— 它们一定是上一代 skill 留下的，
-# 留着只会让 agent 读到过期内容。别的条目不认得，就不乱动（只警告）。
-remove_path() {
-  local path="$1"
-  if [ -d "$path" ] && [ ! -L "$path" ]; then
-    rm -rf "${path}"
-  elif [ -e "$path" ] || [ -L "$path" ]; then
-    rm -f "${path}"
-  fi
-}
-
-for stale in "references" "tests" "scripts/idea.py" "scripts/run-tests.sh"; do
-  if [ -e "${TARGET}/${stale}" ] || [ -L "${TARGET}/${stale}" ]; then
-    remove_path "${TARGET}/${stale}"
-    echo "清掉了旧 skill 的残留：${stale}"
-  fi
-done
 
 # 不认识的条目：只警告，不删（可能是用户自己放的东西）。
 for entry in "${TARGET}"/* "${TARGET}"/.[!.]*; do
