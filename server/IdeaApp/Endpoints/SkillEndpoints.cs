@@ -43,11 +43,12 @@ public static class SkillEndpoints
     /// 分发副本里一份文件的大小上限（4 MiB）。
     /// </summary>
     /// <remarks>
-    /// 取文件端点会把整个文件**读进内存**（<c>File.ReadAllBytes</c>）——
-    /// 那条路上没有闸门的话，一份超大文件就能把内存吃光。
+    /// 取文件端点要把整个文件**读进内存** —— 那条路上没有闸门的话，
+    /// 一份超大文件就能把内存吃光。所以这里是**限长读**：
+    /// 最多读上限 + 1 字节，超了就不给（见 <see cref="ReadDistributedFile"/>）。
     /// <para>
     /// 分发副本里每份都是几十 KB 的文档，4 MiB 已经是宽得离谱的上限：
-    /// 超了的那一份**不该在分发副本里**，所以按「没有这个文件」处理。
+    /// 超了的那一份**不该在分发副本里**，按「没有这个文件」处理。
     /// </para>
     /// </remarks>
     private const long MaxFileBytes = 4 * 1024 * 1024;
@@ -145,8 +146,14 @@ public static class SkillEndpoints
     /// 「副本里没有这个文件」→ 404 <c>skill_file_not_found</c>。
     /// </para>
     /// <para>
-    /// <b>大小有闸门</b>：整个文件读进内存没有上限是不行的（见 <see cref="MaxFileBytes"/>）。
-    /// 超限的那一份按「副本里没有这个文件」处理 —— 分发副本里不该有这么大的一份。
+    /// <b>大小有闸门，而且是限长读</b>：整个文件读进内存没有上限是不行的
+    /// （见 <see cref="MaxFileBytes"/>）。这里最多读 <c>上限 + 1</c> 字节 ——
+    /// 超限的那一份**根本不会整个进内存**。
+    /// <para>
+    /// 早先这里是「先 <c>File.ReadAllBytes</c> 读完整份，再量一遍读回来的字节」——
+    /// 那道复量挡不住内存暴涨（整份已经读进内存了），只能把它变成 404。
+    /// 现在的做法是限长读：读到的比上限多就回 404。
+    /// </para>
     /// </para>
     /// </remarks>
     internal static byte[] ReadDistributedFile(string fullPath, string? path)
@@ -155,7 +162,7 @@ public static class SkillEndpoints
 
         try
         {
-            // 先看大小：闸门要在**读进内存之前**。
+            // 先看大小：能便宜地拒掉就拒掉（闸门要在**读进内存之前**）。
             var length = new FileInfo(fullPath).Length;
 
             if (length > MaxFileBytes)
@@ -166,19 +173,39 @@ public static class SkillEndpoints
                     TooLargeDetail(name, length));
             }
 
-            var bytes = File.ReadAllBytes(fullPath);
+            // **限长读**：最多读上限 + 1 字节。
+            // 多出来的那一个字节就是「超限」的证据 —— 文件可能在「看大小」与「读」之间
+            // 被换成了大的那份（TOCTOU 的另一半），而它不会被整个读进内存。
+            using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var buffer = new MemoryStream();
 
-            // 再量一遍**读回来的**字节：文件可能在「看大小」与「读」之间被换掉了
-            // （TOCTOU 的另一半）—— 换成了大的那份，也不能让它进内存。
-            if (bytes.LongLength > MaxFileBytes)
+            var chunk = new byte[81920];
+            var limit = MaxFileBytes + 1;
+            long total = 0;
+
+            while (total < limit)
+            {
+                var wanted = (int)Math.Min(chunk.Length, limit - total);
+                var read = stream.Read(chunk, 0, wanted);
+
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                buffer.Write(chunk, 0, read);
+                total += read;
+            }
+
+            if (total > MaxFileBytes)
             {
                 throw new ApiException(
                     404,
                     "skill_file_not_found",
-                    TooLargeDetail(name, bytes.LongLength));
+                    TooLargeDetail(name, total));
             }
 
-            return bytes;
+            return buffer.ToArray();
         }
         catch (ApiException)
         {
