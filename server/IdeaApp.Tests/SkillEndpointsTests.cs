@@ -2,6 +2,8 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using IdeaApp.Application;
+using IdeaApp.Endpoints;
 using Microsoft.AspNetCore.Http;
 
 namespace IdeaApp.Tests;
@@ -125,6 +127,158 @@ public sealed class SkillEndpointsTests
             Assert.Equal(
                 "text/plain; charset=utf-8",
                 await ContentTypeOfAsync(client, "/skill/idea-manager/b.txt"));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// 文件读不到（存在性检查之后被删 / 被换 / 被别的进程占着）→ 404，不是 500。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 存在性检查与读取之间**有缝**（TOCTOU）：早先这里是裸的
+    /// <c>File.ReadAllBytes</c>，读失败抛 <c>IOException</c> → 500
+    /// <c>internal_error</c>。而「读不到」对调用方来说就是「副本里没有这个文件」。
+    /// </para>
+    /// <para>
+    /// 这里用<b>独占打开</b>把文件占住：另一个进程（或另一个句柄）读它会失败 ——
+    /// 这正是「存在但读不到」最现实的形状。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task File_endpoint_returns_404_when_the_file_cannot_be_read()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            var path = Path.Combine(directory, "locked.md");
+            await File.WriteAllTextAsync(path, "# 占着的\n");
+
+            using var factory = new TestAppFactory(skillPath: directory);
+            using var client = factory.CreateClient();
+
+            // 占住它：独占打开，别人的读会失败。
+            using var holder = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            using var response = await client.GetAsync("/skill/idea-manager/locked.md");
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal("skill_file_not_found", ReadCode(body));
+            Assert.DoesNotContain("internal_error", body, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// 超过大小上限的那一份 → 404 <c>skill_file_not_found</c>，不是 500。
+    /// </summary>
+    /// <remarks>
+    /// 取文件端点把整个文件**读进内存**，那条路上没有闸门的话，
+    /// 一份超大文件就能把内存吃光。分发副本里每份都是几十 KB 的文档 ——
+    /// 超了的那一份不该在分发副本里。
+    /// </remarks>
+    [Fact]
+    public async Task File_endpoint_returns_404_for_a_file_over_the_size_limit()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(directory, "SKILL.md"), "# 索引页\n");
+            await File.WriteAllBytesAsync(
+                Path.Combine(directory, "big.md"),
+                new byte[(4 * 1024 * 1024) + 1]);
+
+            using var factory = new TestAppFactory(skillPath: directory);
+            using var client = factory.CreateClient();
+
+            using var response = await client.GetAsync("/skill/idea-manager/big.md");
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal("skill_file_not_found", ReadCode(body));
+            Assert.DoesNotContain("internal_error", body, StringComparison.Ordinal);
+            // 详情要说明白「超了上限」—— 那一份不该有这么大。
+            // （读的是**解析后**的 detail：响应体里的中文是 JSON 转义过的。）
+            Assert.Contains("大小上限", ReadDetail(body), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// 读一个已经不存在的文件 → 404 <c>skill_file_not_found</c>（不是 IO 异常冒出去）。
+    /// </summary>
+    /// <remarks>
+    /// 这是端点上那个缝（TOCTOU）最直接的形状：存在性检查时它还在，
+    /// 读取时它没了。读失败要变成 404 <c>skill_file_not_found</c>，
+    /// 而不是让 <c>IOException</c> 冒到框架里变成 500 <c>internal_error</c>。
+    /// </remarks>
+    [Fact]
+    public void Reading_a_file_that_disappeared_raises_404_not_an_io_error()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            var path = Path.Combine(directory, "gone.md");
+            File.WriteAllText(path, "# 刚才还在\n");
+
+            File.Delete(path);
+
+            var failure = Assert.Throws<ApiException>(
+                () => SkillEndpoints.ReadDistributedFile(path, "gone.md"));
+
+            Assert.Equal(404, failure.Status);
+            Assert.Equal("skill_file_not_found", failure.Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// 读一个超过大小上限的文件 → 404 <c>skill_file_not_found</c>。
+    /// </summary>
+    [Fact]
+    public void Reading_a_file_over_the_size_limit_raises_404()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            var path = Path.Combine(directory, "big.md");
+            File.WriteAllBytes(path, new byte[(4 * 1024 * 1024) + 1]);
+
+            var failure = Assert.Throws<ApiException>(
+                () => SkillEndpoints.ReadDistributedFile(path, "big.md"));
+
+            Assert.Equal(404, failure.Status);
+            Assert.Equal("skill_file_not_found", failure.Code);
+            Assert.Contains("大小上限", failure.Detail, StringComparison.Ordinal);
         }
         finally
         {
@@ -494,6 +648,14 @@ public sealed class SkillEndpointsTests
         using var document = JsonDocument.Parse(body);
 
         return document.RootElement.GetProperty("code").GetString()!;
+    }
+
+    /// <summary>读错误响应里给人看的说明（解析后的值：原串里的中文是 JSON 转义过的）。</summary>
+    private static string ReadDetail(string body)
+    {
+        using var document = JsonDocument.Parse(body);
+
+        return document.RootElement.GetProperty("detail").GetString() ?? string.Empty;
     }
 
     /// <summary>读 TestServer 直接回的那个上下文里的响应体。</summary>

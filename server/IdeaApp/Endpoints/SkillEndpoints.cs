@@ -39,6 +39,19 @@ namespace IdeaApp.Endpoints;
 /// </summary>
 public static class SkillEndpoints
 {
+    /// <summary>
+    /// 分发副本里一份文件的大小上限（4 MiB）。
+    /// </summary>
+    /// <remarks>
+    /// 取文件端点会把整个文件**读进内存**（<c>File.ReadAllBytes</c>）——
+    /// 那条路上没有闸门的话，一份超大文件就能把内存吃光。
+    /// <para>
+    /// 分发副本里每份都是几十 KB 的文档，4 MiB 已经是宽得离谱的上限：
+    /// 超了的那一份**不该在分发副本里**，所以按「没有这个文件」处理。
+    /// </para>
+    /// </remarks>
+    private const long MaxFileBytes = 4 * 1024 * 1024;
+
     public static IEndpointRouteBuilder MapSkillEndpoints(this IEndpointRouteBuilder app)
     {
         // 清单：版本 + 入口 + 逐个文件的哈希与大小。
@@ -79,7 +92,7 @@ public static class SkillEndpoints
                             : $"分发副本里没有这个文件：{path}");
                 }
 
-                return Results.File(File.ReadAllBytes(fullPath), ContentTypeOf(fullPath));
+                return Results.File(ReadDistributedFile(fullPath, path), ContentTypeOf(fullPath));
             }))
             // 内容类型按扩展名给（markdown / json / 纯文本），
             // 契约里要写出来 —— 只写 .Produces<string>(200) 的话框架会默认成
@@ -117,4 +130,73 @@ public static class SkillEndpoints
             ".json" => "application/json; charset=utf-8",
             _ => "text/plain; charset=utf-8"
         };
+
+    /// <summary>
+    /// 读分发副本里的一份文件；读不到就是 404，不是 500。
+    /// </summary>
+    /// <param name="fullPath">副本里的绝对路径（已经过 <c>TryResolveFile</c> 的把关）。</param>
+    /// <param name="path">请求里的相对路径（进错误详情用）。</param>
+    /// <remarks>
+    /// <para>
+    /// <b>存在性检查与读取之间有缝</b>（TOCTOU）：文件可能在这中间被删掉、
+    /// 被换掉、被换成一个读不了的东西（另一个进程占着它、权限被抽掉……）。
+    /// 早先这里是裸的 <c>File.ReadAllBytes</c>：读失败抛 <c>IOException</c> →
+    /// 500 <c>internal_error</c>。而「读不到」对调用方来说就是
+    /// 「副本里没有这个文件」→ 404 <c>skill_file_not_found</c>。
+    /// </para>
+    /// <para>
+    /// <b>大小有闸门</b>：整个文件读进内存没有上限是不行的（见 <see cref="MaxFileBytes"/>）。
+    /// 超限的那一份按「副本里没有这个文件」处理 —— 分发副本里不该有这么大的一份。
+    /// </para>
+    /// </remarks>
+    internal static byte[] ReadDistributedFile(string fullPath, string? path)
+    {
+        var name = string.IsNullOrEmpty(path) ? fullPath : path;
+
+        try
+        {
+            // 先看大小：闸门要在**读进内存之前**。
+            var length = new FileInfo(fullPath).Length;
+
+            if (length > MaxFileBytes)
+            {
+                throw new ApiException(
+                    404,
+                    "skill_file_not_found",
+                    TooLargeDetail(name, length));
+            }
+
+            var bytes = File.ReadAllBytes(fullPath);
+
+            // 再量一遍**读回来的**字节：文件可能在「看大小」与「读」之间被换掉了
+            // （TOCTOU 的另一半）—— 换成了大的那份，也不能让它进内存。
+            if (bytes.LongLength > MaxFileBytes)
+            {
+                throw new ApiException(
+                    404,
+                    "skill_file_not_found",
+                    TooLargeDetail(name, bytes.LongLength));
+            }
+
+            return bytes;
+        }
+        catch (ApiException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // 文件没了、读不了、被换成了别的东西：都是「副本里没有这个文件」。
+            // **不是 500** —— 500 说的是「服务端自己坏了」，而这里坏的是副本的内容。
+            throw new ApiException(
+                404,
+                "skill_file_not_found",
+                $"分发副本里的这个文件读不到了：{name}（在检查存在与读取之间被删掉、被换掉或被别的进程占着）。");
+        }
+    }
+
+    /// <summary>「文件超过分发副本的大小上限」那一句（进错误详情）。</summary>
+    private static string TooLargeDetail(string name, long length) =>
+        $"分发副本里的这个文件超过分发副本的大小上限（{MaxFileBytes / 1024 / 1024} MiB）："
+        + $"{name}（实际 {length} 字节）—— 分发副本里不该有这么大的一份。";
 }
