@@ -1328,5 +1328,57 @@ class ErrorCodeDocGuardTests(unittest.TestCase):
         self.assertRegex("http_404", module.HTTP_CODE_PATTERN.pattern)
 
 
+class UrlCredentialValueTests(unittest.TestCase):
+    """地址里带的凭据：**值级表**里有什么。
+
+    这一组是模块级的判定（脱敏表里有哪些值），不是端到端的请求 ——
+    地址里带 userinfo 的 URL 在这台机器上根本连不上（解析器把 ``user@host``
+    当成别的名字，198.18.0.0/15 那段黑洞里），所以「错误信息**只回显解码后
+    的密码本体**（不带 host）」这种形状没法让假服务端回出来，
+    只能直接喂给脱敏函数。
+
+    端到端那几种形状（``word@host``、整个 authority）在
+    :class:`FetchTest` 里各有一条。
+    """
+
+    def setUp(self):
+        self.module = fetcher_module()
+
+        # 环境从**干净**的环境变量起步：这台机器上的 IDEA_PASS 之类
+        # 不该渗进这些判定（它们会改变表的内容）。
+        self.saved = {}
+
+        for name in ("IDEA_BASE_URL", "IDEA_USER", "IDEA_PASS", "IDEA_TOKEN"):
+            self.saved[name] = os.environ.pop(name, None)
+
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        for name, value in self.saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def test_masks_the_decoded_password_body_on_its_own(self):
+        """错误信息里只有**解码后的密码本体**（不带 host）→ 也不许露出去。
+
+        urllib 现有的两种报错形状（``word@host``、整个 authority）都被
+        表里那几份盖住了，但只要有一处错误信息**只回显解码后的密码本体**
+        （``p@ss:word``），就漏 —— 值级表里必须**单独**有这一份：
+        替换是按整串做的，「user:p@ss:word」不在文本里就不会被替换掉。
+        """
+        os.environ["IDEA_BASE_URL"] = "http://user:p%40ss%3Aword@host"
+
+        # 这就是 stderr 上那一行的形状（code: detail，detail 段过了脱敏）。
+        line = "http_500: {}".format(
+            self.module._redact("服务端只回显了 p@ss:word")
+        )
+
+        self.assertNotIn("p@ss:word", line)
+        self.assertIn("***", line)
+
+
+
 if __name__ == "__main__":
     unittest.main()

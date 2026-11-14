@@ -365,6 +365,10 @@ def _url_credential_values() -> List[str]:
     * userinfo 本身（``user:password``）；
     * 密码原文；
     * **百分号解码后的**那份（urllib 会把 host 解码 —— 报错时露出来的是解码后的东西）；
+    * **解码后的密码本体**（``p@ss:word``）——
+      urllib 现有的两种报错形状（``word@host``、整个 authority）都被上面那几份盖住了，
+      但只要有一处错误信息**只回显解码后的密码本体**（不带 host），就漏 ——
+      所以它得单独有一份，不能靠「它是 decoded_userinfo 的子串」蒙对；
     * urllib 把**整个 authority** 当 host 用，http.client 报错时会把
       「最后一个冒号之后的那截」原样说出来（实测：
       ``http://user:p%40ss%3Aword@host`` 报的是 ``nonnumeric port: 'word@host'``）——
@@ -390,6 +394,12 @@ def _url_credential_values() -> List[str]:
     decoded_userinfo = urllib.parse.unquote(userinfo)
     values.append(decoded_userinfo)
     values.append(urllib.parse.unquote(authority))
+
+    # **解码后的密码本体**：单独一份，不带 host。
+    decoded_password = urllib.parse.unquote(password)
+
+    if decoded_password:
+        values.append(decoded_password)
 
     # 片段（连主机名）：http.client 把「最后一个冒号之后的那截」原样说出来。
     host = authority[authority.rfind("@") + 1:]
