@@ -1570,7 +1570,7 @@
             }
           },
           "404": {
-            "description": "请求失败（404）。响应体是 RFC 9457 的 ProblemDetails：扩展字段 code 是稳定的机器可读错误码，detail 是给人看的说明。该状态码下的 code 取值全集见 components.schemas.ProblemDetails。",
+            "description": "请求失败（404）。响应体是 RFC 9457 的 ProblemDetails：扩展字段 code 是稳定的机器可读错误码，detail 是给人看的说明。本端点可能出现的 code：skill_file_not_found（分发副本里没有这个文件（编码形态的路径穿越也走这里））、skill_not_distributed（服务端没有分发 skill 内容（分发副本的路径没配、目录不存在或缺少入口文件））。",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1599,7 +1599,7 @@
         ],
         "responses": {
           "404": {
-            "description": "请求失败（404）。响应体是 RFC 9457 的 ProblemDetails：扩展字段 code 是稳定的机器可读错误码，detail 是给人看的说明。该状态码下的 code 取值全集见 components.schemas.ProblemDetails。",
+            "description": "请求失败（404）。响应体是 RFC 9457 的 ProblemDetails：扩展字段 code 是稳定的机器可读错误码，detail 是给人看的说明。本端点可能出现的 code：skill_endpoint_not_found（/skill 下的路径没有对应端点（拼错了 skill 名或路径））。",
             "content": {
               "application/problem+json": {
                 "schema": {

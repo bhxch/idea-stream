@@ -96,7 +96,7 @@ public sealed class OpenApiProblemTransformer : IOpenApiDocumentTransformer
                     continue;
                 }
 
-                var key = (method.Method.ToUpperInvariant(), path);
+                var key = (method.Method.ToUpperInvariant(), NormalizeRouteTemplate(path));
                 var declared = endpoints.TryGetValue(key, out var found)
                     ? found
                     : Array.Empty<ApiProblemMetadata>();
@@ -131,6 +131,13 @@ public sealed class OpenApiProblemTransformer : IOpenApiDocumentTransformer
     /// 用 ApiExplorer 的 ApiDescription 反查端点元数据：文档里的路径就是
     /// 路由模板（<c>/api/projects/{id}</c>），与 ApiDescription 的
     /// <c>RelativePath</c>（前面少一个斜杠）对得上。
+    /// <para>
+    /// **catch-all 的路由模板要归一化**：路由写的是 <c>{**path}</c>（吞掉剩余路径段），
+    /// 而文档里的键是 <c>{path}</c>（生成器把两个星号去掉了）。
+    /// 不归一化就查不到 —— 端点明明声明了错误码，契约里却写着
+    /// 「该状态码下的 code 取值全集见 components.schemas.ProblemDetails」，
+    /// 契约是给 agent 当手册用的，这句退化的话没有手册价值。
+    /// </para>
     /// </remarks>
     private static Dictionary<(string Method, string Path), IReadOnlyList<ApiProblemMetadata>> EndpointProblems(
         IServiceProvider services)
@@ -159,12 +166,23 @@ public sealed class OpenApiProblemTransformer : IOpenApiDocumentTransformer
                 var method = (api.HttpMethod ?? "GET").ToUpperInvariant();
                 var path = "/" + (api.RelativePath ?? string.Empty).TrimStart('/');
 
-                map[(method, path)] = problems;
+                map[(method, NormalizeRouteTemplate(path))] = problems;
             }
         }
 
         return map;
     }
+
+    /// <summary>
+    /// 路由模板归一化：catch-all 的 <c>{**x}</c> 写成 <c>{x}</c>。
+    /// </summary>
+    /// <remarks>
+    /// 路由模板里 catch-all 写成 <c>{**path}</c>（两个星号 = 吞掉剩余的路径段），
+    /// 而 OpenAPI 生成器写进文档的键是 <c>{path}</c>。两边对不上就查不到端点
+    /// 声明的错误码 —— 契约里那条响应就退化成一句没用的「见 ProblemDetails」。
+    /// </remarks>
+    private static string NormalizeRouteTemplate(string path) =>
+        path.Replace("{**", "{", StringComparison.Ordinal);
 
     /// <summary>响应是不是错误响应（内容类型是 application/problem+json）。</summary>
     private static bool IsProblemResponse(IOpenApiResponse response) =>
