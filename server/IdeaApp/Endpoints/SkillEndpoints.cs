@@ -83,6 +83,18 @@ public static class SkillEndpoints
                         catalog.NotDistributedDetail);
                 }
 
+                // 空路径先收掉：它压根不是一个「文件」——
+                // 下面那两条（取不到 / 超了上限）都不适用于它。
+                // 与其让它们各自判一次「path 是不是空的」（判出来也必然是假），
+                // 不如在这里一次说清。
+                if (string.IsNullOrEmpty(path))
+                {
+                    throw new ApiException(
+                        404,
+                        "skill_file_not_found",
+                        "分发副本里没有这个文件：路径是空的。");
+                }
+
                 if (!catalog.TryResolveFile(path, out var fullPath))
                 {
                     // 「副本里没有这个文件」与「副本里有，但它超了上限」是两回事：
@@ -92,15 +104,13 @@ public static class SkillEndpoints
                         throw new ApiException(
                             404,
                             "skill_file_not_found",
-                            TooLargeDetail(string.IsNullOrEmpty(path) ? fullPath : path, length));
+                            TooLargeDetail(path, length));
                     }
 
                     throw new ApiException(
                         404,
                         "skill_file_not_found",
-                        string.IsNullOrEmpty(path)
-                            ? "分发副本里没有这个文件：路径是空的。"
-                            : $"分发副本里没有这个文件：{path}");
+                        $"分发副本里没有这个文件：{path}");
                 }
 
                 return Results.File(ReadDistributedFile(fullPath, path), ContentTypeOf(fullPath));

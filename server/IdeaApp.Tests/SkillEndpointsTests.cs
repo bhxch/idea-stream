@@ -232,9 +232,9 @@ public sealed class SkillEndpointsTests
     /// 超过大小上限的那一份 → 404 <c>skill_file_not_found</c>，不是 500。
     /// </summary>
     /// <remarks>
-    /// 取文件端点把整个文件**读进内存**，那条路上没有闸门的话，
-    /// 一份超大文件就能把内存吃光。分发副本里每份都是几十 KB 的文档 ——
-    /// 超了的那一份不该在分发副本里。
+    /// 取文件端点是**限长读**：最多读「上限 + 1」字节，
+    /// 超限的那一份**根本不会整个进内存** —— 一份超大文件吃不光内存。
+    /// 分发副本里每份都是几十 KB 的文档 —— 超了的那一份不该在分发副本里。
     /// </remarks>
     [Fact]
     public async Task File_endpoint_returns_404_for_a_file_over_the_size_limit()
