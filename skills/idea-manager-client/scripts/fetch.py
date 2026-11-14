@@ -1305,7 +1305,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         # 降级：先确认缓存里有没有要取的东西。
         # 取不到 → 只打那一行**错误**（把「本次是离线降级」写进 detail），
-        # 不再另打一行 warning —— 错误输出只该有一行。
+        # 不再另打一行 `degraded_cache:` 提示 —— 错误输出只该有一行。
         try:
             target = resolve_target(manifest, args.path)
         except CliError as exc:
