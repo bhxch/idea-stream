@@ -420,9 +420,31 @@ export interface E2EFixtures {
   api: IdeaApi;
   /** 造数据的便捷函数。 */
   seed: Seed;
+  /** 自动夹具：每个用例开始前复位。类型上只占位，用例里拿不到它。 */
+  resetBeforeEach: void;
 }
 
 export const test = base.extend<E2EFixtures>({
+  /**
+   * 每个用例开始前复位一次。
+   *
+   * 放在夹具定义里而不是让每个用例自己调 —— 「忘了复位」是顺序相关用例的
+   * 常见来源，复位这件事不该由写用例的人记着。
+   *
+   * ⚠️ 必须是**自动夹具**（`{ auto: true }`），不能写成顶层
+   * `test.beforeEach(...)`：顶层钩子会挂到「模块体首次求值时正在加载的那个
+   * spec 文件」的套件上，而 fixtures.ts 被 ESM 缓存、每个 worker 只求值一次 ——
+   * 于是同一轮里只有**第一个** spec 文件拿得到复位，后面的文件全都没有，
+   * 脏数据在用例之间串味（表现是「单独跑这个文件全过、全量跑就红」）。
+   * 自动夹具挂在夹具定义上，对**每一个**用到这个 test 的用例都生效。
+   */
+  resetBeforeEach: [
+    async ({ api }, use) => {
+      await api.reset();
+      await use();
+    },
+    { auto: true },
+  ],
   api: async ({ request }, use) => {
     await use(new IdeaApi(request));
   },
@@ -457,16 +479,6 @@ export const test = base.extend<E2EFixtures>({
       webhook: (options = {}) => api.createWebhook(options),
     });
   },
-});
-
-/**
- * 每个用例开始前复位一次。
- *
- * 放在这里而不是让每个用例自己调 —— 「忘了复位」是顺序相关用例的常见来源，
- * 复位这件事不该由写用例的人记着。
- */
-test.beforeEach(async ({ api }) => {
-  await api.reset();
 });
 
 /**

@@ -11,40 +11,11 @@
  * - 选择器优先 role / 文本 / label，其次是应用**已有**的钩子
  *   （data-idea-id、aria-label="选择 …" 等）——应用里一个 data-testid 都没有。
  */
-import { test, expect, INBOX_ID } from './fixtures';
+import { test, expect } from './fixtures';
 import type { Locator, Page } from '@playwright/test';
 
-// ── 复位兜底 ─────────────────────────────────────────────────────────────
-
-/**
- * 每个用例开始前，保证库是干净的（活动想法 0 条、只有「收件箱」、排序设置回默认）。
- *
- * 为什么要自己兜一层：公共夹具（web/e2e/fixtures.ts）里那个复位钩子是写在
- * **夹具模块**里的 `test.beforeEach(...)`。Playwright 把钩子挂在「模块体执行时
- * 正在加载的那个 spec 文件」的套件上，而模块体在一个进程里只跑一次 ——
- * 于是同一次 `playwright test` 里，**排在第二个及以后的 spec 文件拿不到那个钩子**
- * （本文件排在 web/e2e/fixtures.spec.ts 后面时就是这种情况）。
- * 少了复位，上一个用例留下的想法会一直在列表里：本文件的
- * 「编辑想法」用例会看到两条想法，`expect(ideas).toHaveLength(1)` 就红了。
- *
- * 夹具的钩子跑过的时候库已经是干净的，这里就不再重复复位：复位要把回收站里的
- * 残渣恢复一遍再清掉，项目一多就很慢（每个用例白等几百毫秒到几秒）。
- */
-test.beforeEach(async ({ api }) => {
-  const [ideas, projects, settings] = await Promise.all([
-    api.listIdeas(),
-    api.listProjects(),
-    api.getSettings(),
-  ]);
-  const clean =
-    ideas.length === 0 &&
-    projects.length === 1 &&
-    projects[0].id === INBOX_ID &&
-    settings['project.sort_mode'] === 'recent';
-  if (!clean) {
-    await api.reset();
-  }
-});
+// 复位由公共夹具的自动夹具统一负责（见 web/e2e/fixtures.ts 的 resetBeforeEach）：
+// 每个用例开始前都会复位，用例之间互不依赖。
 
 // ── 定位辅助 ─────────────────────────────────────────────────────────────
 

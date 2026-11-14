@@ -11,40 +11,14 @@
  * - 不用固定时长等待，一律等状态（toBeVisible / toHaveCount / toHaveText）；
  * - 选择器优先 role + 可访问名，其次是可见文字。
  */
-import { test, expect, INBOX_ID } from './fixtures';
+import { test, expect } from './fixtures';
 import type { Locator, Page } from '@playwright/test';
 
 /** localStorage 里存 AND/OR 偏好的键（见 useTagMode.ts:10）。 */
 const STORAGE_KEY = 'idea.tagMode';
 
-// ── 复位兜底 ─────────────────────────────────────────────────────────────
-
-/**
- * 每个用例开始前，保证库是干净的（活动想法 0 条、只有「收件箱」、排序设置回默认）。
- *
- * 为什么要自己兜一层：公共夹具（web/e2e/fixtures.ts）里那个复位钩子是写在
- * **夹具模块**里的 `test.beforeEach(...)`。Playwright 把钩子挂在「模块体执行时
- * 正在加载的那个 spec 文件」的套件上，而模块体在一个进程里只跑一次 ——
- * 于是同一次 `playwright test` 里，**排在第二个及以后的 spec 文件拿不到那个钩子**。
- *
- * 夹具的钩子跑过的时候库已经是干净的，这里就不重复复位（复位要恢复回收站再清一遍，
- * 项目一多就很慢）。
- */
-test.beforeEach(async ({ api }) => {
-  const [ideas, projects, settings] = await Promise.all([
-    api.listIdeas(),
-    api.listProjects(),
-    api.getSettings(),
-  ]);
-  const clean =
-    ideas.length === 0 &&
-    projects.length === 1 &&
-    projects[0].id === INBOX_ID &&
-    settings['project.sort_mode'] === 'recent';
-  if (!clean) {
-    await api.reset();
-  }
-});
+// 复位由公共夹具的自动夹具统一负责（见 web/e2e/fixtures.ts 的 resetBeforeEach）：
+// 每个用例开始前都会复位，用例之间互不依赖。
 
 // ── 定位辅助 ─────────────────────────────────────────────────────────────
 

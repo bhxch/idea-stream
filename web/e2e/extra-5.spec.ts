@@ -23,20 +23,8 @@ import type { Page } from '@playwright/test';
 
 import { test, expect } from './fixtures';
 
-/**
- * 本文件**自己**再复位一次。
- *
- * 夹具里的 `test.beforeEach`（web/e2e/fixtures.ts:468）挂在了「模块首次求值时
- * 正在加载的那个文件」上：Playwright 的 `test.beforeEach` 会注册到
- * `currentlyLoadingFileSuite()`（node_modules/playwright/lib/common/index.js:2233），
- * 而 `fixtures.ts` 被 ESM 缓存、每轮只求值一次 —— 所以一轮里**只有字母序第一个
- * spec 文件**拿得到那个复位钩子，后面的文件全都没有复位。
- *
- * 显式复位让本文件不依赖加载顺序（复位是幂等的，重复复位只是多几个请求）。
- */
-test.beforeEach(async ({ api }) => {
-  await api.reset();
-});
+// 复位由公共夹具的自动夹具统一负责（见 web/e2e/fixtures.ts 的 resetBeforeEach）：
+// 每个用例开始前都会复位，用例之间互不依赖。
 
 // ── 本地投递接收端 ────────────────────────────────────────────────────
 

@@ -29,31 +29,8 @@ import type { Locator, Page } from '@playwright/test';
 
 import { test, expect, type IdeaApi } from './fixtures';
 
-// ── 复位兜底 ─────────────────────────────────────────────────────────────
-
-/**
- * 每个用例开始前，保证库里没有残留的 webhook。
- *
- * 为什么要自己兜一层：公共夹具（web/e2e/fixtures.ts）里那个复位钩子写在
- * **夹具模块**里。Playwright 把顶层 `test.beforeEach` 挂在「模块体执行时正在加载的
- * 那个 spec 文件」的套件上，而模块体在一个进程里只跑一次 —— 于是同一次
- * `playwright test` 里，排在第二个及以后的 spec 文件拿不到那个钩子。
- * （夹具的钩子跑过的时候库已经是干净的，所以这里先查、脏了才复位。）
- */
-test.beforeEach(async ({ api }) => {
-  let dirty = (await api.listWebhooks()).length > 0;
-  if (!dirty) {
-    for (const project of await api.listProjects()) {
-      if ((await api.listWebhooks(project.id)).length > 0) {
-        dirty = true;
-        break;
-      }
-    }
-  }
-  if (dirty) {
-    await api.reset();
-  }
-});
+// 复位由公共夹具的自动夹具统一负责（见 web/e2e/fixtures.ts 的 resetBeforeEach）：
+// 每个用例开始前都会复位，用例之间互不依赖。
 
 // ── 定位辅助 ─────────────────────────────────────────────────────────────
 
