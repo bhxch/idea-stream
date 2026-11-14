@@ -589,10 +589,7 @@ public sealed class SkillDocGuardTests
         // 前向：索引页提到的每条路径都得存在。
         // **不限 .md 结尾**：提到什么路径，那个路径就得在 ——
         // references/api.md.bak 这种指向非 md 文件的悬空指针也要看得见。
-        var dangling = MentionedPaths(text)
-            .Where(mention => !docs.Any(doc => string.Equals(doc, mention, StringComparison.OrdinalIgnoreCase)))
-            .OrderBy(path => path, StringComparer.Ordinal)
-            .ToArray();
+        var dangling = DanglingPaths(text, docs);
 
         Assert.True(
             dangling.Length == 0 && unmentioned.Length == 0,
@@ -600,6 +597,67 @@ public sealed class SkillDocGuardTests
             + (dangling.Length > 0 ? $"索引页提到的 {string.Join("、", dangling)} 不在那儿（指针悬空）；" : string.Empty)
             + (unmentioned.Length > 0 ? $"{string.Join("、", unmentioned)} 没被索引页提到。" : string.Empty)
             + "索引页是 agent 取细节的指引，两边必须一一对应。");
+    }
+
+    /// <summary>
+    /// 索引页提到、但 <c>references/</c> 下并没有的路径（**悬空指针**）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 「提到什么路径，那个路径就得在」—— 不限 .md 结尾：
+    /// 指向非 md 文件的指针（<c>references/api.md.bak</c>）与
+    /// 指向**无扩展名**文件的指针（<c>references/foo.</c>）都得看得见。
+    /// </para>
+    /// <para>
+    /// 比较不分大小写 —— 与前向抽取、与枚举口径一致。
+    /// </para>
+    /// </remarks>
+    private static string[] DanglingPaths(string text, IEnumerable<string> docs) =>
+        MentionedPaths(text)
+            .Where(mention => !docs.Any(doc => string.Equals(doc, mention, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+
+    /// <summary>
+    /// 指向**无扩展名文件**的悬空指针也得看得见。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 「见 references/foo.」里的那个句点**不是**散文里的句号 ——
+    /// 句号前没有别的点，削掉它就变成「references/foo」（没有扩展名），
+    /// 于是被「像个文件路径」那道判据放过去 → 指针**从看得见变成看不见**。
+    /// </para>
+    /// <para>
+    /// 正确做法：那个句点**不削**（削完就没有扩展名了）→
+    /// 它还带着点 → 抽得出 → 「路径必须真实存在」判它悬空 → 红。
+    /// </para>
+    /// <para>
+    /// 而「见 references/api.md.」削掉句末句点后**还有扩展名** →
+    /// 削 → 抽出 references/api.md → 它确实在 → 不判悬空。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_pointer_to_a_file_without_an_extension_is_still_visible()
+    {
+        var docs = ReferenceDocs();
+
+        // 句点前没有别的点：那个句点是路径的一部分，不是散文里的句号 ——
+        // 不削 → 抽得出 → references/ 下没有它 → 悬空（红）。
+        Assert.Equal(
+            "references/foo.",
+            FirstMentionedPath("见 references/foo."));
+        Assert.Contains(
+            "references/foo.",
+            DanglingPaths("见 references/foo.", docs));
+
+        // 句点前还有别的点（api.md）：削掉句末句点 → 抽出 references/api.md →
+        // 它确实在 → 不判悬空。
+        Assert.Equal(
+            "references/api.md",
+            FirstMentionedPath("见 references/api.md."));
+        Assert.DoesNotContain(
+            "references/api.md",
+            DanglingPaths("见 references/api.md.", docs));
     }
 
     /// <summary>
@@ -953,6 +1011,14 @@ public sealed class SkillDocGuardTests
     /// （后向的 <see cref="Mentions"/> 认得 <c>references/api.md</c>，
     /// 前向也得抽得出它；不削就变成「前向说提到了、后向说没提到」的错位）。
     /// </para>
+    /// <para>
+    /// <b>但只在削完之后仍然像一个带扩展名的路径时才削</b>：
+    /// 「references/foo.」削成「references/foo」就没有扩展名了 ——
+    /// 那不是散文里的句号，那是一个**指向无扩展名文件的指针**
+    /// （文件名本身就叫 <c>foo.</c>）。不削，它就还带着点 →
+    /// 「像个文件路径」那道判据放它过去 → 交给「路径必须真实存在」去判悬空。
+    /// 削了就等于把这种指针藏起来（它连「像个路径」都不是了，看不见）。
+    /// </para>
     /// </remarks>
     private static string TrimMentionedPath(string mention)
     {
@@ -963,8 +1029,14 @@ public sealed class SkillDocGuardTests
             end--;
         }
 
-        // 句末的句点（'.' 在路径字符集里）：削掉。
+        // 句末的句点（'.' 在路径字符集里）：削掉 —— 但只在削完之后**还有别的点**时。
         var trimmed = mention[..end].TrimEnd('.');
+
+        if (!trimmed.Contains('.'))
+        {
+            // 削完就没有扩展名了：那个句点不是散文里的句号，是路径的一部分。
+            return mention;
+        }
 
         // 削完只剩一个目录（"references/"）说明整段都是散文：原样留着
         //（后面那道「得像个文件路径」的判据会把它放过去）。
