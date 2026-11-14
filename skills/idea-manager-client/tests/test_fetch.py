@@ -61,6 +61,8 @@ class _State(object):
     def __init__(self):
         self.files = {ENTRY: ENTRY_BODY, REFERENCE: REFERENCE_BODY}
         self.version = compute_version(self.files)
+        # 清单里的 version 覆盖（模拟服务端给了个不合法的版本串，比如带换行）。
+        self.version_override = None
         # 清单端点的特殊行为：(状态码, code) 或 (状态码, code, detail)。
         # 非空时清单端点回这个错（problem+json）。
         self.manifest_problem = None
@@ -158,7 +160,11 @@ class _Handler(BaseHTTPRequestHandler):
                 }
             )
 
-        manifest = {"version": state.version, "entry": ENTRY, "files": files}
+        version = state.version
+        if state.version_override is not None:
+            version = state.version_override
+
+        manifest = {"version": version, "entry": ENTRY, "files": files}
         self._send(200, json.dumps(manifest).encode("utf-8"), "application/json")
 
     def _send(self, status, raw, content_type):
@@ -620,15 +626,85 @@ class FetchTest(unittest.TestCase):
         self.assertTrue(err.startswith("http_500: "), err)
         self.assertNotIn("server_error", err)
 
-    def test_replaces_a_server_code_with_a_newline(self):
-        """服务端给的 code 里有换行 → 换掉（stderr 恰好一行是硬约定）。"""
-        self.server.state.manifest_problem = (500, "boom\nsecond line", "boom")
+    def test_replaces_a_server_code_with_a_trailing_newline(self):
+        """服务端给的 code 末尾带一个换行 → 换掉（stderr 恰好一行是硬约定）。
+
+        这一条专门盯「结尾换行」：旧做法是用 ``^...$`` 锚配 ``match()``，
+        而 Python 的 ``$`` 匹配「串尾**或**紧邻结尾换行之前」——
+        所以 ``"boom\\n"`` 能蒙混过关，stderr 变成两行
+        （第一行没有冒号，agent 解析不出来）。
+
+        （换行在中间的 "boom\\nsecond line" 反而是安全的：形状本来就不匹配。
+        旧用例测的是那种，测不到真正的洞。）
+        """
+        self.server.state.manifest_problem = (500, "boom\n", "boom")
 
         code, out, err = self.run_fetch([])
 
         self.assertEqual(code, 1)
         self.assertEqual(len(err.strip().splitlines()), 1, "错误只该有一行：{}".format(err))
         self.assertTrue(err.startswith("http_500: "), err)
+        # 逐字断言：code 段仍可解析（agent 按它分支），detail 没被吞掉
+        self.assertEqual(err, "http_500: boom\n")
+        self.assertEqual(out, "")
+
+    def test_does_not_echo_the_basic_auth_base64_without_padding(self):
+        """服务端回 base64 凭据的「去 padding」形态 → stderr 不许出现它。
+
+        形状校验禁 ``=``，所以**带 padding** 的形态被挡住了；
+        **去 padding** 的（服务端/代理回显时常用的 base64url 写法）却两关全过。
+
+        base64 可逆 —— 掩了等于没掩，所以两种形态都得堵。
+        """
+        encoded = base64.b64encode(b"agent:pw-1234").decode("ascii").rstrip("=")
+        self.server.state.manifest_problem = (500, encoded, "boom")
+
+        code, out, err = self.run_fetch(
+            [], env={"IDEA_USER": "agent", "IDEA_PASS": "pw-1234"}
+        )
+
+        self.assertEqual(code, 1)
+        self.assertNotIn(encoded, err)
+        self.assertNotIn(encoded, out)
+        self.assertEqual(err, "http_500: boom\n")
+        self.assertEqual(out, "")
+
+    def test_flattens_control_characters_in_the_error_detail(self):
+        """detail 里的回车等控制字符不许留下（stderr 恰好一行是硬约定）。
+
+        换行与回车之外的控制字符（ESC、NUL……）不会让输出多出一行，
+        但会让终端乱掉、也可能被下游当成结构 —— 一并换成空格。
+        """
+        self.server.state.manifest_problem = (500, "boom", "第一行\r第二行\x1b[0m")
+
+        code, out, err = self.run_fetch([])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(len(err.strip().splitlines()), 1, "错误只该有一行：{}".format(err))
+        self.assertNotIn("\r", err)
+        self.assertNotIn("\x1b", err)
+
+    def test_rejects_a_manifest_with_a_trailing_newline_in_the_version(self):
+        """清单的 version 末尾带换行 → 清单不合法，stderr 恰好一行。
+
+        version 会变成缓存目录名：带换行的目录名既难看，
+        降级提示行也会变成两行（提示行走的是 ``_write_stderr``，没有压行）。
+        """
+        self.server.state.version_override = "v1\n"
+
+        code, out, err = self.run_fetch([])
+
+        self.assertEqual(code, 1)
+        self.assertIn("skill_integrity_error", err)
+        self.assertEqual(len(err.strip().splitlines()), 1, "错误只该有一行：{}".format(err))
+        self.assertEqual(out, "")
+
+        # 缓存目录名里不许出现换行（目录名是拿 version 拼的）
+        names = os.listdir(self.cache) if os.path.isdir(self.cache) else []
+        for name in names:
+            self.assertNotIn("\n", name)
+            self.assertNotIn("\r", name)
+        self.assertEqual([name for name in names if name.startswith(".tmp-")], [])
 
     def test_does_not_mask_the_username_in_the_error_detail(self):
         """用户名不是秘密：detail 里出现它时不该被糊成 ***（否则错误没法看）。
@@ -644,6 +720,38 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("agent", err)
         self.assertNotIn("pw-1234", err)
+
+    # -- 退出路径上的清理 ---------------------------------------------------
+
+    def test_cleans_up_temporary_directories_after_a_usage_error(self):
+        """用法错误退出后，残留的临时目录也要清掉。
+
+        argparse 的用法错误是 SystemExit(2) —— except Exception 抓不到它。
+        但 finally 照样会跑，所以这条路径也得清残留。
+        """
+        leftover = os.path.join(self.cache, ".tmp-deadbeef-{}".format(dead_pid()))
+        os.makedirs(leftover)
+
+        code, out, err = self.run_fetch(["a", "b"])
+
+        self.assertEqual(code, 2)
+        self.assertFalse(os.path.exists(leftover), "用法错误后残留的临时目录该被清掉")
+        self.assertEqual(
+            [name for name in os.listdir(self.cache) if name.startswith(".tmp-")], []
+        )
+
+    def test_cleans_up_temporary_directories_after_help(self):
+        """--help 退出后，残留的临时目录也要清掉（SystemExit(0)）。"""
+        leftover = os.path.join(self.cache, ".tmp-deadbeef-{}".format(dead_pid()))
+        os.makedirs(leftover)
+
+        code, out, err = self.run_fetch(["--help"])
+
+        self.assertEqual(code, 0)
+        self.assertFalse(os.path.exists(leftover), "--help 之后残留的临时目录该被清掉")
+        self.assertEqual(
+            [name for name in os.listdir(self.cache) if name.startswith(".tmp-")], []
+        )
 
     # -- 认证头与 --help ----------------------------------------------------
 

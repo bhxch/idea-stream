@@ -57,10 +57,14 @@ TEMP_PREFIX = ".tmp-"
 #
 # 版本串是**服务端给的**，不是自己算的 —— 但它会直接变成目录名，
 # 所以必须挡住路径分隔符与 ..（否则一个恶意的服务端能把缓存写到别处去）。
-VERSION_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+#
+# **用 fullmatch，不带 '$' 锚**：Python 的 '$' 匹配「串尾**或**紧邻结尾
+# 换行之前」，所以 "v1\n" 能蒙混过关（match() 会返回匹配）——
+# 缓存里就会造出带换行的目录名，降级提示行也会变成两行。
+VERSION_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
 
-# 清单里的哈希：64 位十六进制。
-SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+# 清单里的哈希：64 位十六进制。（同样：fullmatch，不带 '$' 锚。）
+SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
 
 # 取件器自己的错误码（固定词汇表）。
 #
@@ -88,7 +92,30 @@ OWN_ERROR_CODES = frozenset(
 #
 # 不许有换行（错误输出占一行是硬约定），也不许有空格、冒号之类
 # （code 要能被 agent 解析出来）。
-SERVER_CODE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+#
+# **用 fullmatch，不带 '$' 锚**：Python 的 '$' 匹配「串尾**或**紧邻结尾
+# 换行之前」，所以 "boom\n" 能蒙混过关 → stderr 变成两行
+# （第一行没有冒号，agent 解析不出来）。
+SERVER_CODE_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
+
+# 取件器自己生成的码：``http_<状态码>``。
+#
+# 它也是「自己的码」（状态码是数字，不可能是凭据），
+# 所以不走服务端码的凭据检查 —— 否则 IDEA_PASS 恰好是 "500" 之类的短串时，
+# http_500 会被换成 invalid_response，agent 就分不出是哪一类的错误了。
+HTTP_CODE_PATTERN = re.compile(r"http_[0-9]{1,3}")
+
+# 控制字符（C0 与 C1）：换行、回车之外的那些（ESC、NUL……）。
+#
+# 它们不会让输出多出一行，但会让终端乱掉、也可能被下游当成结构，
+# 所以进输出前一律换成空格。
+CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+# 掩码 base64 时多短的才算「值得掩」。
+#
+# 很短的 base64（如 "YQ"）会误伤正常文本 —— 消息里到处是这个两字母的串，
+# 就会糊成一片。所以只掩够长的那些。
+MIN_MASKABLE_BASE64 = 8
 
 # 脱敏用的占位符。
 MASK = "***"
@@ -129,6 +156,7 @@ USERINFO_PATTERN = re.compile(
 # | 服务端没分发 skill 内容 | skill_not_distributed | 1 |
 # | 要取的文件不存在 | not_found | 1 |
 # | 取回来的内容与服务端清单对不上 | skill_integrity_error | 1 |
+# | 清单的字段不合法（版本串/路径/哈希） | skill_integrity_error | 1 |
 # | 清单不是合法 JSON（多半是代理返回了 HTML） | invalid_response | 1 |
 # | 服务端回了别的业务错误码 | 服务端给的 code（校验过，见 _safe_server_code） | 1 |
 # | 别的非 2xx | http_<状态码> | 1 |
@@ -138,24 +166,30 @@ USERINFO_PATTERN = re.compile(
 #
 # code 段分两类，处理方式不同：
 #
-# * **取件器自己的码**（:data:`OWN_ERROR_CODES` 里的常量）—— 原样输出，
+# * **取件器自己的码**（:func:`_is_own_code`）—— 原样输出，
 #   永不参与值级脱敏。它们是代码里的常量，不含凭据；脱敏会把 code 改坏
 #   （``network_error`` 被改成 ``network_***``），agent 就分不了分支了。
 #   出口在 :func:`_safe_code`。
 # * **服务端给的 code** —— 一段服务端给的字符串，原样输出前要过校验
 #   （形状 + 不含凭据），不合格就换成 ``http_<状态码>``。见 :func:`_safe_server_code`。
 #
+# 服务端/清单给的所有字符串都要过卡口 :func:`_gate` 才许进输出。
+#
 # 降级不是错误：取不到清单但本地有**完好**的缓存时，走缓存并在 stderr 打一行
 # ``warning:`` 提示，退出码仍是 0。
 
 
 def _one_line(value: Any) -> str:
-    """把一段文本压成**一行**：换行与连续空白都变成单个空格。
+    """把一段文本压成**一行**：换行、回车、制表等控制字符都变成单个空格。
 
     错误输出占一行是硬约定（agent 侧要的是能读的一行）：
     异常消息里带换行是常事，不压掉就会把「一行」这个约定破掉。
+
+    控制字符（\\x00、\\x1b 这类）也一并换成空格：换行与回车之外的那些
+    不会让输出多出一行，但会让终端乱掉，也可能被下游当成结构。
     """
-    return " ".join(str(value).split())
+    text = CONTROL_CHARS_PATTERN.sub(" ", str(value))
+    return " ".join(text.split())
 
 
 class CliError(Exception):
@@ -283,7 +317,20 @@ def _credential_values() -> List[str]:
     password = os.environ.get("IDEA_PASS", "").strip()
     if user and password:
         raw = "{}:{}".format(user, password).encode("utf-8")
-        values.append(base64.b64encode(raw).decode("ascii"))
+        encoded = base64.b64encode(raw).decode("ascii")
+        values.append(encoded)
+
+        # **去 padding 的形态也要掩**：服务端/代理回显时去掉 '=' 是常见的
+        # base64url 写法。code 的形状校验禁 '='，所以带 padding 的形态被挡住了，
+        # 去 padding 的却两关全过 —— 两条路都得堵。
+        unpadded = encoded.rstrip("=")
+        if len(unpadded) >= MIN_MASKABLE_BASE64:
+            values.append(unpadded)
+
+        # base64url 还把 '+' '/' 换成 '-' '_'。
+        url_safe = unpadded.replace("+", "-").replace("/", "_")
+        if url_safe != unpadded and len(url_safe) >= MIN_MASKABLE_BASE64:
+            values.append(url_safe)
 
     url_password = _password_in_base_url()
     if url_password:
@@ -313,6 +360,102 @@ def _password_in_base_url() -> str:
         return ""
 
     return userinfo.split(":", 1)[1]
+
+
+# --------------------------------------------------------------------------
+# 卡口
+# --------------------------------------------------------------------------
+#
+# 服务端给的（错误响应里的 code / detail）与清单给的（version / path / sha256）
+# 都是**不可信输入**：
+#
+# * 回显型服务端/代理会把凭据塞进 code 或 detail；
+# * 换行（\n、\r）会破掉「stderr 恰好一行」这条硬约定；
+# * 清单的 version 会直接变成缓存目录名，path 会变成缓存里的文件名
+#   （带 ../ 就能写到分发副本之外去）。
+#
+# 所以这些字符串在进 stderr、进缓存目录名、进提示行之前，**都要过
+# :func:`_gate`** —— 一个卡口，不各写一遍。
+#
+# 各写一遍就会像前几轮那样：每轮堵上一个洞，下一轮又从旁边露出下一个
+# （这轮之前就有五处各写各的形状校验，其中两处的 '$' 锚是同一个弱点）。
+#
+# 角色：
+#
+# | 角色 | 用在哪 | 不合格时 |
+# |---|---|---|
+# | code | 错误响应的 code 段（agent 按它分支） | 调用方换成 http_<状态码> |
+# | text | 错误响应的 detail、提示行里的文字 | 不会不合格：脱敏 + 压成一行 |
+# | version | 清单的 version（要当目录名） | 清单不合法 |
+# | path | 清单的 path（要当缓存里的相对路径） | 清单不合法 |
+# | digest | 清单的 sha256 | 清单不合法 |
+
+
+def _gate(value: Any, kind: str = "text") -> Optional[str]:
+    """把服务端/清单给的字符串变成可以安全出现在输出里的形态。
+
+    返回 None 表示「这个字符串不能用」—— 调用方按角色决定替代品：
+    服务端给的 code → ``http_<状态码>``；清单里的字段 → 清单不合法。
+
+    ``text`` 这一档总是给得出结果（值级 + 结构级脱敏，再压成一行）；
+    其余各档形状不合格就返回 None —— 调用方**绝不**拿它去拼目录名或提示行。
+    """
+    if kind == "text":
+        # 值级 + 结构级脱敏，再压成一行（换行、回车、控制字符都不许留）。
+        return _redact(_one_line(value))
+
+    if not isinstance(value, str):
+        return None
+
+    if kind == "code":
+        # 形状 + 不含凭据。两关都要过：形状合格但含凭据的码照样会泄。
+        if not SERVER_CODE_PATTERN.fullmatch(value):
+            return None
+        if _contains_credential(value):
+            return None
+        return value
+
+    if kind == "version":
+        # 版本串会变成目录名：形状不合格就一个字都不许用。
+        return value if VERSION_PATTERN.fullmatch(value) else None
+
+    if kind == "digest":
+        return value if SHA256_PATTERN.fullmatch(value) else None
+
+    if kind == "path":
+        return value if _is_clean_relative_path(value) else None
+
+    return None
+
+
+def _contains_credential(text: str) -> bool:
+    """这段文本里有没有已知的凭据值。
+
+    与 :func:`_redact` 用的是同一张表（:func:`_credential_values`）。
+    """
+    for secret in _credential_values():
+        if secret and secret in text:
+            return True
+    return False
+
+
+def _is_clean_relative_path(path: str) -> bool:
+    """清单里的路径必须是干净的相对路径。
+
+    绝对路径与含 ``..`` 段的路径一律不认：它们会跑到分发副本之外去。
+    控制字符也不认（换行会破掉「一行」的约定，也会造出怪文件名）。
+    """
+    if not path or path.startswith("/") or "\\" in path:
+        return False
+
+    if CONTROL_CHARS_PATTERN.search(path):
+        return False
+
+    for segment in path.split("/"):
+        if segment in ("", ".", ".."):
+            return False
+
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -464,7 +607,7 @@ def _error_for_status(status: int, raw: bytes) -> CliError:
         return NotFoundError(detail or "要取的文件不存在")
 
     if code:
-        # 服务端给的码：输出前先校验（见 :func:`_safe_server_code`）。
+        # 服务端给的码：输出前先过卡口（见 :func:`_safe_server_code`）。
         return CliError(
             _safe_server_code(code, status), detail or "HTTP {}".format(status)
         )
@@ -472,12 +615,23 @@ def _error_for_status(status: int, raw: bytes) -> CliError:
     return CliError("http_{}".format(status), detail or "HTTP {}".format(status))
 
 
+def _is_own_code(code: str) -> bool:
+    """这个码是取件器自己生成的吗（而不是服务端给的）？
+
+    自己的码是代码里的常量，不含凭据 —— 原样输出，agent 才分得出分支。
+
+    除了 :data:`OWN_ERROR_CODES` 里的常量，还有 ``http_<状态码>``
+    （也是自己生成的：状态码是数字，不可能是凭据）。
+    """
+    return code in OWN_ERROR_CODES or bool(HTTP_CODE_PATTERN.fullmatch(code))
+
+
 def _safe_code(code: str) -> str:
     """code 段原样输出前的最后一道关。
 
     code 段分两类，**出处**不同、待遇也不同：
 
-    * **取件器自己的码**（:data:`OWN_ERROR_CODES` 里的常量）→ 原样输出，
+    * **取件器自己的码**（:func:`_is_own_code`）→ 原样输出，
       永不参与值级脱敏。它们是代码里的常量，不含凭据；
       脱敏会把 ``network_error`` 改成 ``network_***``，agent 就分不了支了。
     * **服务端给的码** → 过 :func:`_safe_server_code`（形状 + 不含凭据）。
@@ -486,38 +640,34 @@ def _safe_code(code: str) -> str:
     ``network_error`` 的码）—— 所以分类靠的是出处，不是名字：
     服务端给的码一律要过凭据检查（见 :func:`_error_for_status`）。
     """
-    if code in OWN_ERROR_CODES:
+    if _is_own_code(code):
         return code
 
     return _safe_server_code(code, None)
 
 
 def _safe_server_code(code: str, status: Optional[int]) -> str:
-    """服务端给的 code 能不能原样输出。
+    """服务端给的 code 能不能原样输出 —— code 那一档的卡口。
 
     服务端的 code 是一段**服务端给的字符串**，它会原样进 stderr（agent 按它分支），
     也可能被回显型服务端/代理塞进凭据 —— 所以输出前要过两道：
 
-    * **形状**：``^[A-Za-z][A-Za-z0-9_]{0,63}$``。
-      不合形状就换掉：换行会破掉「stderr 恰好一行」这条硬约定，
-      空格、冒号之类会让 code 解析不出来。
+    * **形状**：``[A-Za-z][A-Za-z0-9_]{0,63}``（fullmatch，不带 '$' 锚 ——
+      '$' 会放行结尾换行，"boom\\n" 就能把 stderr 变成两行）。
     * **不含凭据**：code 里不许出现任何已知的凭据值（见 :func:`_credential_values`）。
 
     任一条不满足 → 换成 ``http_<状态码>``（取不到状态码就 ``invalid_response``）。
     校验通过才原样输出。
 
-    注意：这道关卡只管**服务端给的**码。取件器自己的码（:data:`OWN_ERROR_CODES`
-    里的常量）不经过这里 —— 它们是代码里的常量，不含凭据，
+    注意：这道关卡只管**服务端给的**码。取件器自己的码（:func:`_is_own_code`）
+    不经过这里 —— 它们是代码里的常量，不含凭据，
     原样输出，agent 才分得出 ``network_error`` 与 ``not_found``。
     """
-    if not SERVER_CODE_PATTERN.match(code):
-        return _fallback_code(status)
+    safe = _gate(code, "code")
+    if safe is not None:
+        return safe
 
-    for secret in _credential_values():
-        if secret and secret in code:
-            return _fallback_code(status)
-
-    return code
+    return _fallback_code(status)
 
 
 def _fallback_code(status: Optional[int]) -> str:
@@ -546,7 +696,8 @@ def _problem_fields(raw: bytes) -> Tuple[Optional[str], str]:
 
     code = payload.get("code")
     detail = payload.get("detail") or payload.get("title") or ""
-    return (str(code) if code else None), str(detail)
+    # detail 是**服务端给的字符串**：过卡口（脱敏 + 压成一行）。
+    return (str(code) if code else None), _gate(detail, "text")
 
 
 # --------------------------------------------------------------------------
@@ -589,53 +740,55 @@ def _parse_manifest(payload: Dict[str, Any]) -> Manifest:
     清单是**服务端给的输入**，跟请求头一样不可信：
     版本串会变成目录名、文件路径会变成缓存里的文件名，
     所以这里把不合法的一律挡掉（挡不住就是写到别处去了）。
-    """
-    version = payload.get("version")
-    if not isinstance(version, str) or not VERSION_PATTERN.match(version):
-        raise InvalidResponse("清单里的 version 不合法")
 
-    entry = payload.get("entry")
-    if not isinstance(entry, str) or not entry:
-        raise InvalidResponse("清单里没有 entry")
+    每个字段都过 :func:`_gate`（卡口）：形状不合格就是「清单不合法」，
+    不合格的字符串**不会**被拿去拼目录名或提示行。
+
+    清单不合法一律报 ``skill_integrity_error``：清单是服务端发来的分发契约，
+    契约对不上就是「服务端给的东西不可信」，agent 侧也只需重试/查服务端。
+    """
+    raw_version = payload.get("version")
+    version = _gate(raw_version, "version")
+    if version is None:
+        raise IntegrityError(
+            "清单里的 version 不合法：{}".format(_gate(raw_version or "", "text"))
+        )
+
+    raw_entry = payload.get("entry")
+    entry = _gate(raw_entry, "path")
+    if entry is None:
+        raise IntegrityError(
+            "清单里的 entry 不合法：{}".format(_gate(raw_entry or "", "text"))
+        )
 
     files = payload.get("files")
     if not isinstance(files, list) or not files:
-        raise InvalidResponse("清单里没有 files")
+        raise IntegrityError("清单里没有 files")
 
     parsed: List[Dict[str, str]] = []
     for item in files:
         if not isinstance(item, dict):
-            raise InvalidResponse("清单里的 files 项不是对象")
+            raise IntegrityError("清单里的 files 项不是对象")
 
-        path = item.get("path")
-        digest = item.get("sha256")
-        if not isinstance(path, str) or not isinstance(digest, str):
-            raise InvalidResponse("清单里的文件项缺 path 或 sha256")
+        raw_path = item.get("path")
+        raw_digest = item.get("sha256")
 
-        _check_relative_path(path)
+        path = _gate(raw_path, "path")
+        if path is None:
+            raise IntegrityError(
+                "清单里的 path 不合法：{}".format(_gate(raw_path or "", "text"))
+            )
 
-        if not SHA256_PATTERN.match(digest):
-            raise InvalidResponse("清单里 {} 的 sha256 不合法".format(path))
+        digest = _gate(raw_digest, "digest")
+        if digest is None:
+            raise IntegrityError("清单里的 {} 的 sha256 不合法".format(path))
 
         parsed.append({"path": path, "sha256": digest.lower()})
 
     if entry not in [item["path"] for item in parsed]:
-        raise InvalidResponse("清单里的 entry 不在 files 里")
+        raise IntegrityError("清单里的 entry 不在 files 里")
 
     return Manifest(version, entry, parsed)
-
-
-def _check_relative_path(path: str) -> None:
-    """清单里的路径必须是干净的相对路径。
-
-    绝对路径与含 ``..`` 段的路径一律不认：它们会跑到分发副本之外去。
-    """
-    if not path or path.startswith("/") or "\\" in path:
-        raise InvalidResponse("清单里的路径不是相对路径：{}".format(path))
-
-    for segment in path.split("/"):
-        if segment in ("", ".", ".."):
-            raise InvalidResponse("清单里的路径不干净：{}".format(path))
 
 
 # --------------------------------------------------------------------------
@@ -931,7 +1084,8 @@ def resolve_target(manifest: Manifest, relative: Optional[str]) -> str:
         target = target[2:]
 
     if target not in manifest.paths:
-        raise NotFoundError("分发副本里没有这个文件：{}".format(target))
+        # 目标串可能来自命令行（用户给的），回显前过卡口（压成一行）。
+        raise NotFoundError("分发副本里没有这个文件：{}".format(_gate(target, "text")))
 
     return target
 
@@ -1008,17 +1162,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
 
     # 缓存根目录跟地址无关：先定下来，finally 里不管走哪条出口都能清临时目录。
     #
-    # 解析放在 try 里（跟地址的解析一样）：万一它抛了，要走 internal_error
-    # 那条路，而不是吐一个裸 traceback。定不下来时留空串 ——
-    # finally 里的清理认得空串（不是目录，什么都不做）。
+    # 定不下来时留空串 —— finally 里的清理认得空串（不是目录，什么都不做）。
     cache_root = ""
 
     try:
+        # 缓存根目录在 try 里定：万一它抛异常，要走 internal_error 那条路，
+        # 而不是吐一个裸 traceback。
         cache_root = resolve_cache_root()
+
+        # 参数解析也放进 try：argparse 的用法错误（SystemExit(2)）与 --help
+        # （SystemExit(0)）同样要走到 finally，把残留的临时目录清掉。
+        #
+        # SystemExit 是 BaseException，except Exception 抓不到它 ——
+        # 但 finally 照样会跑，这正是要的效果：退出码不变，残留被清掉。
+        args = parser.parse_args(argv)
+
         base_url = resolve_base_url()
 
         # 绝对路径：直连服务端要那一份原文，不走分发副本。
@@ -1054,7 +1215,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         _write_stderr(
             "warning: 同步失败（{}），改用本地缓存 {}".format(
-                degraded, _redact(os.path.basename(cache_dir))
+                degraded, _gate(os.path.basename(cache_dir), "text")
             )
         )
         print_cached_file(cache_dir, target)
