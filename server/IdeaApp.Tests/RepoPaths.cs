@@ -50,6 +50,17 @@ internal static class RepoPaths
     public static string SkillShell { get; } =
         Path.Combine(Root, "skills", "idea-manager-client", "SKILL.md");
 
+    /// <summary>
+    /// 把 agent 侧的 skill 装到 agent 目录里的那个脚本。
+    /// </summary>
+    /// <remarks>
+    /// 它的清理尺度是「只删旧 skill 特有的那几个具体文件 + rmdir 删空目录」——
+    /// 目录级的 <c>rm -rf</c> 会把用户自己放在同名目录里的东西删掉
+    /// （见 <c>SkillDocGuardTests</c> 里那条结构守卫）。
+    /// </remarks>
+    public static string InstallScript { get; } =
+        Path.Combine(Root, "skills", "install-agent-skill.sh");
+
     /// <summary>应用的端点源码目录。</summary>
     public static string Endpoints { get; } = Path.Combine(AppSource, "Endpoints");
 

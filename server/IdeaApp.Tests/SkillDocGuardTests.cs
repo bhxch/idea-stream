@@ -87,11 +87,31 @@ public sealed class SkillDocGuardTests
     /// 但光秃秃的句点不算（<c>见 references/api.md.</c> 里那是散文里的句号）。
     /// </para>
     /// <para>
+    /// <b>斜杠也算继续</b>：<c>references/api.md/x</c> 里的
+    /// <c>references/api.md</c> 不是「提到了 api.md」——
+    /// 那是一条更长的路径（另一个文件），指过去是 404。
+    /// </para>
+    /// <para>
     /// 前向（抽提及）与后向（找提及）用**同一把尺子** ——
     /// 否则会出现「前向说提到了、后向说没提到」的错位。
     /// </para>
     /// </remarks>
-    private const string MentionBoundary = @"(?!(?:[A-Za-z0-9_-]|\.[A-Za-z0-9_-]))";
+    private const string MentionBoundary = @"(?!(?:[A-Za-z0-9_-]|\.[A-Za-z0-9_-]|/))";
+
+    /// <summary>
+    /// 「路径从这儿开始」的边界：前面紧邻路径字符，说明这段路径是**更长**的路径的一部分。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>old-references/api.md</c> 里的 <c>references/api.md</c> 不是提及 ——
+    /// 那是一条更长的路径（另一个文件）。
+    /// </para>
+    /// <para>
+    /// <b>只收 ASCII</b>：路径前面紧跟一个汉字是中文手册的常态
+    /// （「取 references/errors.md即可」），不能因此把整条提及作废。
+    /// </para>
+    /// </remarks>
+    private const string PathStartBoundary = @"(?<![A-Za-z0-9_.\-/])";
 
     /// <summary>
     /// 索引页里提到细节文档的形态：<c>references/api.md</c>。
@@ -104,16 +124,25 @@ public sealed class SkillDocGuardTests
     /// 路径尾部那个标点不能被吃进路径。
     /// </para>
     /// <para>
-    /// 惰性匹配：路径在**第一个** <c>.md</c> 处收尾 ——
-    /// 「references/api.md 与 references/calling.md」不会被吃成一长串。
-    /// 末尾的边界（<see cref="MentionBoundary"/>）保证 <c>api.mdx</c> 这种不算数
-    /// （它不是一份 <c>.md</c> 文档），而 <c>references/api.md是</c> 里的路径
-    /// 仍然是 <c>references/api.md</c>（中文手册里这种写法很常见）。
+    /// <b>不再要求以 <c>.md</c> 结尾</b>：提到什么路径，那个路径就得在。
+    /// 早先要求 <c>.md</c> 结尾，于是 <c>references/api.md.bak</c> 这种
+    /// 指向非 md 文件的悬空指针**两个方向都看不见** ——
+    /// 前向抽不出它，后向也认不出它是指向哪一份。
+    /// </para>
+    /// <para>
+    /// <b>不分大小写</b>：后向一直是 <c>OrdinalIgnoreCase</c>，
+    /// 前向分大小写的话，索引页写 <c>References/api.md</c> 时
+    /// 前向抽不出、后向却认它「被提到」—— 断链就这么放过了。
+    /// 两边同一把尺子。
+    /// </para>
+    /// <para>
+    /// <b>贪婪匹配</b>：路径一路吃到不能吃为止（末尾那一截散文由
+    /// <see cref="TrimMentionedPath"/> 削掉）。
     /// </para>
     /// </remarks>
     private static readonly Regex ReferenceDocPattern = new(
-        @"(?<path>references/[\p{L}\p{N}\p{M}._/-]+?\.md)" + MentionBoundary,
-        RegexOptions.CultureInvariant);
+        PathStartBoundary + @"(?<path>references/[\p{L}\p{N}\p{M}._/-]+)" + MentionBoundary,
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
     /// 手册里把路径条数写死的样子：<c>29 条路径</c>、<c>二十九个端点</c>、<c>32 条 API 路径</c>。
@@ -131,6 +160,19 @@ public sealed class SkillDocGuardTests
     /// </remarks>
     private static readonly Regex HardcodedCountPattern = new(
         @"(?<count>[0-9]+|[零二三四五六七八九十百两]+)\s*(?:条|个|项|支)\s*(?:API|HTTP|REST)?\s*(?:路径|端点|接口|路由)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// 目录级的删除：<c>rm -r</c> / <c>rm -rf</c> 之类。
+    /// </summary>
+    /// <remarks>
+    /// 认的是「<c>rm</c> + 短选项里带 <c>r</c>」的那些写法
+    /// （<c>-r</c>、<c>-rf</c>、<c>-fr</c>……）：
+    /// <c>rm -f</c>（删一个文件）与 <c>rmdir</c>（删一个空目录）都不算 ——
+    /// 那两个才是安装脚本该有的尺度。
+    /// </remarks>
+    private static readonly Regex RecursiveRemovePattern = new(
+        @"\brm\s+-[A-Za-z]*r",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -287,27 +329,44 @@ public sealed class SkillDocGuardTests
     }
 
     /// <summary>
-    /// 薄壳的正文（frontmatter 之后）里不许出现服务端的东西。
+    /// 薄壳里不许出现服务端的东西（**整个文件**，含 frontmatter）。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 薄壳在取到正文之前是 agent 唯一读到的东西，它必须与内容源解耦：
     /// 服务端哪天改了拆分（改了文件名、挪了目录），写死的指针会指向不存在的文件。
     /// 所以薄壳只许说「本文件」与「scripts/fetch.py」——
     /// 服务端有哪些文件、有哪些端点，由服务端自己说（路由表在服务端的索引页里）。
+    /// </para>
+    /// <para>
+    /// <b>查整个文件，不只查正文</b>：早先只查正文（frontmatter 之后），
+    /// frontmatter 就成了绕过口子 —— 往那儿塞一个 <c>references/api.md</c>，
+    /// 守卫照样绿。而薄壳的 frontmatter 与内容源索引页的 frontmatter
+    /// **逐字相同**（见 <see cref="Shell_frontmatter_matches_the_content_source"/>），
+    /// 所以内容源的 frontmatter 也必须干净。
+    /// </para>
     /// </remarks>
     [Fact]
-    public void Shell_body_contains_no_server_file_names()
+    public void Shell_contains_no_server_file_names()
     {
-        var body = SplitFrontmatter(File.ReadAllText(RepoPaths.SkillShell), "薄壳").Body;
+        var violation = ShellViolation(File.ReadAllText(RepoPaths.SkillShell));
 
-        foreach (var forbidden in new[] { "/api/", "references/", "SKILL.md" })
-        {
-            Assert.False(
-                body.Contains(forbidden, StringComparison.Ordinal),
-                $"薄壳正文里出现了「{forbidden}」—— 薄壳必须与内容源解耦："
-                + "服务端有哪些文件、哪些端点由服务端自己说（薄壳只说「先取索引页」）。");
-        }
+        Assert.True(
+            violation is null,
+            $"薄壳里出现了「{violation}」—— 薄壳必须与内容源解耦："
+            + "服务端有哪些文件、哪些端点由服务端自己说（薄壳只说「先取索引页」）。");
     }
+
+    /// <summary>薄壳里出现的第一处「服务端的东西」（没有就 null）。</summary>
+    /// <remarks>
+    /// 判据查的是**整个文件**（含 frontmatter）：早先只查正文，
+    /// frontmatter 就成了绕过口子 —— 往那儿塞一个 <c>references/api.md</c>，
+    /// 守卫照样绿。而薄壳的 frontmatter 与内容源索引页的 frontmatter
+    /// **逐字相同**，所以内容源的 frontmatter 也必须干净。
+    /// </remarks>
+    private static string? ShellViolation(string text) =>
+        new[] { "/api/", "references/", "SKILL.md" }
+            .FirstOrDefault(forbidden => text.Contains(forbidden, StringComparison.Ordinal));
 
     /// <summary>
     /// 索引页最多 150 行。
@@ -482,6 +541,9 @@ public sealed class SkillDocGuardTests
     /// 所以判据是「索引页提过这份文档」，不是「路由表里有这一行」。
     /// </para>
     /// <para>
+    /// <b>frontmatter 不算</b>：它是元数据（name / description），不是指引。
+    /// </para>
+    /// <para>
     /// 点目录里的 <c>.md</c> 也算：它们会被分发（csproj 的 glob 收）、也会进语料，
     /// 所以同样得在索引页里有位置。
     /// </para>
@@ -491,7 +553,9 @@ public sealed class SkillDocGuardTests
     /// <item><b>前向看不见含空白或标点的文件名</b>（字符集不含它们）：
     /// 「references/我的 笔记.md」这种名字只有**后向**认得
     /// （后向按整条路径找，不靠正则切）。</item>
-    /// <item><b>比较是大小写不敏感的</b>：<c>OrdinalIgnoreCase</c> ——
+    /// <item><b>比较是大小写不敏感的</b>：两个方向都是
+    /// （前向的正则带 <c>IgnoreCase</c>，后向与枚举的比较用
+    /// <c>OrdinalIgnoreCase</c>）——
     /// 枚举的 glob 在 Windows 上不分大小写、在 Linux 上分，
     /// 比较若分大小写，同一份文档换个机器就红。
     /// 代价是 Linux 上两个只差大小写的文件（<c>api.md</c> 与 <c>API.md</c>）
@@ -510,17 +574,18 @@ public sealed class SkillDocGuardTests
         // 按**整条路径**找，不靠正则切 —— 文件名带空格（references/我的 笔记.md）
         // 或带中文（references/接口.md）时也认得出来。
         // 但要带边界：references/api.mdx 里的 references/api.md 不算提及
-        // （那是指着另一份不存在的文档）。
+        // （那是指着另一份不存在的文档）；old-references/api.md 里的 likewise
+        // （那是更长的路径的另一截）。
         var unmentioned = docs
             .Where(doc => !Mentions(text, doc))
             .OrderBy(doc => doc, StringComparer.Ordinal)
             .ToArray();
 
         // 前向：索引页提到的每条路径都得存在。
-        var dangling = ReferenceDocPattern.Matches(text)
-            .Select(match => match.Groups["path"].Value)
+        // **不限 .md 结尾**：提到什么路径，那个路径就得在 ——
+        // references/api.md.bak 这种指向非 md 文件的悬空指针也要看得见。
+        var dangling = MentionedPaths(text)
             .Where(mention => !docs.Any(doc => string.Equals(doc, mention, StringComparison.OrdinalIgnoreCase)))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToArray();
 
@@ -662,40 +727,130 @@ public sealed class SkillDocGuardTests
         // 细节文档的提及：认得出中文文件名与带点的名字，也不把标点吃进路径。
         Assert.Equal(
             "references/api.md",
-            ReferenceDocPattern.Match("取哪份 | `references/api.md` |").Groups["path"].Value);
+            FirstMentionedPath("取哪份 | `references/api.md` |"));
 
         Assert.Equal(
             "references/.api/api.md",
-            ReferenceDocPattern.Match("`references/.api/api.md`").Groups["path"].Value);
+            FirstMentionedPath("`references/.api/api.md`"));
 
         Assert.Equal(
             "references/接口.md",
-            ReferenceDocPattern.Match("见 `references/接口.md`。").Groups["path"].Value);
+            FirstMentionedPath("见 `references/接口.md`。"));
 
         Assert.Equal(
             "references/api.v2.md",
-            ReferenceDocPattern.Match("`references/api.v2.md`").Groups["path"].Value);
+            FirstMentionedPath("`references/api.v2.md`"));
 
         // 两个提及挨着时，路径在第一个 .md 处就收尾。
         Assert.Equal(
             "references/api.md",
-            ReferenceDocPattern.Match("`references/api.md` 与 `references/calling.md`").Groups["path"].Value);
+            FirstMentionedPath("`references/api.md` 与 `references/calling.md`"));
 
         // 路径后面紧跟中文字母：中文手册里「取 references/errors.md即可」很常见，
-        // 不能因此把整条提及作废。
+        // 不能因此把整条提及作废（末尾那一截散文要削掉）。
         Assert.Equal(
             "references/api.md",
-            ReferenceDocPattern.Match("取 references/api.md即可").Groups["path"].Value);
+            FirstMentionedPath("取 references/api.md即可"));
 
-        // 后面是 ASCII 的 x：那不是一份 .md 文档。
-        Assert.False(
-            ReferenceDocPattern.IsMatch("`references/api.mdx`"),
-            "「细节文档提及」的正则把 .mdx 当成了一份 .md 文档。");
+        // 句末的句点也不能被吃进路径。
+        Assert.Equal(
+            "references/api.md",
+            FirstMentionedPath("见 references/api.md。"));
+
+        // 后面是 ASCII 的 x：那不是一份 .md 文档 —— 但它**是个路径**，
+        // 所以要看得见（提到什么路径，那个路径就得在）。
+        Assert.Equal(
+            "references/api.mdx",
+            FirstMentionedPath("`references/api.mdx`"));
 
         // 后向的边界与前向同一把尺子。
         Assert.True(Mentions("见 `references/api.md`。", "references/api.md"));
         Assert.True(Mentions("取 references/api.md即可", "references/api.md"));
         Assert.False(Mentions("见 `references/api.mdx`", "references/api.md"));
+
+        // 斜杠也算路径在继续：references/api.md/x 里的 references/api.md
+        // 不是「提到了 api.md」—— 那是一条更长的路径（另一个文件）。
+        Assert.False(Mentions("见 `references/api.md/x`", "references/api.md"));
+
+        // 左边也要有边界：old-references/api.md 里的 references/api.md
+        // 是更长的路径的另一截，不是提及。
+        Assert.False(Mentions("见 `old-references/api.md`", "references/api.md"));
+
+        // 两个方向都不分大小写：索引页写 References/api.md 时，
+        // 前向要抽得出、后向也要认它「被提到」—— 两边同一把尺子。
+        Assert.True(Mentions("见 `References/api.md`。", "references/api.md"));
+        Assert.Equal(
+            "References/api.md",
+            FirstMentionedPath("见 `References/api.md`。"));
+
+        // 前向不再要求 .md 结尾：提到什么路径，那个路径就得在 ——
+        // 指向非 md 文件的悬空指针（references/api.md.bak）也要看得见。
+        Assert.Equal(
+            "references/api.md.bak",
+            FirstMentionedPath("见 `references/api.md.bak`。"));
+
+        // 前向的左边界：old-references/api.md 里的那截不算提及。
+        Assert.False(
+            ReferenceDocPattern.IsMatch("见 `old-references/api.md`。"),
+            "「细节文档提及」的正则把 old-references/api.md 当成了 references/api.md。");
+
+        // 前向的右边界：更长的路径整条抽出来（它得真实存在）。
+        Assert.Equal(
+            "references/api.md/x",
+            FirstMentionedPath("见 `references/api.md/x`。"));
+
+        // 目录不是文件路径：「references/」这种不该被当成一条指针。
+        Assert.Empty(MentionedPaths("见 references/ 目录。"));
+
+        // 索引页的「提及」只看**正文**：frontmatter 是元数据（name / description），
+        // 不是给 agent 的指引 —— 早先取全文，于是「把正文路由表那一行删掉、
+        // 只在 frontmatter 留一条提及」也能过。
+        Assert.DoesNotContain("name: idea-manager", IndexPageText(), StringComparison.Ordinal);
+
+        // 薄壳那条守卫查的是**整个文件**：frontmatter 不能再是绕过口子。
+        Assert.True(
+            ShellViolation("---\nname: idea-manager\ndescription: 见 references/api.md\n---\n正文\n")
+                is not null,
+            "薄壳的守卫查的是正文，frontmatter 成了绕过口子。");
+
+        // 安装脚本那条守卫的判据：认得出目录级的删除，认不出「删文件」与「删空目录」。
+        Assert.Matches(RecursiveRemovePattern, "rm -rf \"${TARGET}\"");
+        Assert.Matches(RecursiveRemovePattern, "rm -r \"${TARGET}\"");
+        Assert.DoesNotMatch(RecursiveRemovePattern, "rm -f \"${TARGET}/x\"");
+        Assert.DoesNotMatch(RecursiveRemovePattern, "rmdir \"${TARGET}/references\"");
+    }
+
+    /// <summary>
+    /// 安装脚本不许出现**目录级**的删除（<c>rm -rf</c> / <c>rm -r</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 脚本清理的尺度必须是「只删旧 skill 特有的那几个具体文件 + rmdir 删空目录」。
+    /// 目录级的 <c>rm -rf</c> 会把**用户自己**放在同名目录里的东西删掉：
+    /// <c>references</c> 与 <c>tests</c> 是极常见的目录名，
+    /// 而上一版脚本「看到 SKILL.md 就整目录删」—— SKILL.md 恰恰是脚本自己写的，
+    /// 跑第二遍时护栏被自己写的文件绕过去，用户自己的文件当场没了。
+    /// </para>
+    /// <para>
+    /// <b>注释行不算</b>：脚本里有几行注释正是在解释「为什么不用 rm -rf」，
+    /// 提到它是应该的。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void The_install_script_never_removes_a_whole_directory()
+    {
+        var offending = File.ReadAllLines(RepoPaths.InstallScript)
+            .Select((line, index) => (Line: line, Number: index + 1))
+            .Where(entry => !entry.Line.TrimStart().StartsWith('#'))
+            .Where(entry => RecursiveRemovePattern.IsMatch(entry.Line))
+            .ToArray();
+
+        Assert.True(
+            offending.Length == 0,
+            "安装脚本里出现了目录级的删除（rm -rf / rm -r）："
+            + string.Join("、", offending.Select(entry => $"第 {entry.Number} 行"))
+            + " —— 只能删旧 skill 那几个**具体文件**，目录只用 rmdir 删空的："
+            + "用户自己放在同名目录里的东西（references/keep.txt 之类）会被误删。");
     }
 
     /// <summary>语料：索引页 + references/ 下（递归）的全部 .md。</summary>
@@ -726,18 +881,110 @@ public sealed class SkillDocGuardTests
             .ToList();
     }
 
-    /// <summary>索引页的全文（frontmatter 与正文都算）。</summary>
+    /// <summary>索引页的**正文**（frontmatter 不算）。</summary>
     /// <remarks>
-    /// spec §14 那行的措辞是「在索引页被提到」—— 不限定在哪一节。
+    /// <para>
+    /// frontmatter 是**元数据**（name / description），不是给 agent 的指引 ——
+    /// 指引在正文里。早先这里取全文，于是「把正文路由表那一行删掉、
+    /// 只在 frontmatter 留一条提及」也能过：那条提及根本没人看得见，
+    /// agent 照着正文走就会找不到那份文档。
+    /// </para>
     /// </remarks>
-    private static string IndexPageText() => File.ReadAllText(RepoPaths.SkillIndex);
+    private static string IndexPageText() =>
+        SplitFrontmatter(File.ReadAllText(RepoPaths.SkillIndex), "内容源的索引页").Body;
+
+    /// <summary>文本里提到的路径（收拾过的：削掉粘在末尾的散文与标点）。</summary>
+    /// <remarks>
+    /// 前向的方向用这个：提到的每一条都得真实存在。
+    /// </remarks>
+    private static List<string> MentionedPaths(string text) =>
+        ReferenceDocPattern.Matches(text)
+            .Select(match => TrimMentionedPath(match.Groups["path"].Value))
+            .Where(LooksLikeAFilePath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    /// <summary>文本里提到的**第一条**路径（一条都没有就 null）。</summary>
+    /// <remarks>
+    /// 给「探测器认不认得出它该认的写法」那条守卫用：
+    /// 它比的是**收拾过**的路径（与前向的方向同一套口径）。
+    /// </remarks>
+    private static string? FirstMentionedPath(string text)
+    {
+        var paths = MentionedPaths(text);
+
+        return paths.Count > 0 ? paths[0] : null;
+    }
+
+    /// <summary>
+    /// 把抽出来的提及收拾成一条路径：削掉**粘在末尾**的散文与标点。
+    /// </summary>
+    /// <remarks>
+    /// 贪婪匹配会把粘在路径后面的中文散文一起吃进来
+    /// （「取 references/api.md即可」会抽成「references/api.md即可」），
+    /// 也会吃掉句末的句点（路径的字符集里有 '.'）。
+    /// <para>
+    /// 削的是**末尾**那一串不是「路径字符」的字符。路径里的中文**文件名**
+    /// 不受影响：它后面还跟着扩展名（<c>references/接口.md</c>）。
+    /// </para>
+    /// </remarks>
+    private static string TrimMentionedPath(string mention)
+    {
+        var end = mention.Length;
+
+        while (end > 0 && !IsPathCharacter(mention[end - 1]))
+        {
+            end--;
+        }
+
+        var trimmed = mention[..end];
+
+        // 削完只剩一个目录（"references/"）说明整段都是散文：原样留着
+        // （后面那道「得像个文件路径」的判据会把它放过去）。
+        return trimmed.Length == 0 || trimmed.EndsWith('/') ? mention : trimmed;
+    }
+
+    /// <summary>这个字符是不是路径字符（ASCII 的字母数字与 <c>. _ - /</c>）。</summary>
+    private static bool IsPathCharacter(char value) =>
+        value is >= 'A' and <= 'Z'
+            or >= 'a' and <= 'z'
+            or >= '0' and <= '9'
+            or '.' or '_' or '-' or '/';
+
+    /// <summary>这条提及像个**文件**路径吗（路径里带扩展名）。</summary>
+    /// <remarks>
+    /// <para>
+    /// 目录不是文件路径（<c>references/</c>、<c>references/接口</c>）——
+    /// 拿它去对「references/ 下有哪些文件」那张表只会得到假红。
+    /// </para>
+    /// <para>
+    /// 判据是「路径里带扩展名」，不是「最后一段带扩展名」：
+    /// <c>references/api.md/x</c> 这种坏指针（指到一个目录底下去了）
+    /// 也要看得见。
+    /// </para>
+    /// </remarks>
+    private static bool LooksLikeAFilePath(string path)
+    {
+        if (path.EndsWith('/'))
+        {
+            return false;
+        }
+
+        return path.Contains('.');
+    }
 
     /// <summary>索引页里有没有提到这份文档。</summary>
     /// <remarks>
-    /// 判据：路径**整条**出现在索引页里，且紧跟其后的字符不会把路径**延长**成另一条
+    /// 判据：路径**整条**出现在索引页里，且
+    /// <list type="bullet">
+    /// <item>紧跟其后的字符不会把路径**延长**成另一条
     /// （见 <see cref="MentionBoundary"/>）：<c>references/api.mdx</c> 里的
     /// <c>references/api.md</c> 不算提及，<c>`references/api.md`</c> 与
-    /// <c>references/api.md。</c> 都算。
+    /// <c>references/api.md。</c> 都算；</item>
+    /// <item>紧邻其**前**的字符也不是路径字符
+    /// （见 <see cref="PathStartBoundary"/>）：<c>old-references/api.md</c> 里的
+    /// <c>references/api.md</c> 是另一条路径，不算提及。</item>
+    /// </list>
     /// <para>
     /// 比较不分大小写 —— 与前向、与枚举口径一致（见守卫 remarks 里的「已知限制」）。
     /// </para>
@@ -746,7 +993,7 @@ public sealed class SkillDocGuardTests
     {
         return Regex.IsMatch(
             text,
-            Regex.Escape(doc) + MentionBoundary,
+            PathStartBoundary + Regex.Escape(doc) + MentionBoundary,
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 

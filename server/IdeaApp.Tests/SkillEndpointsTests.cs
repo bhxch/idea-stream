@@ -73,8 +73,13 @@ public sealed class SkillEndpointsTests
     }
 
     /// <summary>
-    /// 取文件端点给的是原文：内容逐字相同，内容类型按扩展名给。
+    /// 取文件端点给的是原文：内容**逐字相同**，内容类型按扩展名给。
     /// </summary>
+    /// <remarks>
+    /// 比的是**字节**，不是文本：<c>ReadAllTextAsync</c> 会把 BOM 剥掉，
+    /// 字节级不一致（比如多一个 BOM）用文本比就测不出来 ——
+    /// 而取件器是按字节校验 sha256 的。
+    /// </remarks>
     [Fact]
     public async Task File_endpoint_returns_the_file_with_its_content_type()
     {
@@ -86,11 +91,53 @@ public sealed class SkillEndpointsTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("text/markdown; charset=utf-8", response.Content.Headers.ContentType?.ToString());
 
-        var body = await response.Content.ReadAsStringAsync();
+        var body = await response.Content.ReadAsByteArrayAsync();
 
         Assert.Equal(
-            await File.ReadAllTextAsync(Path.Combine(factory.SkillPath, "SKILL.md")),
+            await File.ReadAllBytesAsync(Path.Combine(factory.SkillPath, "SKILL.md")),
             body);
+    }
+
+    /// <summary>
+    /// 给的是**字节**：带 BOM 的文件，BOM 也得原样送出去。
+    /// </summary>
+    /// <remarks>
+    /// 早先那条断言比的是**文本**（<c>ReadAllTextAsync</c>）—— BOM 被剥掉了，
+    /// 字节级不一致就测不出来。而取件器是按字节校验 sha256 的：
+    /// 少一个字节就是「哈希对不上」，整次同步作废。
+    /// </remarks>
+    [Fact]
+    public async Task File_endpoint_returns_the_bytes_of_the_file_including_a_bom()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            var path = Path.Combine(directory, "SKILL.md");
+            var withBom = new byte[] { 0xEF, 0xBB, 0xBF }
+                .Concat(Encoding.UTF8.GetBytes("# 索引页\n"))
+                .ToArray();
+
+            await File.WriteAllBytesAsync(path, withBom);
+
+            using var factory = new TestAppFactory(skillPath: directory);
+            using var client = factory.CreateClient();
+
+            using var response = await client.GetAsync("/skill/idea-manager/SKILL.md");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var body = await response.Content.ReadAsByteArrayAsync();
+
+            Assert.Equal(withBom, body);
+            Assert.Equal(0xEF, body[0]);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     /// <summary>
