@@ -16,7 +16,7 @@ namespace IdeaApp.Tests;
 /// </para>
 ///
 /// <para>
-/// <b>语料</b> = 内容源的索引页 + <c>references/*.md</c> 的全文。
+/// <b>语料</b> = 内容源的索引页 + <c>references/</c> 下（递归）的全部 <c>.md</c>。
 /// 薄壳不算 —— 它只有指针，不复述手册内容（它另有一条守卫）。
 /// </para>
 ///
@@ -31,7 +31,16 @@ namespace IdeaApp.Tests;
 /// </summary>
 public sealed class SkillDocGuardTests
 {
-    /// <summary>OpenAPI 的 path item 里表示 HTTP 方法的属性名（小写）。</summary>
+    /// <summary>开发侧的残留目录名：不进分发副本（与服务端 SkillCatalog 同一口径）。</summary>
+    private const string ExcludedDirectoryName = "__pycache__";
+
+    /// <summary>
+    /// OpenAPI 的 path item 里表示 HTTP 方法的属性名（小写）。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="MethodPathPattern"/> 认的那几种方法**对齐** ——
+    /// 契约里多出一种方法而手册的写法不认它，守卫 1 会永远红（响亮的失败也没用）。
+    /// </remarks>
     private static readonly string[] HttpMethodNames =
         ["get", "post", "put", "patch", "delete", "head", "options", "trace"];
 
@@ -49,21 +58,33 @@ public sealed class SkillDocGuardTests
     /// <para>
     /// 路径里可以带 <c>{}</c>（<c>/api/ideas/{id}</c>、<c>{deliveryId}</c>）。
     /// </para>
+    /// <para>
+    /// 路径字符集只收 ASCII：中文不属于路径 ——
+    /// 「GET /api/ideas这个端点」里的路径是 <c>/api/ideas</c>，
+    /// 不是 <c>/api/ideas这个端点</c>（后者会被当成一条不存在的端点）。
+    /// </para>
     /// </remarks>
     private static readonly Regex MethodPathPattern = new(
-        @"(?<method>GET|POST|PUT|PATCH|DELETE)\s+(?<path>/api/[^\s`）)、，,。]+)",
+        @"(?<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE)\s+(?<path>/api/[^\s`\)\],.\u0080-\uFFFF]+)",
         RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// 手册里把路径条数写死的样子：<c>29 条路径</c>、<c>二十九个端点</c>。
+    /// 手册里把路径条数写死的样子：<c>29 条路径</c>、<c>二十九个端点</c>、<c>32 条 API 路径</c>。
     /// </summary>
     /// <remarks>
-    /// 阿拉伯数字与中文数字两种写法都要认 —— 手写的人两种都写得出来。
-    /// 量词只跟数字走（「每个端点」不是写死了条数）。
+    /// <para>
+    /// 量词与名词之间允许夹一个 <c>API</c> / <c>HTTP</c> / <c>REST</c>
+    /// （「32 条 API 路径」也是写死了条数）。
+    /// </para>
+    /// <para>
+    /// 计数要 &gt;= 2：中文「一」与阿拉伯「1」不算计数 ——
+    /// 「只有一条路径」「每次只发一个接口」说的是「一次一个」，
+    /// 不是「路径总条数」的陈述，不是漂移标记。
+    /// </para>
     /// </remarks>
     private static readonly Regex HardcodedCountPattern = new(
-        @"(?<count>[0-9]+|[零一二三四五六七八九十百两]+)\s*(?:条|个|项|支)\s*(?:路径|端点|接口|路由)",
-        RegexOptions.CultureInvariant);
+        @"(?<count>[0-9]+|[零二三四五六七八九十百两]+)\s*(?:条|个|项|支)\s*(?:API|HTTP|REST)?\s*(?:路径|端点|接口|路由)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
     /// 契约里的每个数据 API 端点，手册里都要提到。
@@ -180,23 +201,42 @@ public sealed class SkillDocGuardTests
     /// 薄壳的 frontmatter 必须与内容源索引页的 frontmatter **逐字相同**。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 薄壳是 agent 侧唯一要维护的东西（正文只有指针）：它的 description 决定了
     /// agent 会不会想起这个 skill。内容源改了 description 而薄壳没跟上，
     /// agent 看到的还是旧描述 —— 而「薄壳与内容源解耦」说的是**正文**解耦，
     /// frontmatter 本来就该同步。
+    /// </para>
+    /// <para>
+    /// 还要各自带得住 <c>name</c> 与 <c>description</c>：两侧同时被清空时，
+    /// 「逐字相同」照样成立，但 agent 侧拿不到 description，**skill 直接不被触发**。
+    /// </para>
     /// </remarks>
     [Fact]
     public void Shell_frontmatter_matches_the_content_source()
     {
-        var source = FrontmatterOf(File.ReadAllText(RepoPaths.SkillIndex), "内容源的索引页");
-        var shell = FrontmatterOf(File.ReadAllText(RepoPaths.SkillShell), "薄壳");
+        var source = SplitFrontmatter(File.ReadAllText(RepoPaths.SkillIndex), "内容源的索引页");
+        var shell = SplitFrontmatter(File.ReadAllText(RepoPaths.SkillShell), "薄壳");
 
         Assert.True(
-            source == shell,
+            source.Frontmatter == shell.Frontmatter,
             "薄壳与内容源的 frontmatter 不是逐字相同 —— "
             + "薄壳是 agent 侧唯一要维护的东西，它的 description 不该悄悄过期。"
-            + Environment.NewLine + "内容源：" + Environment.NewLine + source
-            + Environment.NewLine + "薄壳：" + Environment.NewLine + shell);
+            + Environment.NewLine + "内容源：" + Environment.NewLine + source.Frontmatter
+            + Environment.NewLine + "薄壳：" + Environment.NewLine + shell.Frontmatter);
+
+        foreach (var (block, origin) in new[] { (source, "内容源的索引页"), (shell, "薄壳") })
+        {
+            foreach (var key in new[] { "name", "description" })
+            {
+                var value = FrontmatterValue(block.Frontmatter, key);
+
+                Assert.True(
+                    !string.IsNullOrWhiteSpace(value),
+                    $"{origin} 的 frontmatter 里没有 {key}: —— "
+                    + "agent 侧靠它认出这个 skill（description 缺了，skill 就不会被触发）。");
+            }
+        }
     }
 
     /// <summary>
@@ -211,7 +251,7 @@ public sealed class SkillDocGuardTests
     [Fact]
     public void Shell_body_contains_no_server_file_names()
     {
-        var body = BodyOf(File.ReadAllText(RepoPaths.SkillShell), "薄壳");
+        var body = SplitFrontmatter(File.ReadAllText(RepoPaths.SkillShell), "薄壳").Body;
 
         foreach (var forbidden in new[] { "/api/", "references/", "SKILL.md" })
         {
@@ -261,9 +301,21 @@ public sealed class SkillDocGuardTests
     /// 内容源里只允许「SKILL.md」与「references/」目录，references/ 下只允许 .md。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 命令层（<c>scripts/idea.py</c> 那套命令行封装）与契约副本都已经删掉了：
     /// 它们是会漂的第二份真相。内容源是**分发给 agent 的纯文档**，
     /// 混进别的东西就等于把漂移的源头又装回去了。
+    /// </para>
+    /// <para>
+    /// <b>references/ 是平铺的</b>：手册就那么几份细节文档，索引页的路由表按文件名指它们。
+    /// 子目录会让「索引页 ↔ 文档」的对应关系散掉，
+    /// 也会让子目录里的文档脱离「平铺 + 只允许 .md」的约束。
+    /// </para>
+    /// <para>
+    /// 开发侧的残留（<c>__pycache__</c> 目录、<c>.DS_Store</c> 之类）不算：
+    /// 它们不进分发副本（与服务端 <c>SkillCatalog</c> 枚举时的口径一致），
+    /// 别人机器上留一个也不该让这条守卫红。
+    /// </para>
     /// </remarks>
     [Fact]
     public void Content_source_contains_only_the_shipped_files()
@@ -273,6 +325,11 @@ public sealed class SkillDocGuardTests
             .OrderBy(path => path, StringComparer.Ordinal))
         {
             var name = Path.GetFileName(entry);
+
+            if (name == ExcludedDirectoryName || IsResidueFile(entry))
+            {
+                continue;
+            }
 
             if (name == "SKILL.md" || (name == "references" && Directory.Exists(entry)))
             {
@@ -284,15 +341,79 @@ public sealed class SkillDocGuardTests
                 + "只允许「SKILL.md」与「references」目录。");
         }
 
-        foreach (var file in Directory
-            .EnumerateFiles(RepoPaths.SkillReferences, "*", SearchOption.AllDirectories)
+        foreach (var directory in Directory
+            .EnumerateDirectories(RepoPaths.SkillReferences, "*", SearchOption.AllDirectories)
             .OrderBy(path => path, StringComparer.Ordinal))
         {
+            if (HasExcludedSegment(directory))
+            {
+                continue;
+            }
+
+            Assert.Fail(
+                $"references/ 下不许有子目录：{Path.GetRelativePath(RepoPaths.Root, directory)} —— "
+                + "手册的 references 是平铺的几份文档，索引页的路由表按文件名指它们。");
+        }
+
+        foreach (var file in Directory
+            .EnumerateFiles(RepoPaths.SkillReferences, "*", SearchOption.AllDirectories)
+            .Where(path => !HasExcludedSegment(path))
+            .OrderBy(path => path, StringComparer.Ordinal))
+        {
+            if (IsResidueFile(file))
+            {
+                continue;
+            }
+
             Assert.True(
                 file.EndsWith(".md", StringComparison.Ordinal),
                 $"references/ 下只允许 .md：{Path.GetRelativePath(RepoPaths.Root, file)} —— "
                 + "命令层与契约副本都已经删掉了，references/ 是分发给 agent 的纯文档。");
         }
+    }
+
+    /// <summary>
+    /// 语料的文件集合必须**恰好**是「索引页 + references/ 下递归的全部 .md」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 语料既要**全**（少读一份文档 = 那一整份不受任何守卫管），
+    /// 也要**确定**（glob 改坏了，守卫会集体变哑 ——
+    /// 只扫索引页时，守卫 1/2/9/10 一条都不会红）。
+    /// </para>
+    /// <para>
+    /// 期望值独立算出来（枚举目录下所有文件再按扩展名筛），
+    /// 不复用 <see cref="Corpus"/> 的 glob —— 那样这条守卫只是把自己抄了一遍。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void The_corpus_is_exactly_the_index_page_plus_the_reference_docs()
+    {
+        var expected = new HashSet<string>(StringComparer.Ordinal) { RepoPaths.SkillIndex };
+
+        foreach (var file in Directory
+            .EnumerateFiles(RepoPaths.SkillReferences, "*", SearchOption.AllDirectories)
+            .Where(path => !HasExcludedSegment(path)))
+        {
+            if (file.EndsWith(".md", StringComparison.Ordinal))
+            {
+                expected.Add(file);
+            }
+        }
+
+        var actual = Corpus()
+            .Select(file => file.Path)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var missing = expected.Except(actual).OrderBy(path => path, StringComparer.Ordinal).ToArray();
+        var extra = actual.Except(expected).OrderBy(path => path, StringComparer.Ordinal).ToArray();
+
+        Assert.True(
+            missing.Length == 0 && extra.Length == 0,
+            "语料的文件集合不对："
+            + (missing.Length > 0 ? $"少了 {string.Join("、", missing.Select(Relative))}；" : string.Empty)
+            + (extra.Length > 0 ? $"多了 {string.Join("、", extra.Select(Relative))}。" : string.Empty)
+            + "语料必须恰好是「索引页 + references/ 下递归的全部 .md」—— 少一份就有一份文档不受守卫管。");
     }
 
     /// <summary>
@@ -305,22 +426,18 @@ public sealed class SkillDocGuardTests
     [Fact]
     public void Manual_does_not_hardcode_the_path_count()
     {
-        foreach (var (name, text) in Corpus())
+        foreach (var file in Corpus())
         {
-            var lines = text.Replace("\r\n", "\n").Split('\n');
+            var lines = file.Text.Replace("\r\n", "\n").Split('\n');
 
             for (var index = 0; index < lines.Length; index++)
             {
-                var match = HardcodedCountPattern.Match(lines[index]);
-
-                if (!match.Success)
+                foreach (var match in HardcodedCounts(lines[index]))
                 {
-                    continue;
+                    Assert.Fail(
+                        $"{file.Name} 第 {index + 1} 行写了「{match.Value}」—— "
+                        + "手册里不写死路径条数：契约一变它就过期。写「完整契约见 /openapi/v1.json」。");
                 }
-
-                Assert.Fail(
-                    $"{name} 第 {index + 1} 行写了「{match.Value}」—— "
-                    + "手册里不写死路径条数：契约一变它就过期。写「完整契约见 /openapi/v1.json」。");
             }
         }
     }
@@ -335,7 +452,7 @@ public sealed class SkillDocGuardTests
     [Fact]
     public void Manual_shows_how_to_send_special_characters()
     {
-        var corpus = string.Join("\n", Corpus().Select(item => item.Text));
+        var corpus = string.Join("\n", Corpus().Select(file => file.Text));
 
         Assert.True(
             corpus.Contains("--data-binary @", StringComparison.Ordinal),
@@ -367,29 +484,67 @@ public sealed class SkillDocGuardTests
             MethodPathPattern.IsMatch("curl -sS -X POST \"$IDEA_BASE_URL/api/ideas\""),
             "「方法 + 路径」的正则把 curl 样板里的 -X POST 当成了端点提及。");
 
-        Assert.True(
-            HardcodedCountPattern.IsMatch("契约里有 29 条路径"),
-            "「写死条数」的正则认不出阿拉伯数字的写法。");
+        // 中文不属于路径。
+        var afterChinese = MethodPathPattern.Match("GET /api/ideas这个端点");
 
-        Assert.True(
-            HardcodedCountPattern.IsMatch("一共二十九个端点"),
-            "「写死条数」的正则认不出中文数字的写法。");
+        Assert.True(afterChinese.Success, "「方法 + 路径」的正则认不出路径后面跟着中文的写法。");
+        Assert.Equal("/api/ideas", afterChinese.Groups["path"].Value);
+
+        // 「写死条数」：认得出两种数字写法，也认得出量词与名词之间夹着 API。
+        Assert.Single(HardcodedCounts("契约里有 29 条路径"));
+        Assert.Single(HardcodedCounts("一共二十九个端点"));
+        Assert.Single(HardcodedCounts("契约里有 32 条 API 路径"));
+
+        // 「一」是量词不是计数：这种话不是「路径总条数」的陈述。
+        Assert.Empty(HardcodedCounts("每次只发一个接口"));
+        Assert.Empty(HardcodedCounts("只有一条路径"));
     }
 
-    /// <summary>语料：索引页 + references/ 下的全部 .md。</summary>
-    private static List<(string Name, string Text)> Corpus()
+    /// <summary>语料：索引页 + references/ 下（递归）的全部 .md。</summary>
+    /// <remarks>
+    /// <para>
+    /// 递归：references/ 下的子目录里也是手册的一部分 ——
+    /// 少读一份，等于有一整份文档不受任何守卫管。
+    /// </para>
+    /// <para>
+    /// 跳过 <c>__pycache__</c> 段：那是开发侧的残留，不进分发副本
+    /// （与服务端 <c>SkillCatalog</c> 枚举时的口径一致）。
+    /// </para>
+    /// </remarks>
+    private static List<CorpusFile> Corpus()
     {
         var paths = new List<string> { RepoPaths.SkillIndex };
 
         paths.AddRange(Directory
-            .EnumerateFiles(RepoPaths.SkillReferences, "*.md", SearchOption.TopDirectoryOnly)
+            .EnumerateFiles(RepoPaths.SkillReferences, "*.md", SearchOption.AllDirectories)
+            .Where(path => !HasExcludedSegment(path))
             .OrderBy(path => path, StringComparer.Ordinal));
 
         return paths
-            .Select(path => (
-                Name: Path.GetRelativePath(RepoPaths.Root, path),
-                Text: File.ReadAllText(path)))
+            .Select(path => new CorpusFile(
+                path,
+                Path.GetRelativePath(RepoPaths.Root, path),
+                File.ReadAllText(path)))
             .ToList();
+    }
+
+    /// <summary>这条路径上有没有开发侧的残留目录（<c>__pycache__</c>）。</summary>
+    private static bool HasExcludedSegment(string path)
+    {
+        return path
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Any(segment => segment == ExcludedDirectoryName);
+    }
+
+    /// <summary>路径相对仓库根的样子（报错时看的是它，不是绝对路径）。</summary>
+    private static string Relative(string path) => Path.GetRelativePath(RepoPaths.Root, path);
+
+    /// <summary>操作系统留下的垃圾文件（不进分发副本，也不该让守卫红）。</summary>
+    private static bool IsResidueFile(string path)
+    {
+        var name = Path.GetFileName(path);
+
+        return name == ".DS_Store" || name == "Thumbs.db";
     }
 
     /// <summary>契约文件里的数据 API 端点（方法 + 路径）。</summary>
@@ -430,9 +585,9 @@ public sealed class SkillDocGuardTests
     {
         var found = new Dictionary<(string Method, string Path), Mention>();
 
-        foreach (var (name, text) in Corpus())
+        foreach (var file in Corpus())
         {
-            var lines = text.Replace("\r\n", "\n").Split('\n');
+            var lines = file.Text.Replace("\r\n", "\n").Split('\n');
 
             for (var index = 0; index < lines.Length; index++)
             {
@@ -441,7 +596,7 @@ public sealed class SkillDocGuardTests
                     var method = match.Groups["method"].Value;
                     var path = NormalizePath(match.Groups["path"].Value);
 
-                    found.TryAdd((method, path), new Mention(method, path, name, index + 1));
+                    found.TryAdd((method, path), new Mention(method, path, file.Name, index + 1));
                 }
             }
         }
@@ -461,6 +616,30 @@ public sealed class SkillDocGuardTests
         var query = path.IndexOf('?');
 
         return query < 0 ? path : path[..query];
+    }
+
+    /// <summary>一段文字里把路径条数写死的地方。</summary>
+    /// <remarks>
+    /// 「一」不算：<see cref="IsCountAtLeastTwo"/> 说了算。
+    /// </remarks>
+    private static List<Match> HardcodedCounts(string text)
+    {
+        return HardcodedCountPattern.Matches(text)
+            .Where(match => IsCountAtLeastTwo(match.Groups["count"].Value))
+            .ToList();
+    }
+
+    /// <summary>这个计数是不是「至少两个」（一不算）。</summary>
+    private static bool IsCountAtLeastTwo(string count)
+    {
+        if (count.All(char.IsAsciiDigit))
+        {
+            return int.TryParse(count, out var value) && value >= 2;
+        }
+
+        // 中文数字：字符集里已经去掉了「一」，
+        // 只要还有一个非「零」的字符（二三四五六七八九十百两），计数就 >= 2。
+        return count.Any(character => character is not '零');
     }
 
     /// <summary>
@@ -557,13 +736,35 @@ public sealed class SkillDocGuardTests
         return true;
     }
 
-    /// <summary>取 markdown 文件开头的 frontmatter 块（不含分隔用的 --- 行）。</summary>
-    private static string FrontmatterOf(string text, string origin)
+    /// <summary>markdown 文件开头的 frontmatter 块与它之后的正文。</summary>
+    private sealed record FrontmatterBlock(string Frontmatter, string Body);
+
+    /// <summary>把文件切成「frontmatter」与「正文」两半。</summary>
+    private static FrontmatterBlock SplitFrontmatter(string text, string origin)
     {
         var lines = text.Replace("\r\n", "\n").Split('\n');
 
-        var start = Array.FindIndex(lines, line => line.Trim() == "---");
-        Assert.True(start >= 0, $"{origin} 的开头没有 frontmatter（第一行不是 ---）。");
+        // frontmatter 的起始 --- 必须是文件开头的第一个非空行：
+        // 否则正文里的水平分割线会被误当成 frontmatter 的起点。
+        var start = -1;
+        for (var index = 0; index < lines.Length; index++)
+        {
+            if (lines[index].Trim().Length == 0)
+            {
+                continue;
+            }
+
+            if (lines[index].Trim() == "---")
+            {
+                start = index;
+            }
+
+            break;
+        }
+
+        Assert.True(
+            start >= 0,
+            $"{origin} 里找不到 frontmatter 的起始 ---（它得是文件开头的第一个非空行）。");
 
         var end = -1;
         for (var index = start + 1; index < lines.Length; index++)
@@ -577,31 +778,29 @@ public sealed class SkillDocGuardTests
 
         Assert.True(end > start, $"{origin} 的 frontmatter 没有闭合（后面没有第二个 ---）。");
 
-        return string.Join("\n", lines.Skip(start + 1).Take(end - start - 1));
+        return new FrontmatterBlock(
+            string.Join("\n", lines.Skip(start + 1).Take(end - start - 1)),
+            string.Join("\n", lines.Skip(end + 1)));
     }
 
-    /// <summary>取 markdown 文件里 frontmatter 之后的正文。</summary>
-    private static string BodyOf(string text, string origin)
+    /// <summary>frontmatter 里某个键的值（没有这个键就返回 null）。</summary>
+    private static string? FrontmatterValue(string frontmatter, string key)
     {
-        var lines = text.Replace("\r\n", "\n").Split('\n');
-
-        var start = Array.FindIndex(lines, line => line.Trim() == "---");
-        Assert.True(start >= 0, $"{origin} 的开头没有 frontmatter（第一行不是 ---）。");
-
-        var end = -1;
-        for (var index = start + 1; index < lines.Length; index++)
+        foreach (var line in frontmatter.Split('\n'))
         {
-            if (lines[index].Trim() == "---")
+            if (!line.StartsWith(key + ":", StringComparison.Ordinal))
             {
-                end = index;
-                break;
+                continue;
             }
+
+            return line[(key.Length + 1)..].Trim().Trim('"');
         }
 
-        Assert.True(end > start, $"{origin} 的 frontmatter 没有闭合（后面没有第二个 ---）。");
-
-        return string.Join("\n", lines.Skip(end + 1));
+        return null;
     }
+
+    /// <summary>语料里的一份文件。</summary>
+    private sealed record CorpusFile(string Path, string Name, string Text);
 
     /// <summary>手册里的一次「方法 + 路径」提及。</summary>
     private sealed record Mention(string Method, string Path, string File, int Line);
