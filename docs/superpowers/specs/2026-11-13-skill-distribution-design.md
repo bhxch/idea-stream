@@ -183,12 +183,16 @@ skills/idea-manager/
 按目录段精确匹配，`idea-manager-client` 不在其中）。
 
 **`references/` 是平铺的**：只有上面这五份 `.md`，**下面不许再开子目录**。
-这是 §14 的「内容源形状」守卫断言的不变量 —— 守卫比书面契约严是最糟的做法，
+这是 §14「内容源形状」那条守卫断言的不变量 —— 守卫比书面契约严是最糟的做法，
 所以这条在这里写明。
 
 > 分发链路本身**支持**嵌套（csproj 的 `references/**/*.md` 会保留目录层级，
 > `SkillCatalog` 递归枚举、`fetch.py` 按相对路径取文件）。真要拆子目录时，
 > 改这条与那条守卫一起改 —— 那是一次有意识的结构调整，不是意外。
+>
+> **点开头的目录是例外**：`.cache/`、`.vscode/` 这类编辑器与工具留下的残留不算内容源的一部分，
+> 守卫不认它们。但注意 MSBuild 的 glob 与 .NET 的递归枚举**都会**把点目录里的 `.md` 收进去 ——
+> 所以「点目录不是内容」只对**形状**成立，里面的 `.md` 仍然受手册的各条守卫管。
 
 ### 8.2 索引页（`SKILL.md`）该放什么
 
@@ -553,6 +557,8 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 | frontmatter 一致 | 薄壳的 frontmatter == 内容源 `SKILL.md` 的 frontmatter | 薄壳是 agent 侧唯一要维护的东西，description 不该悄悄过期 |
 | 薄壳正文无 API 路径 | 薄壳 `SKILL.md` 的 **frontmatter 之后的正文**里，不出现任何 `/api/...` 路径 | §8.5 的可执行版本 |
 | 契约不再有副本 | `skills/idea-manager/references/openapi.json` 不存在；内容源里没有第二份契约 | 防止有人又 `cp` 一份回来，重新制造漂移 |
+| 内容源形状 | 内容源目录的直接子项只允许 `SKILL.md` 与 `references/`；`references/` 下只允许 `.md`（点开头的编辑器残留除外） | 防止命令层那样的开发残留混进分发副本 |
+| 索引页路由表的指向 | 索引页里提到的每个 `references/X.md` 都必须存在；`references/` 下的每份 `.md` 都必须在索引页被提到 | 防止「agent 照路由表去取一份不存在的参考」——指针悬空是最难查的一类漂移 |
 | 手册不写死路径条数 | 手册里不出现「NN 条路径」这类数字 | 契约一变它就过期 |
 | 索引页体量 | 索引页行数 ≤ 150 | 渐进式披露的自我约束：索引页膨胀了就说明该拆 |
 | 分发副本完整 | 构建输出 / publish 产物里的 `skill/idea-manager/` 含 `SKILL.md`、`references/*.md`，且不含 `tests/`、`__pycache__` | 防止「发布漏文件」这类静默失败 |
