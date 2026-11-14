@@ -43,6 +43,8 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 ```
 
 带请求体就要带 `Content-Type: application/json`（不带是 415）。
+样板里的 `-u` **只在有凭据时保留** —— `IDEA_USER`/`IDEA_PASS` 都没有时删掉它
+（带上空用户名密码会白跑一趟拿个 401）。
 响应怎么读、特殊字符怎么原样送达，见 `references/calling.md`。
 
 ## 能力清单
@@ -54,10 +56,10 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 | 记一条想法 | POST /api/ideas |
 | 改一条想法（只发要改的字段） | PATCH /api/ideas/{id} |
 | 删一条想法（进回收站） | DELETE /api/ideas/{id} |
-| 覆盖式设置标签 | PUT /api/ideas/{id}/tags |
-| 标记完成 / 取消完成 | POST /api/ideas/{id}/complete |
+| 覆盖式设置标签（**不给 `tags` = 清空**） | PUT /api/ideas/{id}/tags |
+| 标记完成 / 取消完成（`done` **必填**） | POST /api/ideas/{id}/complete |
 | 从回收站恢复想法 | POST /api/ideas/{id}/restore |
-| 批量标记完成 / 取消完成 | POST /api/ideas/bulk/complete |
+| 批量标记完成 / 取消完成（`done` **必填**） | POST /api/ideas/bulk/complete |
 | 批量加标签（并集追加） | POST /api/ideas/bulk/tags |
 | 批量删除想法（进回收站） | POST /api/ideas/bulk/delete |
 | 合并多条想法成一条 | POST /api/ideas/merge |
@@ -123,4 +125,6 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 | `scripts/fetch.py /openapi/v1.json` | 服务端的完整契约 |
 
 完整契约在服务端的 `/openapi/v1.json` —— **实时发**，仓库里没有副本，契约里有全部路径。
-也可以直接 `curl -sS "$IDEA_BASE_URL/openapi/v1.json"`。
+也可以直接
+`curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"`
+（这个端点同样要 basic auth，没凭据时删掉 `-u`）。

@@ -38,17 +38,27 @@ curl -sS --fail-with-body -G "$IDEA_BASE_URL/api/ideas" \
   -u "$IDEA_USER:$IDEA_PASS"
 ```
 
-## 4. 批量标记完成
+## 4. 标记完成 / 批量标记完成
+
+> **`done` 必填**：省略它等于给 `false`（= **取消完成**），服务端**不报错**。
+> 要标完成就明确给 `{"done":true}`。
 
 ```bash
-# 标记完成
+# 一条想法标完成
+curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas/0198f0a1b2c3d4e5f60718293a4b5c6d/complete" \
+  -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{"done":true}
+JSON
+
+# 批量标记完成
 curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas/bulk/complete" \
   -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
 {"ids":["0198f0a1b2c3d4e5f60718293a4b5c6d","0198f0a1b2c3d4e5f60718293a4b5c6e"],"done":true}
 JSON
 
-# 取消完成
+# 批量取消完成
 curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas/bulk/complete" \
   -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
@@ -56,7 +66,7 @@ curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas/bulk/complete" \
 JSON
 ```
 
-返回的是被改动的那些想法（裸数组）。
+返回的是被改动的那些想法（裸数组）。`ids` 给空数组则**什么都不改**（200 + `[]`）。
 
 ## 5. 批量加标签（并集追加）
 
@@ -78,6 +88,8 @@ curl -sS --fail-with-body -X PUT "$IDEA_BASE_URL/api/ideas/0198f0a1b2c3d4e5f6071
 {"tags":["导出"]}
 JSON
 ```
+
+⚠️ `PUT` 是**覆盖式**的：`tags` 不给、或给空数组 = **清空全部标签**（不是「不改」）。
 
 ## 6. 合并几条想法
 

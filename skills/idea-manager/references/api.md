@@ -29,14 +29,14 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 | PATCH /api/ideas/{id} | 改标题/正文 | 路径参数 `id` | `title`、`content` | 200 |
 | DELETE /api/ideas/{id} | 删（进回收站） | 路径参数 `id` | 无 | 204 |
 | PUT /api/ideas/{id}/tags | **覆盖式**设标签 | 路径参数 `id` | `tags`（数组） | 200 |
-| POST /api/ideas/{id}/complete | 标记完成 / 取消完成 | 路径参数 `id` | `done`（布尔） | 200 |
+| POST /api/ideas/{id}/complete | 标记完成 / 取消完成 | 路径参数 `id` | `done`（布尔，**必填**） | 200 |
 | POST /api/ideas/{id}/restore | 从回收站恢复 | 路径参数 `id` | 无 | 200 |
 
 ### 批量与合并
 
 | 方法 + 路径 | 说明 | 请求体字段 | 成功状态码 |
 |---|---|---|---|
-| POST /api/ideas/bulk/complete | 批量标记完成 / 取消完成 | `ids`（数组）、`done`（布尔） | 200 |
+| POST /api/ideas/bulk/complete | 批量标记完成 / 取消完成 | `ids`（数组）、`done`（布尔，**必填**） | 200 |
 | POST /api/ideas/bulk/tags | 批量加标签（**并集追加**） | `ids`（数组）、`tags`（数组）、`replace`（布尔） | 200 |
 | POST /api/ideas/bulk/delete | 批量删除（进回收站） | `ids`（数组） | 200 |
 | POST /api/ideas/merge | 多条合并成一条（源想法**硬删**） | `ids`（数组）、`content`、`title` | 200 |
@@ -69,8 +69,14 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 | GET /api/health | 健康检查 | 无 | 200 |
 | GET /api/events | **SSE 事件流**（长连接） | `lastEventId` | 200 |
 
-SSE 的帧是 `id:` / `event:` / `data:` 三行一组，`data` 是单行 JSON；
-空闲时服务端发一行 `: ping` 注释防连接被掐断。
+SSE 的帧不止一种，**别只按一种解析**：
+
+| 帧 | 长相 | 含义 |
+|---|---|---|
+| 业务事件 | `id:` / `event:` / `data:` 三行一组（`data` 是单行 JSON） | 一条想法/项目的变化 |
+| 控制帧 | `event: resync` / `data: {}`（**没有 `id` 行**） | 「你漏了事件，重新拉完整列表」—— 收到它要重拉列表，**不能**拿它当 `Last-Event-ID` 续发 |
+| 心跳 | 一行 `: ping` 注释 | 空闲时的保活，防止中间代理掐断连接 |
+
 断线重连时把上次收到的 `id` 放进 `?lastEventId=`（或 `Last-Event-ID` 请求头）。
 curl 要加 `-N`（不缓冲），否则帧会攒着不出来。
 
@@ -81,7 +87,7 @@ curl 要加 `-N`（不缓冲），否则帧会攒着不出来。
 | GET /api/webhooks | 列表（裸数组，**默认遮蔽**） | `projectId`、`unmask` | 无 | 200 |
 | POST /api/webhooks | 新建 | 无 | `name`、`url`、`method`、`headers`、`bodyTemplate`、`events`、`scope`、`projectId`、`secret` | 201 |
 | GET /api/webhooks/templates/telegram | Telegram 模板预设（**不遮蔽**） | 无 | 无 | 200 |
-| GET /api/webhooks/{id} | 读一个（**默认遮蔽**） | 路径参数 `id`、`unmask` | 无 | 200 |
+| GET /api/webhooks/{id} | 读一个（**默认遮蔽**） | 路径参数 `id`；查询参数 `unmask` | 无 | 200 |
 | PATCH /api/webhooks/{id} | 改 | 路径参数 `id` | `name`、`url`、`method`、`headers`、`bodyTemplate`、`events`、`enabled`、`secret` | 200 |
 | DELETE /api/webhooks/{id} | 删 | 路径参数 `id` | 无 | 204 |
 | GET /api/webhooks/{id}/deliveries | 投递记录（裸数组） | 路径参数 `id` | 无 | 200 |
@@ -89,10 +95,56 @@ curl 要加 `-N`（不缓冲），否则帧会攒着不出来。
 
 webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）见 `webhooks.md`。
 
-## 请求体字段的通用约定
+## 请求体字段：不给会怎样
 
-- 请求体字段**都可以是 `null`**：`null` = 不改（PATCH）或用默认值（新建）。
-- 发空串 / 空数组**会真的清空** —— 那是「我要清掉它」，不是「没给」。
+**「字段可以不给」这句话只对一部分端点成立。** 下面是逐端点的语义。
+**先记这三条**（错了会**静默**写坏数据）：
+
+1. **`done` 不给 = 把想法标成未完成。**
+   `POST /api/ideas/{id}/complete` 与 `POST /api/ideas/bulk/complete` 的 `done`
+   是**必填的布尔**：省略它等于给 `false`（= 取消完成），服务端**不报错**。
+   要标完成就得给 `{"done":true}`。
+2. **`PUT /api/ideas/{id}/tags` 不给 `tags` = 清空全部标签。**
+   （与 `POST /api/ideas/bulk/tags` 相反：那个不给 `tags` 只是「不追加」，不丢标签。）
+3. **`PATCH /api/projects/{id}` 不给 `name` = 400。**
+   项目的改名是必填的，不像想法那样「`null` = 不改」。
+
+### 逐端点
+
+| 端点 | 字段 | 省略 / `null` | 给空值 | 给非空值 |
+|---|---|---|---|---|
+| POST /api/ideas | `projectId` | 落到内置收件箱 | 空串 = 同样落收件箱 | 用它 |
+| POST /api/ideas | `content` | **400 `invalid_content`**（正文必填） | 空白 = 400 | 用它 |
+| POST /api/ideas | `title` | 无标题 | 空串 = 无标题 | 用它 |
+| POST /api/ideas | `tags` | 不带标签 | 空数组 = 不带标签 | 用它 |
+| PATCH /api/ideas/{id} | `title` | 不改 | 空串 = **真的清成无标题** | 改成它 |
+| PATCH /api/ideas/{id} | `content` | 不改 | 空串 / 空白 = **400**（正文不能为空，清不掉） | 改成它 |
+| PATCH /api/projects/{id} | `name` | **400 `invalid_project_name`**（必填） | 空串 = 400 | 改成它 |
+| POST /api/projects | `name` | **400 `invalid_project_name`** | 空串 = 400 | 用它 |
+| POST /api/projects/reorder | `ids` | **400 `invalid_reorder_ids`** | 空数组 = 400 | 用它 |
+| PUT /api/ideas/{id}/tags | `tags` | **清空全部标签** | 空数组 = 清空 | 覆盖成它 |
+| POST /api/ideas/{id}/complete | `done` | **必填**：省略 = `false` = **取消完成** | `null` = 400 `invalid_request_body` | `true` = 标完成 |
+| POST /api/ideas/bulk/complete | `done` | 同上：省略 = **取消完成** | `null` = 400 | `true` = 标完成 |
+| POST /api/ideas/bulk/complete | `ids` | 空数组 = 200 + `[]`（**什么都没改**） | 空数组 = 同上 | 用它 |
+| POST /api/ideas/bulk/tags | `tags` | 空数组 = 追加空标签 = **不变**（不是清空） | 空数组 = 同上 | 用它 |
+| POST /api/ideas/bulk/tags | `replace` | `false` = 并集追加 | — | `true` = 覆盖 |
+| POST /api/ideas/bulk/delete | `ids` | 空数组 = 200 + `[]`（**什么都没删**） | 空数组 = 同上 | 用它 |
+| POST /api/ideas/merge | `ids` | **400 `invalid_merge_selection`**（至少两条） | 空数组 = 400 | 用它 |
+| POST /api/ideas/merge | `content` | 服务端拼接（正文之间空行分隔） | 空串 = 400 `invalid_content` | 用它 |
+| POST /api/ideas/merge | `title` | 用第一条源想法的标题 | 空串 = 无标题 | 用它 |
+| PUT /api/settings/{key} | `value` | **400 `invalid_sort_mode`** | 空串 = 400 | 用它 |
+| POST /api/webhooks | `name` / `url` / `scope` / `bodyTemplate` | **400**（各有各的码） | 400 | 用它 |
+| POST /api/webhooks | `events` | 不订阅任何事件（合法） | 空数组 = 同上 | 用它 |
+| POST /api/webhooks | `headers` | 没有请求头 | 空对象 = 同上 | 用它 |
+| POST /api/webhooks | `method` | `POST` | 空串 = `POST` | 用它 |
+| POST /api/webhooks | `secret` | 没有密钥 | 空串 = 没有密钥 | 用它 |
+| PATCH /api/webhooks/{id} | 全部键 | 不改 | 见 `webhooks.md` 的三态表 | 用它 |
+
+补充：
+
+- **批量端点的 id 列表**：不存在的 id **直接跳过、不报错**（多端同步的常态）；
+  但传的 id **一个都不存在**时是 404 `idea_not_found`；
+  `ids` 给空数组则**什么都不做**（200 + `[]`）。
 - 想法的 `tags` 是**数组**（`["后端","导出"]`），不是逗号串；
   只有查询参数 `tags`（筛选用）是逗号分隔的一串。
 

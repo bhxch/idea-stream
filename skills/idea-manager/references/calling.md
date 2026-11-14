@@ -72,6 +72,9 @@ JSON
 
 ## 各方法的样板
 
+样板里的 `-u` **只在有凭据时保留** —— `IDEA_USER`/`IDEA_PASS` 都没有时删掉那一段
+（带上空用户名密码会白跑一趟拿个 401）。
+
 ```bash
 # GET：读
 curl -sS --fail-with-body "$IDEA_BASE_URL/api/ideas?status=open" \
