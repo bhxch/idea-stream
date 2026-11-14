@@ -122,35 +122,25 @@ HTTP_CODE_PATTERN = re.compile(r"http_[0-9]{1,3}")
 # 所以进输出前一律换成空格。
 CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
-# 掩码 base64 时多短的才算「值得掩」。
-#
-# 很短的 base64（如 "YQ"）会误伤正常文本 —— 消息里到处是这个两字母的串，
-# 就会糊成一片。所以只掩够长的那些。
-MIN_MASKABLE_BASE64 = 8
-
 # 脱敏用的占位符。
 MASK = "***"
 
-# 地址里的 userinfo（user:password@host）—— 回显地址时抹掉。
+# 地址的 scheme 前缀（'http://' 这种）。
 #
-# 按 URL 结构来（先分出 scheme，再看 authority 里有没有 '@'），
-# **不是**按最后一个 '@' 切：按 '@' 切会把路径里的 '@'（http://host/a@b）
-# 误当成 userinfo，把一段正常的路径改成 "***@b"。
-BASE_URL_USERINFO = re.compile(
-    r"^(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)?(?P<userinfo>[^/?#@\s]*)@"
-)
+# 拆地址时先把它摘掉 —— 不然 authority 的起点会被 '//' 里的斜杠带偏
+# （authority 到第一个 '/' 为止，而 '//' 里就有一个斜杠）。
+SCHEME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
-# 文本里的 userinfo（user:password@host）——错误信息里抹掉。
+# 文本里的**候选段**：一段不含空白、也不含 '/'、'?'、'#' 的连续字符。
 #
-# 与上面那个的区别：这里要能在**一段文本**里找（异常消息可能只带半个 URL），
-# 所以不锚在开头；userinfo 段必须带冒号（user:password），
-# 免得把普通的 "someone@example.com" 也当成凭据。
-USERINFO_PATTERN = re.compile(
-    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)?"
-    r"(?P<userinfo>[^/?#@\s]*:[^/?#@\s]*)"
-    r"@"
-    r"(?P<host>[^/?#@\s]*)"
-)
+# 它与 URL 的 authority 同一个坐标系（authority 到第一个 '/'、'?'、'#' 为止），
+# 所以「在候选段里按 URL 结构切 userinfo」与「在地址里切」是同一把尺子。
+#
+# **不用正则的字符类去猜 userinfo 的形状**：旧做法用 `[^/?#@\s]*` 那种字符类，
+# 它整个不含空白、也不含 '@' —— 密码带空白或带 '@' 时**根本取不出来**，
+# 凭据原样进了 stderr（实测过：'http://user:se kret@host' 与
+# 'http://user:pa@ss@host' 都原样漏出去）。
+CANDIDATE_PATTERN = re.compile(r"[^\s/?#]+")
 
 
 # --------------------------------------------------------------------------
@@ -277,29 +267,36 @@ def _redact(text: str) -> str:
     stderr 会进日志、进 agent 的上下文。
 
     两道一起上：
-    * **已知的凭据值**（密码 / token / 地址里带的密码）→ 换成 ``***``；
+    * **已知的凭据值**（密码 / token / 它们的 base64 / 地址里带的密码）→ 换成 ``***``；
     * **文本里 URL 的 userinfo**（``user:password@host``）→ 换成 ``***@``。
 
-    只做第二道不够：异常消息未必带着 URL（比如 urllib 抱怨端口时只说
-    ``nonnumeric port: 'sekret-pw@host'``），密码会**原样**出现在里面。
+    只做第二道不够：异常消息未必带着完整 URL。比如 urllib 抱怨端口时只说
+    ``nonnumeric port: 'sekret-pw@host'`` —— 密码会**原样**出现在里面。
+    只做第一道也不够：异常消息里可能带着一个**没进过值级表**的 userinfo
+    （比如从别处抄来的一段 URL）。
     """
     for value in _credential_values():
         if value:
             text = text.replace(value, MASK)
 
-    return USERINFO_PATTERN.sub(_redact_userinfo, text)
+    return CANDIDATE_PATTERN.sub(_redact_candidate, text)
 
 
-def _redact_userinfo(match: "re.Match") -> str:
-    """把一段文本里的 userinfo 换成 ``***@``（没有 host 就整个抹掉）。"""
-    scheme = match.group("scheme") or ""
-    host = match.group("host")
+def _redact_candidate(match: "re.Match") -> str:
+    """把一段文本里的 userinfo（``user:password``）换成 ``***``。
 
-    if not host:
-        # 整个 URL 就是凭据段（没有 host）→ 整个抹掉。
-        return MASK
+    按 URL 结构切（见 :func:`_split_userinfo`），不是靠正则的字符类猜形状。
 
-    return "{}***@{}".format(scheme, host)
+    没有 ``user:password`` 形状的候选段**原样留着**：
+    多半是 ``someone@example.com`` 这种普通邮箱 —— 把它糊掉只会毁可读性。
+    """
+    candidate = match.group(0)
+    userinfo, password = _split_userinfo(candidate)
+
+    if not password:
+        return candidate
+
+    return MASK + candidate[len(userinfo):]
 
 
 def _credential_values() -> List[str]:
@@ -327,6 +324,14 @@ def _credential_values() -> List[str]:
                 values.append(value)
 
     # 实际发出去的那串 basic auth：请求头若被回显，它就是凭据。
+    #
+    # **三个形态都进表**（原文 / 带 padding / 去 padding）：
+    # base64 可逆，少掩一种形态等于留了个口子。
+    #
+    # **不再按长度设门槛**：旧做法有个 MIN_MASKABLE_BASE64 = 8 的门槛
+    # （「短 base64 可能出现在正常文本里，遮了会毁可读性」）。
+    # 但这三个形态都是**派生自同一个真实凭据**的，不是猜出来的形态 ——
+    # 遮它们不会误伤正常文本，而放过它们就是真的漏。
     user = os.environ.get("IDEA_USER", "").strip()
     password = os.environ.get("IDEA_PASS", "").strip()
     if user and password:
@@ -338,42 +343,145 @@ def _credential_values() -> List[str]:
         # base64url 写法。code 的形状校验禁 '='，所以带 padding 的形态被挡住了，
         # 去 padding 的却两关全过 —— 两条路都得堵。
         unpadded = encoded.rstrip("=")
-        if len(unpadded) >= MIN_MASKABLE_BASE64:
-            values.append(unpadded)
+        values.append(unpadded)
 
         # base64url 还把 '+' '/' 换成 '-' '_'。
         url_safe = unpadded.replace("+", "-").replace("/", "_")
-        if url_safe != unpadded and len(url_safe) >= MIN_MASKABLE_BASE64:
+        if url_safe != unpadded:
             values.append(url_safe)
 
-    url_password = _password_in_base_url()
-    if url_password:
-        values.append(url_password)
+    values.extend(_url_credential_values())
 
     # 长的先掩：短的可能是长的的一部分（先掩短的会把长的拆成两半）。
     return sorted(set(values), key=len, reverse=True)
 
 
+def _url_credential_values() -> List[str]:
+    """实例地址里带的凭据（的各种派生形态）。
+
+    有人会把密码写进 URL —— 那时它不在环境变量里，但也绝不能进 stderr。
+
+    表里放的是**派生形态**，不是猜出来的形态：
+    * userinfo 本身（``user:password``）；
+    * 密码原文；
+    * **百分号解码后的**那份（urllib 会把 host 解码 —— 报错时露出来的是解码后的东西）；
+    * urllib 把**整个 authority** 当 host 用，http.client 报错时会把
+      「最后一个冒号之后的那截」原样说出来（实测：
+      ``http://user:p%40ss%3Aword@host`` 报的是 ``nonnumeric port: 'word@host'``）——
+      那是密码的**片段**，所以每个冒号之后的片段（连主机名一起）也得进表。
+
+    没有 userinfo（地址里没带凭据）就是空表 —— 不凭空造值。
+    """
+    values: List[str] = []
+
+    raw = os.environ.get("IDEA_BASE_URL", "").strip()
+    _scheme, authority, _tail = _split_url(raw)
+    userinfo, password = _split_userinfo(authority)
+
+    if not userinfo:
+        return values
+
+    values.append(userinfo)
+
+    if password:
+        values.append(password)
+
+    # 解码后的那几份：urllib 报的是解码之后的东西。
+    decoded_userinfo = urllib.parse.unquote(userinfo)
+    values.append(decoded_userinfo)
+    values.append(urllib.parse.unquote(authority))
+
+    # 片段（连主机名）：http.client 把「最后一个冒号之后的那截」原样说出来。
+    host = authority[authority.rfind("@") + 1:]
+
+    if host:
+        for index, character in enumerate(decoded_userinfo):
+            if character != ":":
+                continue
+
+            fragment = decoded_userinfo[index + 1:]
+
+            if fragment:
+                values.append(fragment + "@" + host)
+
+    return values
+
+
+def _split_scheme(text: str) -> Tuple[str, str]:
+    """摘掉 scheme 前缀（``http://``）：返回 (前缀, 剩下的)。"""
+    match = SCHEME_PATTERN.match(text)
+
+    if not match:
+        return "", text
+
+    return match.group(0), text[match.end():]
+
+
+def _split_authority(text: str) -> Tuple[str, str]:
+    """按 URL 结构切出 authority：到第一个 ``/``、``?``、``#`` 为止。"""
+    cut = len(text)
+
+    for marker in ("/", "?", "#"):
+        index = text.find(marker)
+
+        if index >= 0 and index < cut:
+            cut = index
+
+    return text[:cut], text[cut:]
+
+
+def _split_url(url: str) -> Tuple[str, str, str]:
+    """按 URL 结构切：scheme 前缀、authority、其余（路径与查询串）。"""
+    scheme, rest = _split_scheme(url)
+    authority, tail = _split_authority(rest)
+
+    return scheme, authority, tail
+
+
+def _split_userinfo(authority: str) -> Tuple[str, str]:
+    """authority 里的 userinfo 与密码：返回 (userinfo, 密码)。
+
+    * userinfo = authority 里**最后一个** ``@`` 之前的部分（没有 ``@`` 就是空串）；
+    * 密码 = userinfo 里**第一个** ``:`` 之后的**全部**
+      （允许空白、``@``、``%xx`` —— 都不排除；没有 ``:`` 就是空串）。
+
+    **为什么按最后一个 ``@``**：密码里可以带 ``@``
+    （``user:pa@ss@host`` 的密码是 ``pa@ss``），而 ``@`` 之后才是主机名 ——
+    按结构切才不会把密码截断成 ``pa``。
+
+    **为什么按第一个 ``:``**：用户名里不能有冒号，密码里可以（RFC 的规矩）。
+
+    **为什么不用正则的字符类**：旧的 ``[^/?#@\\s]*`` 那个字符类整个不含空白、
+    也不含 ``@`` —— 密码带空白或带 ``@`` 时**根本取不出来**，
+    凭据原样进了 stderr（实测过）。
+    """
+    at = authority.rfind("@")
+
+    if at < 0:
+        return "", ""
+
+    userinfo = authority[:at]
+    colon = userinfo.find(":")
+
+    if colon < 0:
+        return userinfo, ""
+
+    return userinfo, userinfo[colon + 1:]
+
+
 def _password_in_base_url() -> str:
     """实例地址的 userinfo 里带的密码（没有就返回空串）。
 
-    userinfo 是 ``user:password``，按**第一个**冒号切（RFC 里的规矩：
-    用户名里不能有冒号，密码里可以）。
+    按 URL 结构取（见 :func:`_split_userinfo`），不是靠正则的形状猜。
 
     地址要先去掉首尾空白 —— 真正发出去的地址也是去空白的那个，
-    不然 ``" http://u:p@host"`` 里的密码就漏了（它带前导空格，
-    正则锚在开头就匹配不上）。
+    不然 ``" http://u:p@host"`` 里的密码就漏了（它带前导空格）。
     """
     raw = os.environ.get("IDEA_BASE_URL", "").strip()
-    match = BASE_URL_USERINFO.match(raw)
-    if not match:
-        return ""
+    _scheme, authority, _tail = _split_url(raw)
+    _userinfo, password = _split_userinfo(authority)
 
-    userinfo = match.group("userinfo")
-    if ":" not in userinfo:
-        return ""
-
-    return userinfo.split(":", 1)[1]
+    return password
 
 
 # --------------------------------------------------------------------------
@@ -509,16 +617,19 @@ def resolve_base_url() -> str:
 def _redact_base_url(raw: str) -> str:
     """回显实例地址时把 userinfo 抹掉（有人会把密码写在 URL 里）。
 
-    按 URL 结构来（先分出 scheme，再看 authority 里有没有 '@'），
-    不是按最后一个 '@' 切 —— 按 '@' 切会把路径里的 '@'（http://host/a@b）
-    误当成 userinfo。
+    按 URL 结构来（见 :func:`_split_url` / :func:`_split_userinfo`），
+    不是按字符类猜形状 —— 密码带空白或带 '@' 时，旧做法整个取不出来。
+
+    **不按最后一个 '@' 切整条地址**：路径里的 '@'（http://host/a@b）
+    不是 userinfo，抹掉它会把一段正常的路径改成 "***@b"。
     """
-    match = BASE_URL_USERINFO.match(raw)
-    if not match:
+    scheme, authority, tail = _split_url(raw)
+    userinfo, _password = _split_userinfo(authority)
+
+    if not userinfo:
         return raw
 
-    scheme = match.group("scheme") or ""
-    return "{}***@{}".format(scheme, raw[match.end():])
+    return "{}***@{}".format(scheme, authority[len(userinfo):]) + tail
 
 
 def resolve_cache_root() -> str:

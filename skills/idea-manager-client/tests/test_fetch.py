@@ -568,6 +568,54 @@ class FetchTest(unittest.TestCase):
         self.assertIn("invalid_config", err)
         self.assertEqual(code, 1)
 
+    def test_never_echoes_a_password_containing_a_space(self):
+        """地址里的密码带**内部空白** → (stderr 与 stdout 都不许出现它。
+
+        旧做法用 ``[^/?#@\\s]*`` 那个字符类找 userinfo：它整个不含空白，
+        ``strip()`` 又只救首尾 —— 密码里的那个空白让两道脱敏**都拦不住**，
+        凭据原样进了 stderr（实测形态：``http://user:se kret@host``）。
+
+        现在按 **URL 结构**取：authority 到第一个 '/'、'?'、'#' 为止，
+        userinfo 是最后一个 '@' 之前的部分，密码是第一个 ':' 之后的全部。
+        """
+        code, out, err = self.run_fetch([], base_url="http://user:se kret@host")
+
+        self.assertNotIn("se kret", err)
+        self.assertNotIn("se kret", out)
+        self.assertEqual(code, 2)
+
+    def test_never_echoes_a_password_containing_an_at_sign(self):
+        """地址里的密码带 '@' → 整个密码都得遮住。
+
+        旧做法把 userinfo 的字符类写成不含 '@'：``user:pa@ss@host`` 里
+        只认出 ``user:pa``，剩下的 ``ss`` 原样留在 stderr 里。
+        """
+        code, out, err = self.run_fetch([], base_url="http://user:pa@ss@host")
+
+        self.assertNotIn("pa@ss", err)
+        self.assertNotIn("pa@ss", out)
+        # 旧做法漏出来的那一截（"ss@host"）也不许留
+        self.assertNotIn("ss@host", err)
+        self.assertEqual(code, 2)
+
+    def test_never_echoes_the_decoded_fragment_of_a_percent_encoded_password(self):
+        """地址里的密码是百分号编码的 → **解码后**的那份（及其片段）也得遮。
+
+        urllib 会把 host 百分号解码，而它把**整个 authority** 当 host 用：
+        ``http://user:p%40ss%3Aword@host`` 报的是
+        ``nonnumeric port: 'word@host'`` —— 露出来的是解码后的**片段**。
+
+        所以凭据表里要同时有：原文、解码后的原文、以及每个冒号之后的片段
+        （连主机名一起 —— http.client 报出来的就是那个形状）。
+        """
+        code, out, err = self.run_fetch([], base_url="http://user:p%40ss%3Aword@host")
+
+        for secret in ("p%40ss%3Aword", "p@ss:word", "word@host"):
+            self.assertNotIn(secret, err, "stderr 里露出了 {}".format(secret))
+            self.assertNotIn(secret, out, "stdout 里露出了 {}".format(secret))
+
+        self.assertEqual(code, 2)
+
     def test_never_echoes_the_password_when_the_base_url_has_leading_space(self):
         """地址带前导空白 → 密码仍然不许漏。
 
@@ -723,6 +771,39 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertNotIn(encoded, err)
         self.assertNotIn(encoded, out)
+        self.assertEqual(err, "http_500: boom\n")
+        self.assertEqual(out, "")
+
+    def test_does_not_echo_a_short_basic_auth_base64_without_padding(self):
+        """**短**的 basic auth base64（去 padding 的形态）也要遮。
+
+        旧做法有个长度门槛（``MIN_MASKABLE_BASE64 = 8``）：短 base64 可能出现在
+        正常文本里，遮了会毁可读性 —— 于是短的「去 padding」形态被放过了。
+
+        但这三个形态（原文 / 带 padding / 去 padding）都是**派生自同一个真实
+        凭据**的，不是猜出来的形态 —— 遮它们不会误伤正常文本，
+        放过它们就是真的漏（base64 可逆）。
+        """
+        user = "u"
+        password = "zzz"
+        encoded = base64.b64encode("{}:{}".format(user, password).encode("utf-8"))
+        unpadded = encoded.decode("ascii").rstrip("=")
+
+        # 这条用例的前提：短到会被旧的门槛放过（否则测的还是上面那条），
+        # 而且**不含密码原文**（否则旧代码靠密码本身也能蒙对，这条就白测了）。
+        self.assertLess(len(unpadded), 8)
+        self.assertNotIn(password, unpadded)
+
+        self.server.state.manifest_problem = (500, unpadded, "boom")
+
+        code, out, err = self.run_fetch(
+            [], env={"IDEA_USER": user, "IDEA_PASS": password}
+        )
+
+        self.assertEqual(code, 1)
+        self.assertNotIn(unpadded, err)
+        self.assertNotIn(unpadded, out)
+        # 含凭据的 code 不许原样输出（换成可解析的 http_<状态码>）
         self.assertEqual(err, "http_500: boom\n")
         self.assertEqual(out, "")
 
