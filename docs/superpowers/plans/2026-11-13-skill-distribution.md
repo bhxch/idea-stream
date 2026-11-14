@@ -713,7 +713,7 @@ git commit -m "feat(api): webhook 的 url 与 headers 默认遮蔽回传
   **必须覆盖契约里的每一个 `/api/**` 路径**（逐条核对 `openapi/idea-v1.json` 的 `paths` 段，
   排除 `/skill/**`；每个路径写全它的每个方法）。
 - `## 路由表`：五行的「要什么 → 读哪份」。
-- `## 最易错的坑`：五条 —
+- `## 最易错的坑`：六条 —
   1. 覆盖式设标签是 `PUT /api/ideas/{id}/tags`；并集追加是 `POST /api/ideas/bulk/tags`。
   2. `PATCH` 只发要改的字段：`null` = 不改；发空串 / 空数组会**真的清空**。
   3. `POST /api/webhooks` 必须给 body 模板；`scope=global` 不能带 `projectId`，
