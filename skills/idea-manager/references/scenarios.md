@@ -78,7 +78,10 @@ curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas/bulk/tags" \
 JSON
 ```
 
-这是**并集追加**（原有标签还在）。要**覆盖式**改一条想法的标签，用
+这是**并集追加**（原有标签还在）。
+⚠️ 但 `POST /api/ideas/bulk/tags` 给了 `replace: true` 就变回**覆盖式** ——
+那时 `tags` 漏了（或给空数组）= 把标签全清掉（不报错）。
+要**覆盖式**改一条想法的标签，用
 `PUT /api/ideas/{id}/tags`：
 
 ```bash
@@ -137,7 +140,8 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/0198f0a1b2c3d4e5f60
 JSON
 ```
 
-发 `null` = 不改；发空串 = **真的把正文清空**。
+发 `null` = 不改；**发空串是 400 `invalid_content`**（正文不能为空，清不掉）。
+想清掉标题给空串 —— 那是「清成无标题」。
 
 ## 9. 配一个 Telegram webhook
 

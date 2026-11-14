@@ -37,11 +37,12 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 | 方法 + 路径 | 说明 | 请求体字段 | 成功状态码 |
 |---|---|---|---|
 | POST /api/ideas/bulk/complete | 批量标记完成 / 取消完成 | `ids`（数组）、`done`（布尔，**必填**） | 200 |
-| POST /api/ideas/bulk/tags | 批量加标签（**并集追加**） | `ids`（数组）、`tags`（数组）、`replace`（布尔） | 200 |
+| POST /api/ideas/bulk/tags | 批量加标签（默认**并集追加**；`replace: true` = **覆盖式**） | `ids`（数组）、`tags`（数组）、`replace`（布尔） | 200 |
 | POST /api/ideas/bulk/delete | 批量删除（进回收站） | `ids`（数组） | 200 |
 | POST /api/ideas/merge | 多条合并成一条（源想法**硬删**） | `ids`（数组）、`content`、`title` | 200 |
 
-`replace` 不给（或给 `false`）是**并集追加**；给 `true` 才是覆盖式。
+`replace` 不给（或给 `false`）是**并集追加**（原有标签还在）；
+给 `true` 才是**覆盖式** —— 那时 `tags` 给空集就等于**清空全部标签**。
 `merge` 不给 `content` 时由服务端拼接（正文之间空行分隔），给了就以 `content` 为准。
 
 ### 项目与设置
@@ -98,15 +99,18 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
 ## 请求体字段：不给会怎样
 
 **「字段可以不给」这句话只对一部分端点成立。** 下面是逐端点的语义。
-**先记这三条**（错了会**静默**写坏数据）：
+**先记这几条**（错了会写坏数据，或拿到与意图相反的结果）：
 
 1. **`done` 不给 = 把想法标成未完成。**
    `POST /api/ideas/{id}/complete` 与 `POST /api/ideas/bulk/complete` 的 `done`
    是**必填的布尔**：省略它等于给 `false`（= 取消完成），服务端**不报错**。
    要标完成就得给 `{"done":true}`。
 2. **`PUT /api/ideas/{id}/tags` 不给 `tags` = 清空全部标签。**
-   （与 `POST /api/ideas/bulk/tags` 相反：那个不给 `tags` 只是「不追加」，不丢标签。）
-3. **`PATCH /api/projects/{id}` 不给 `name` = 400。**
+   （它是覆盖式端点，空集就等于「清空」。）
+3. **`POST /api/ideas/bulk/tags` 给了 `replace: true` 却漏了 `tags` = 也清空全部标签。**
+   默认是**并集追加**（`replace` 不给或 `false`），那时省略 `tags` 只是「不追加」，
+   **不丢标签**；但 `replace: true` 是**覆盖式** —— 空集就等于「清空」。
+4. **`PATCH /api/projects/{id}` 不给 `name` = 400。**
    项目的改名是必填的，不像想法那样「`null` = 不改」。
 
 ### 逐端点
@@ -126,8 +130,8 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
 | POST /api/ideas/{id}/complete | `done` | **必填**：省略 = `false` = **取消完成** | `null` = 400 `invalid_request_body` | `true` = 标完成 |
 | POST /api/ideas/bulk/complete | `done` | 同上：省略 = **取消完成** | `null` = 400 | `true` = 标完成 |
 | POST /api/ideas/bulk/complete | `ids` | 空数组 = 200 + `[]`（**什么都没改**） | 空数组 = 同上 | 用它 |
-| POST /api/ideas/bulk/tags | `tags` | 空数组 = 追加空标签 = **不变**（不是清空） | 空数组 = 同上 | 用它 |
-| POST /api/ideas/bulk/tags | `replace` | `false` = 并集追加 | — | `true` = 覆盖 |
+| POST /api/ideas/bulk/tags | `tags` | 空数组 = 追加空标签。**`replace` 不给或 `false` 时 = 不变**；**`replace: true` 时 = 清空全部标签** | 空数组 = 同上 | 用它 |
+| POST /api/ideas/bulk/tags | `replace` | `false` = 并集追加（不变） | — | `true` = **覆盖式**（`tags` 是空集就清空） |
 | POST /api/ideas/bulk/delete | `ids` | 空数组 = 200 + `[]`（**什么都没删**） | 空数组 = 同上 | 用它 |
 | POST /api/ideas/merge | `ids` | **400 `invalid_merge_selection`**（至少两条） | 空数组 = 400 | 用它 |
 | POST /api/ideas/merge | `content` | 服务端拼接（正文之间空行分隔） | 空串 = 400 `invalid_content` | 用它 |
@@ -142,9 +146,16 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
 
 补充：
 
-- **批量端点的 id 列表**：不存在的 id **直接跳过、不报错**（多端同步的常态）；
-  但传的 id **一个都不存在**时是 404 `idea_not_found`；
+- **批量端点（`bulk/complete`、`bulk/tags`、`bulk/delete`）的 id 列表**：
+  不存在的 id **直接跳过、不报错**（多端同步的常态）；
+  已在回收站里的（`bulk/delete`）算**已处理**（幂等）；
+  但传的 id **一个都没处理到**时是 404 `idea_not_found`；
   `ids` 给空数组则**什么都不做**（200 + `[]`）。
+- **合并不跳过**（`POST /api/ideas/merge`）：语义是「这 N 条合成一条」，
+  少一条就合成不了 —— 任一 id 不存在就**整体 404 `idea_not_found`**（一条都不改）；
+  少于两条是 400 `invalid_merge_selection`。
+- **重排不给 id 是 400**（`POST /api/projects/reorder`）：
+  `ids` 省略或给空数组都是 400 `invalid_reorder_ids`。
 - 想法的 `tags` 是**数组**（`["后端","导出"]`），不是逗号串；
   只有查询参数 `tags`（筛选用）是逗号分隔的一串。
 

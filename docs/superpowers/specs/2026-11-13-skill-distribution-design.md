@@ -208,13 +208,20 @@ skills/idea-manager/
 「照着旧语义执行会写坏数据」，而不是「解释性内容」：
 
 1. **覆盖式设标签**是 `PUT /api/ideas/{id}/tags`；**并集追加**是
-   `POST /api/ideas/bulk/tags`。用错了会丢标签。
-2. **`PATCH` 只发要改的字段**：`null` = 不改；发空串 / 空数组会**真的清空**。
+   `POST /api/ideas/bulk/tags`（但它给 `replace: true` 时也是覆盖式 ——
+   `tags` 漏了就把标签清空）。用错了会丢标签。
+2. **`PATCH` 只发要改的字段**：`null` = 不改；**空串 / 空数组常常是「真的清空」**
+   （想法的 `title` 空串 = 清成无标题；webhook 的 `headers` 给 `{}` = 清空请求头）——
+   但**不是所有字段都吃这一套**：想法的 `content` 与项目的 `name` 给空串是 400，
+   项目的 `name` 还**必填**（不给就是 400 `invalid_project_name`）。
+   逐端点的语义见 `references/api.md`。
 3. `POST /api/webhooks` **必须给 body 模板**；`scope=global` **不能**带 `projectId`，
    `scope=project` **必须**带一个存在的项目 id。
 4. `POST /api/ideas/merge` 会**硬删**源想法（不在回收站里）。
 5. **webhook 的 url 与 headers 默认是遮蔽版**（§9.4）：拿到的不是原值，
    别拿它去当"现在的地址"。
+6. **`done` 必填**：`POST /api/ideas/{id}/complete` 与 `POST /api/ideas/bulk/complete`
+   不给 `done` = `false` = **取消完成**，服务端**不报错**。要标完成就给 `{"done":true}`。
 
 其余解释性内容（每个参数的细节、错误码全表、遮蔽规则）都拆到 reference。
 
