@@ -20,7 +20,7 @@ namespace IdeaApp.Tests;
 /// 这两个数字**会漂**：改了 nginx 配置或 Kestrel 配置，文档里的数字不会自动跟着变，
 /// 于是 skill 说明书开始说假话 —— 上一轮就是这么错的（文档写「413 的响应体是空的」，
 /// 而经 nginx 时拿到的其实是 nginx 自己回的东西）。
-/// 这里把它们钉住：<b>部署配置 ↔ 设计文档里的片段副本 ↔ SKILL.md 里的数字</b>，
+/// 这里把它们钉住：<b>部署配置 ↔ 设计文档里的片段副本 ↔ references/errors.md 里的数字</b>，
 /// 任何一边单独改都会红。
 /// </para>
 ///
@@ -69,14 +69,14 @@ namespace IdeaApp.Tests;
 ///
 /// <para>
 /// <b>散文里的上限声明要锚定上下文</b>：只有「在谈上限」且「在谈 nginx」的那一句里的数字
-/// 才算数 —— 否则将来 SKILL.md 里多一句无关的体积话（例如「把 body 压到 1MB 以内」）
+/// 才算数 —— 否则将来 references/errors.md 里多一句无关的体积话（例如「把 body 压到 1MB 以内」）
 /// 就会把守卫带偏（误报），或者反过来：把「4 MiB」改成有歧义的「4 MB」它还照样绿（放过）。
 /// </para>
 ///
 /// <para>
 /// 顺带守住 nginx 那个**结构化 413**：它必须回一个**没有 <c>code</c> 字段**的 JSON ——
-/// 有 <c>code</c> 的话 CLI 会拿它当业务错误码，agent 就得为「经 nginx / 直连」
-/// 分两条路处理；没有 <c>code</c>，CLI 才会合成 <c>http_413</c>，两条路径同一个码。
+/// 有 <c>code</c> 的话它就像一个业务错误码，agent 就得为「经 nginx / 直连」
+/// 分两条路处理；没有 <c>code</c>，两条路径给 agent 的都是「413、没有业务错误码」。
 /// </para>
 /// </summary>
 public sealed class RequestBodyLimitGuardTests
@@ -85,9 +85,12 @@ public sealed class RequestBodyLimitGuardTests
     private static string NginxConfigPath =>
         Path.Combine(RepoPaths.Root, "docs", "nginx", "idea.conf");
 
-    /// <summary>skill 的说明书（agent 看的那份）。</summary>
-    private static string SkillDocPath =>
-        Path.Combine(RepoPaths.Root, "skills", "idea-manager", "SKILL.md");
+    /// <summary>skill 的说明书（agent 看的那一份）。</summary>
+    /// <remarks>
+    /// 413 的说明在 <c>skills/idea-manager/references/errors.md</c> 里 ——
+    /// 索引页只留最易错的坑，细节拆到 reference 了。
+    /// </remarks>
+    private static string SkillDocPath => RepoPaths.SkillErrorsDoc;
 
     /// <summary>设计文档。</summary>
     private static string DesignDocPath =>
@@ -156,7 +159,7 @@ public sealed class RequestBodyLimitGuardTests
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// SKILL.md 里 **Kestrel 那一行**上的字节数：<c>Kestrel … 30,000,000 字节</c>。
+    /// references/errors.md 里 **Kestrel 那一行**上的字节数：<c>Kestrel … 30,000,000 字节</c>。
     /// </summary>
     /// <remarks>
     /// 必须写在**同一行**上：这样才能把 Kestrel 的上限与 nginx 的上限分开取。
@@ -214,10 +217,10 @@ public sealed class RequestBodyLimitGuardTests
     }
 
     /// <summary>
-    /// 部署配置里的 nginx 上限 ↔ SKILL.md 里 agent 看到的那个数字。
+    /// 部署配置里的 nginx 上限 ↔ references/errors.md 里 agent 看到的那个数字。
     /// </summary>
     /// <remarks>
-    /// SKILL.md 里 nginx 的上限可以写成两种形式，都认：
+    /// references/errors.md 里 nginx 的上限可以写成两种形式，都认：
     /// nginx 自己的指令写法（<c>client_max_body_size 4m</c>），
     /// 与散文写法（<c>4 MiB（4194304 字节）</c>）。
     /// 散文写法必须带精确字节数 —— 见
@@ -250,21 +253,21 @@ public sealed class RequestBodyLimitGuardTests
 
             Assert.True(
                 written.HasValue,
-                $"SKILL.md 第 {claim.Line} 行写的 nginx 请求体上限（{claim.Raw}）没有精确字节数 —— "
+                $"references/errors.md 第 {claim.Line} 行写的 nginx 请求体上限（{claim.Raw}）没有精确字节数 —— "
                 + $"请写成「4 MiB（{configured} 字节）」这样的形式，"
                 + "别只写「4 MB」这种有歧义的写法（有人会按 1,000,000 理解，那就错了）。"
                 + $"原文：{Snippet(claim)}");
 
             Assert.True(
                 configured == written,
-                $"SKILL.md 第 {claim.Line} 行写的 nginx 请求体上限（{claim.Raw} = {written} 字节）"
+                $"references/errors.md 第 {claim.Line} 行写的 nginx 请求体上限（{claim.Raw} = {written} 字节）"
                 + $"与 {NginxConfigPath} 里生效的上限（{configured} 字节）不一致，请同步。"
                 + $"原文：{Snippet(claim)}");
         }
     }
 
     /// <summary>
-    /// SKILL.md 里 nginx 那个上限必须写成**精确字节数**（<c>4 MiB（4194304 字节）</c>）。
+    /// references/errors.md 里 nginx 那个上限必须写成**精确字节数**（<c>4 MiB（4194304 字节）</c>）。
     /// </summary>
     /// <remarks>
     /// <para>
@@ -293,7 +296,7 @@ public sealed class RequestBodyLimitGuardTests
         {
             Assert.True(
                 claim.ExactBytes.HasValue,
-                $"SKILL.md 第 {claim.Line} 行写 nginx 的请求体上限只写了「{claim.Raw}」，没有精确字节数 —— "
+                $"references/errors.md 第 {claim.Line} 行写 nginx 的请求体上限只写了「{claim.Raw}」，没有精确字节数 —— "
                 + "请写成「4 MiB（4194304 字节）」这样的形式：只写「4 MB」是有歧义的"
                 + "（有人按 1,000,000 理解，那就错了），写精确字节数才核得对。"
                 + $"原文：{Snippet(claim)}");
@@ -302,7 +305,7 @@ public sealed class RequestBodyLimitGuardTests
 
             Assert.True(
                 expected == claim.ExactBytes,
-                $"SKILL.md 第 {claim.Line} 行的「{claim.Raw}（{claim.ExactBytes} 字节）」自相矛盾 —— "
+                $"references/errors.md 第 {claim.Line} 行的「{claim.Raw}（{claim.ExactBytes} 字节）」自相矛盾 —— "
                 + $"「{claim.Unit}」按 {LabelBase(claim.Unit)} 进位是 {expected} 字节，"
                 + $"和写出来的字节数对不上。nginx 的 `m` 是 1024 进位，请写成「4 MiB（4194304 字节）」。"
                 + $"原文：{Snippet(claim)}");
@@ -315,7 +318,7 @@ public sealed class RequestBodyLimitGuardTests
     /// <remarks>
     /// 应用一旦调了 <c>MaxRequestBodySize</c> 或 <c>ConfigureKestrel</c>，
     /// 直连 Kestrel 的上限就不再是 30,000,000 字节，
-    /// SKILL.md 里写的那个数字（以及下一条守卫）就全错了。
+    /// references/errors.md 里写的那个数字（以及下一条守卫）就全错了。
     /// </remarks>
     [Fact]
     public void The_app_does_not_configure_its_own_request_body_limit()
@@ -339,7 +342,7 @@ public sealed class RequestBodyLimitGuardTests
                 offenders.Add(
                     $"{origin}:{SourceText.LineNumber(text, index)} 出现了 {token}"
                     + " —— 应用一旦自己设了请求体上限，直连路径的上限就不再是框架默认值，"
-                    + "SKILL.md 里写的数字与「框架默认上限」那条守卫都要跟着改。");
+                    + "references/errors.md 里写的数字与「框架默认上限」那条守卫都要跟着改。");
             }
         }
 
@@ -353,7 +356,7 @@ public sealed class RequestBodyLimitGuardTests
     /// <para>
     /// 只扫源码是不够的：将来有人用 <c>appsettings.json</c> 的
     /// <c>Kestrel:Limits:MaxRequestBodySize</c> 改上限（这是 .NET 里最常见的写法），
-    /// 源码里一个关键字都没有，SKILL.md 里那句「框架默认值」就成了假话。
+    /// 源码里一个关键字都没有，references/errors.md 里那句「框架默认值」就成了假话。
     /// </para>
     /// <para>
     /// 所以这里把 <c>server/IdeaApp</c> 下的 <c>appsettings*.json</c> 也扫一遍。
@@ -405,7 +408,7 @@ public sealed class RequestBodyLimitGuardTests
                 offenders.Add(
                     $"{origin} 配了请求体上限（{limit.Path} = {limit.Value}）—— 上限改成用配置配了，"
                     + "直连 Kestrel 的上限就不再是框架默认值（30,000,000 字节），"
-                    + "SKILL.md 里写的数字要跟着改，"
+                    + "references/errors.md 里写的数字要跟着改，"
                     + "「框架默认上限」那条守卫也只认框架默认值。");
             }
         }
@@ -469,7 +472,7 @@ public sealed class RequestBodyLimitGuardTests
     }
 
     /// <summary>
-    /// SKILL.md 里 Kestrel 那个上限 == 框架默认值（<c>MaxRequestBodySize</c>）。
+    /// references/errors.md 里 Kestrel 那个上限 == 框架默认值（<c>MaxRequestBodySize</c>）。
     /// </summary>
     /// <remarks>
     /// 框架默认值是 <b>精确字节数</b>（30000000），不是「约 30MB」——
@@ -483,7 +486,7 @@ public sealed class RequestBodyLimitGuardTests
         Assert.True(
             frameworkDefault == 30_000_000L,
             $"Kestrel 的框架默认请求体上限变成了 {frameworkDefault} 字节（原来 30000000）。"
-            + "若确实如此，请更新 SKILL.md 里写的数字，并同步修改这条断言里的期望值。");
+            + "若确实如此，请更新 references/errors.md 里写的数字，并同步修改这条断言里的期望值。");
 
         var text = File.ReadAllText(SkillDocPath);
         var documented = new List<(long Value, string Source)>();
@@ -508,7 +511,7 @@ public sealed class RequestBodyLimitGuardTests
         {
             Assert.True(
                 frameworkDefault == value,
-                $"SKILL.md 写的 Kestrel 请求体上限（{source} 字节）与框架默认值"
+                $"references/errors.md 写的 Kestrel 请求体上限（{source} 字节）与框架默认值"
                 + $"（{frameworkDefault} 字节）不一致，请同步 —— "
                 + "直连 Kestrel 时的请求体上限就是这个框架默认值。");
         }
@@ -520,14 +523,14 @@ public sealed class RequestBodyLimitGuardTests
     /// <remarks>
     /// <para>
     /// 少了这个 <c>error_page</c>，nginx 会回自己的 HTML 错误页 →
-    /// CLI 只能报 <c>invalid_response</c>（响应不是 JSON），
-    /// agent 拿不到「是 body 太大」这个信号，只能按文案猜。
+    /// agent 拿到的是一段 HTML（不是 JSON），
+    /// 拿不到「是 body 太大」这个信号，只能按文案猜。
     /// </para>
     /// <para>
     /// 带上了它，nginx 回的是 ProblemDetails 形状的 JSON。**没有 <c>code</c> 字段**
-    /// 是关键：CLI 的 <c>_error_for</c> 遇到「有 JSON 但没有 code」的响应会合成
-    /// <c>http_413</c> —— 与直连 Kestrel 时「空响应体」那条路径**同一个码**，
-    /// agent 不必分支两条部署路径。
+    /// 是关键：直连 Kestrel 那条路回的是**空响应体**，同样没有 <c>code</c> ——
+    /// 两条部署路径给 agent 的都是「状态码 413、没有业务错误码」这同一个信号，
+    /// agent 不必分支。
     /// </para>
     /// </remarks>
     [Fact]
@@ -542,7 +545,7 @@ public sealed class RequestBodyLimitGuardTests
             errorPage.Success,
             $"{NginxConfigPath} 里没有 `error_page 413 = @…;` —— "
             + "缺了它，超限时 nginx 会回自己的 HTML 错误页，"
-            + "CLI 只能报 invalid_response（响应不是 JSON），agent 拿不到「body 太大」这个信号。");
+            + "agent 拿到的是 HTML（不是 JSON），拿不到「body 太大」这个信号。");
 
         var name = errorPage.Groups["name"].Value;
         var block = ExtractBlock(stripped, $"location @{name}");
@@ -568,7 +571,7 @@ public sealed class RequestBodyLimitGuardTests
         Assert.True(
             parsed.HasValue,
             $"{NginxConfigPath} 的 `location @{name}` 回的不是合法 JSON：{json}"
-            + " —— agent 拿到它只能报 invalid_response（响应不是 JSON）。");
+            + " —— agent 拿到它只能读到一段 HTML，只能按文案猜。");
 
         var root = parsed!.Value;
 
@@ -584,16 +587,17 @@ public sealed class RequestBodyLimitGuardTests
             root.TryGetProperty("detail", out var detail)
             && !string.IsNullOrWhiteSpace(detail.GetString()),
             $"{NginxConfigPath} 的 `location @{name}` 回的 JSON 里没有 detail —— "
-            + "agent 只看得到码也得知道「是 body 太大」。");
+            + "agent 只看得到状态码也得知道「是 body 太大」。");
 
         Assert.False(
             root.TryGetProperty("code", out _),
             $"{NginxConfigPath} 的 `location @{name}` 回的 JSON 里带 code 字段 —— "
-            + "CLI 会把它当成业务错误码，agent 就得为「经 nginx / 直连」分支处理；"
-            + "要两条路径同一个码（http_413），这里必须**不带** code。");
+            + "带 code 会让人以为它是业务错误码（要去错误码表里找），"
+            + "而直连 Kestrel 那条路根本没有响应体；"
+            + "两条部署路径给 agent 的必须都是「413、没有业务错误码」，这里必须**不带** code。");
     }
 
-    /// <summary>SKILL.md 里 nginx 上限的一条声明。</summary>
+    /// <summary>references/errors.md 里 nginx 上限的一条声明。</summary>
     /// <param name="Line">行号（从 1 开始）。</param>
     /// <param name="Clause">出处（那一小段文字）。</param>
     /// <param name="IsProse">是不是散文写法（<c>4 MiB</c>），而不是指令写法。</param>
@@ -665,7 +669,7 @@ public sealed class RequestBodyLimitGuardTests
     }
 
     /// <summary>
-    /// 读 SKILL.md 里 nginx 的那些上限声明。
+    /// 读 references/errors.md 里 nginx 的那些上限声明。
     /// </summary>
     /// <remarks>
     /// <para>

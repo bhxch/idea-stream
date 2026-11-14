@@ -19,7 +19,7 @@ public sealed record ApiErrorCode(string Code, int Status, string Meaning);
 /// <list type="bullet">
 /// <item>OpenAPI 契约里的 <c>ProblemDetails</c> schema 描述与每个错误响应的
 /// 描述都从这里取 —— 契约文件里写的错误码与代码里抛的因此不会各说各话。</item>
-/// <item>skill 计划的错误码对照表（<c>docs/superpowers/plans/2026-11-11-idea-skill.md</c>）
+/// <item>skill 手册里的错误码对照表（<c>skills/idea-manager/references/errors.md</c>）
 /// 以它为准。改错误码时两边都要改。</item>
 /// </list>
 /// </para>

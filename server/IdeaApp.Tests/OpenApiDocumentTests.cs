@@ -369,29 +369,6 @@ public sealed class OpenApiDocumentTests
     }
 
     /// <summary>
-    /// skill 目录里那份契约副本必须与仓库根下的契约文件**逐字相同**。
-    /// </summary>
-    /// <remarks>
-    /// <c>skills/idea-manager/references/openapi.json</c> 是手工 <c>cp</c> 过去的副本：
-    /// agent 读的是 skill 目录里那份，而契约文件在仓库根下。
-    /// 两份漂移了（改了契约忘了同步副本）不会有任何编译错误，
-    /// 也不会有别的测试失败 —— agent 却拿着旧契约调接口。
-    /// 上一轮修复波就因此手工同步过一次，所以这里加一条守卫。
-    /// </remarks>
-    [Fact]
-    public async Task The_skill_copy_of_the_contract_is_byte_for_byte_the_same_file()
-    {
-        var contract = await File.ReadAllBytesAsync(CommittedDocumentPath());
-        var copy = await File.ReadAllBytesAsync(SkillContractPath());
-
-        Assert.True(
-            contract.AsSpan().SequenceEqual(copy),
-            "skill 里的契约副本与 openapi/idea-v1.json 不是同一份："
-            + $"前者 {copy.Length} 字节，后者 {contract.Length} 字节。"
-            + "重新 cp 一份：cp openapi/idea-v1.json skills/idea-manager/references/openapi.json");
-    }
-
-    /// <summary>
     /// 带请求体的端点必须声明 415，不带请求体的端点不许声明 415。
     /// </summary>
     /// <remarks>
@@ -440,16 +417,6 @@ public sealed class OpenApiDocumentTests
                 }
             }
         }
-    }
-
-    /// <summary>skill 目录里那份契约副本。</summary>
-    private static string SkillContractPath()
-    {
-        var path = RepoPaths.SkillContract;
-
-        Assert.True(File.Exists(path), $"找不到契约副本：{path}");
-
-        return path;
     }
 
     /// <summary>

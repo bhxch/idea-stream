@@ -11,7 +11,7 @@ namespace IdeaApp.Tests;
 /// 413（请求体太大）的**实测锚点**。
 ///
 /// <para>
-/// <c>skills/idea-manager/SKILL.md</c> 写着「413 的响应体是空的、没有 <c>code</c>」——
+/// <c>skills/idea-manager/references/errors.md</c> 写着「413 的响应体是空的、没有 <c>code</c>」——
 /// 那是对**平台行为**的断言。光读 <c>ApiExceptionHandler.cs</c> 与
 /// <c>ApiErrorCodes.cs</c> 的注释不算数：注释会过期，行为不会。
 /// 这里用真的 Kestrel 跑一遍，把「响应体是空的、没有 code」钉成可执行的事实。

@@ -4,7 +4,8 @@ namespace IdeaApp.Tests;
 /// 仓库里的关键路径。
 ///
 /// <para>
-/// 测试要读仓库根下的契约文件与**源码**（错误码清单要与实际抛出的错误码一致），
+/// 测试要读仓库根下的契约文件、**skill 说明书**（索引页与 references/）与**源码**
+/// （错误码清单要与实际抛出的错误码一致），
 /// 所以得先找到仓库根。认 <c>IdeaApp.sln</c>：逐级上溯找
 /// <c>openapi/idea-v1.json</c> 会命中别处的同名目录，那就找错文件了。
 /// </para>
@@ -21,15 +22,33 @@ internal static class RepoPaths
     public static string Contract { get; } = Path.Combine(Root, "openapi", "idea-v1.json");
 
     /// <summary>
-    /// skill 里那份契约副本（<c>skills/idea-manager/references/openapi.json</c>）。
+    /// skill 的**内容源**目录（<c>skills/idea-manager</c>）：服务端分发的说明书。
     /// </summary>
     /// <remarks>
-    /// 它是 <see cref="Contract"/> 的**逐字副本**：agent 读的是 skill 目录里那份，
-    /// 两份不一致时 agent 拿到的契约与应用实际暴露的接口对不上，
-    /// 而且不会有任何编译错误或测试失败。
+    /// 里面只有索引页（<see cref="SkillIndex"/>）与 <c>references/</c>
+    /// （<see cref="SkillReferences"/>）—— 没有命令层，也没有契约副本。
     /// </remarks>
-    public static string SkillContract { get; } =
-        Path.Combine(Root, "skills", "idea-manager", "references", "openapi.json");
+    public static string SkillDocs { get; } = Path.Combine(Root, "skills", "idea-manager");
+
+    /// <summary>内容源的索引页（agent 触发 skill 后必然读的那一页）。</summary>
+    public static string SkillIndex { get; } = Path.Combine(SkillDocs, "SKILL.md");
+
+    /// <summary>内容源的细节目录（按需取用）。</summary>
+    public static string SkillReferences { get; } = Path.Combine(SkillDocs, "references");
+
+    /// <summary>错误码与 413 说明所在的那一份（<c>references/errors.md</c>）。</summary>
+    public static string SkillErrorsDoc { get; } =
+        Path.Combine(SkillReferences, "errors.md");
+
+    /// <summary>
+    /// agent 侧安装的**薄壳**（<c>skills/idea-manager-client/SKILL.md</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 薄壳只有 frontmatter 与指针：它的 frontmatter 必须与
+    /// <see cref="SkillIndex"/> 的 frontmatter **逐字相同**。
+    /// </remarks>
+    public static string SkillShell { get; } =
+        Path.Combine(Root, "skills", "idea-manager-client", "SKILL.md");
 
     /// <summary>应用的端点源码目录。</summary>
     public static string Endpoints { get; } = Path.Combine(AppSource, "Endpoints");
