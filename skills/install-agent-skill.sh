@@ -7,10 +7,17 @@
 # 当成薄壳装过去，agent 手上就又握着一份会过期的副本。
 #
 # **目标目录必须是一个 skill 目录**：里面有 SKILL.md，或者目录名就叫
-# idea-manager。脚本要删的是「旧形状 skill 的确定残留」
-# （references/、tests/、scripts/idea.py……），而 references 与 tests
-# 是极常见的目录名 —— 对着家目录跑一遍脚本就会把它们删掉。
-# 所以：**先确认目标像 skill 目录，再删**；不像就只警告、不删。
+# idea-manager。
+#
+# 清理的尺度：**只删旧 skill 特有的那几个具体文件**，目录只在**空了之后**
+# 用 rmdir 删掉；用户自己的东西一律留着。
+#
+# 为什么不能「整个目录 rm -rf」：references 与 tests 是极常见的目录名，
+# 里面装的是**用户自己的东西**。上一版脚本「看到 SKILL.md 就整目录删」——
+# 而 SKILL.md 恰恰是**脚本自己写的**：跑第二遍时它已经在了，于是护栏被
+# 自己写的文件绕过去，用户自己的 references/keep.txt 在第二遍被删掉。
+# 现在改成「只删认得出来的旧文件 + rmdir 空目录」，rmdir 碰到非空目录会
+# 失败并把它留下 —— keep.txt 因此活得下来。
 #
 # 旧的安装说明教的是 `cp -r skills/idea-manager ~/.zcode/skills/`，
 # 装出来正是同一个目录 —— 里面会剩下旧的 references/ 与旧的命令层脚本。
@@ -36,7 +43,12 @@ usage() {
   把 agent 侧的薄壳（SKILL.md + scripts/fetch.py）装到目标目录。
 
   目标目录必须是一个 skill 目录：里面有 SKILL.md，或者目录名就叫 idea-manager。
-  不像 skill 目录时，脚本只警告，不会删掉里面的任何东西。
+  不像 skill 目录时，脚本只警告，不会动里面的任何东西。
+
+  清理的尺度：**只删旧 skill 留下的那几个已知文件** ——
+  scripts/idea.py、scripts/run-tests.sh、references/openapi.json、
+  tests/test_cli.py，以及 __pycache__ 目录里的 .pyc。
+  目录只在**空了之后**用 rmdir 删掉（里面还有你自己的文件就留着）。
 
   默认目标：~/.zcode/skills/idea-manager
 
@@ -71,9 +83,13 @@ fi
 
 # 目标像不像一个 skill 目录？
 #
-# **不像就只警告、不删**：要删的那几样（references/、tests/）是极常见的
-# 目录名，`bash skills/install-agent-skill.sh ~` 会把 ~/references 与 ~/tests
-# 删掉 —— 那是用户自己的东西，不是 skill 的残留。
+# **不像就只警告、不清理**：它挡的是「第一次就指错目录」——
+# `bash skills/install-agent-skill.sh ~` 指的是家目录，那不是 skill 目录。
+#
+# 注意它**不是唯一的防线**：SKILL.md 是脚本自己写进去的，跑第二遍时它
+# 已经在了 —— 只靠这个判断，第一遍挡得住、第二遍挡不住。
+# 真正的防线在下面的清理里：只删旧 skill 那几个具体文件，目录只用 rmdir
+# 删空的（用户自己的 references/keep.txt 因此活得下来）。
 looks_like_skill_dir() {
   if [ -f "${TARGET}/SKILL.md" ]; then
     return 0
@@ -96,26 +112,62 @@ fi
 
 # 旧 skill 形状的确定残留：删掉。
 #
-# 只删这几种**认得出来**的旧形状 —— 它们一定是上一代 skill 留下的，
-# 留着只会让 agent 读到过期内容。别的条目不认得，就不乱动（只警告）。
+# **只删具体文件 + 只删空目录**，不 rm -rf 任何目录：
+#
+#   * 具体文件：那几个名字是**上一代 skill 特有的**（别的 skill、用户自己的
+#     文件不会撞上），认得出就删。
+#   * 目录：references/ 与 tests/ 只在**空了之后**用 rmdir 删掉。
+#     rmdir 碰到非空目录会失败并留下它 —— 用户自己的 references/keep.txt
+#     因此活得下来（这正是要防的伤害）。
+#
+# 前面那个「像不像 skill 目录」的前置判断保留着，但它**不是唯一的防线**：
+# 它挡的是「第一次就指错目录」；真正的防线是下面这条「只删具体文件 + rmdir」——
+# 上一版只有前者，而 SKILL.md 恰恰是脚本自己写的，跑第二遍就把前者绕过去了。
 #
 # **清理在 mkdir 之前**：先把 "${TARGET}/scripts" 建出来、再按 skill 布局
 # 删它里面的东西，是把「本来不存在的东西」变成存在之后又去动它 ——
 # 顺序反过来才不会。
 if [ "$CLEAN_STALE" -eq 1 ]; then
-  remove_path() {
-    local path="$1"
-    if [ -d "$path" ] && [ ! -L "$path" ]; then
-      rm -rf "${path}"
-    elif [ -e "$path" ] || [ -L "$path" ]; then
-      rm -f "${path}"
+  # 旧 skill 特有的文件：认得出就删，别的名字一律不动。
+  for stale_file in \
+    "scripts/idea.py" \
+    "scripts/run-tests.sh" \
+    "references/openapi.json" \
+    "tests/test_cli.py"; do
+    if [ -f "${TARGET}/${stale_file}" ] || [ -L "${TARGET}/${stale_file}" ]; then
+      rm -f "${TARGET}/${stale_file}"
+      echo "清掉了旧 skill 的残留：${stale_file}"
     fi
-  }
+  done
 
-  for stale in "references" "tests" "scripts/idea.py" "scripts/run-tests.sh"; do
-    if [ -e "${TARGET}/${stale}" ] || [ -L "${TARGET}/${stale}" ]; then
-      remove_path "${TARGET}/${stale}"
-      echo "清掉了旧 skill 的残留：${stale}"
+  # __pycache__ 里是 .pyc：先删里面的 .pyc，再 rmdir 这个目录。
+  # 目录里还有别的东西就留下（不猜），只警告。
+  for pycache in "scripts/__pycache__" "tests/__pycache__"; do
+    if [ -d "${TARGET}/${pycache}" ]; then
+      for pyc in "${TARGET}/${pycache}"/*.pyc; do
+        [ -e "$pyc" ] || continue
+        rm -f "$pyc"
+        echo "清掉了旧 skill 的残留：${pycache}/$(basename "$pyc")"
+      done
+      if rmdir "${TARGET}/${pycache}" 2>/dev/null; then
+        echo "清掉了旧 skill 的残留：${pycache}/（空目录）"
+      else
+        echo "警告：${TARGET}/${pycache} 里还有别的东西，没有删这个目录" >&2
+      fi
+    fi
+  done
+
+  # 旧形状的两个目录：**只删空了的那个**。
+  # 非空就留下（用户自己的东西），并说清楚「没删」。
+  #
+  # scripts/ 不在名单里：脚本自己装的 fetch.py 就住在那儿。
+  for stale_dir in "references" "tests"; do
+    if [ -d "${TARGET}/${stale_dir}" ]; then
+      if rmdir "${TARGET}/${stale_dir}" 2>/dev/null; then
+        echo "清掉了旧 skill 的残留：${stale_dir}/（空目录）"
+      else
+        echo "警告：${TARGET}/${stale_dir} 里还有别的东西，目录没删（只删了旧 skill 那几个文件）" >&2
+      fi
     fi
   done
 fi
