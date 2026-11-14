@@ -32,15 +32,17 @@ web/                       前端（Vue 3 + TypeScript + Vite）
   src/api/                 后端调用层（REST + SSE）
   src/lib/                 纯函数工具
   src/styles/              全局样式
-openapi/idea-v1.json       OpenAPI 3.1 契约快照（提交进仓库，给 agent 用）
-skills/idea-manager/       agent skill（说明书 + 命令行封装 + 契约副本）
+openapi/idea-v1.json       OpenAPI 3.1 契约快照（提交进仓库）
+skills/idea-manager/       agent skill 的内容源（索引页 + references，服务端分发）
+skills/idea-manager-client/ agent 侧安装的薄壳（指针 + 取件器）
 docs/nginx/idea.conf       nginx 反代配置
 docs/superpowers/          规格与计划
 ```
 
 `web/` 已落地（Vue 3 + TypeScript + Vite，详见 [`web/README.md`](web/README.md)）。
-`skills/idea-manager/`（agent skill）也已落地：把 REST API 包成一条命令行，
-agent 不必手写 HTTP 请求就能管理想法。
+`skills/idea-manager/`（agent skill 的内容源）也已落地：索引页加 `references/` 几份细节，
+由**服务端随产物分发**；agent 侧只装一个薄壳（`skills/idea-manager-client/`），
+见下面的「Agent skill」一节。
 
 ## 构建
 
@@ -152,6 +154,7 @@ IDEA_PublicBaseUrl=https://ideas.example.com \
 | `Webhook:MaxDeliveryRecords` | `500` | 每个 webhook 保留的投递记录条数 |
 | `Sse:BufferSize` | `500` | 服务端事件缓冲条数（供 `Last-Event-ID` 补发） |
 | `Sse:HeartbeatSeconds` | `25` | SSE 心跳间隔（发 `: ping` 注释帧，防中间代理掐断空闲连接） |
+| `Skill:Path` | `skill/idea-manager` | skill 分发副本的根目录。**相对路径以应用目录为基准，与当前工作目录无关**（与 `Database:Path` 同一条约定） |
 
 #### 「应用目录」是哪个目录
 
@@ -189,6 +192,10 @@ nginx -t && systemctl reload nginx
 `docs/nginx/idea.conf` 里 SSE（`/api/events`）单独一段：`proxy_buffering off` +
 `X-Accel-Buffering: no`，否则实时推送会被 nginx 攒着不发。
 
+发布产物里带着 skill 的分发副本（`skill/idea-manager/`）—— agent 的说明书由它提供，
+部署时跟应用一起拷过去。少了它，`/skill/**` 会回 404 `skill_not_distributed`，
+agent 取不到说明书（副本在哪儿由 `Skill:Path` 决定）。
+
 应用侧接了 `UseForwardedHeaders()`：`X-Forwarded-Proto` / `X-Forwarded-For` /
 `X-Forwarded-Host` 会被采信，**但只信回环地址来的代理**。nginx 与应用同机时直接可用；
 nginx 在别的机器上要在代码里显式加 `KnownProxies`，否则这些头不生效
@@ -198,13 +205,14 @@ nginx 在别的机器上要在代码里显式加 `KnownProxies`，否则这些�
 ## OpenAPI 文档
 
 - **契约文件**：[`openapi/idea-v1.json`](openapi/idea-v1.json)（OpenAPI 3.1，提交进仓库）。
-  它是构建产物快照，**给 agent 读**用：路径、参数、请求体与响应体 schema、状态码都在里面。
+  它是构建产物快照：路径、参数、请求体与响应体 schema、状态码都在里面。
   文件里没有 `servers` 段 —— 地址是运行期的事，对外地址由 nginx 决定，契约只管接口本身。
 - **错误响应也在契约里**：4xx / 5xx 一律是 RFC 9457 的 ProblemDetails
   （内容类型 `application/problem+json`），带机器可读的扩展字段 `code`。
   每个错误响应的描述里列了**这个端点**可能出现的 `code` 与含义，
   `components.schemas.ProblemDetails` 的描述里是全部 `code` 的取值全集。
-- **运行时文档**：应用启动后可以访问 `/openapi/v1.json`，内容与契约文件一致。
+- **运行时文档**：应用启动后可以访问 `/openapi/v1.json`，内容与契约文件一致 ——
+  agent 手上拿的是这一份（手册指向的就是它）。
 - **重新导出**（改了端点、DTO 或状态码之后要重跑）：
 
   ```bash
@@ -222,45 +230,112 @@ nginx 在别的机器上要在代码里显式加 `KnownProxies`，否则这些�
 
 ## Agent skill
 
-`skills/idea-manager/` 是随项目交付的 agent skill：`SKILL.md` 是说明书，
-`scripts/idea.py` 是纯标准库的命令行封装（`urllib`，无第三方依赖，Python 3.9+ 即可跑），
-`references/openapi.json` 是上面那份契约的副本。
+agent skill 的**权威内容在服务端**：应用把 `skills/idea-manager/`（索引页 + `references/`）
+随产物一起分发出去，agent 取到的手册与服务端**同一版本** ——
+服务端改了 API，agent 手上的说明书跟着改，不用重新装 skill。
 
-安装（软链或复制都行，两种 agent 目录格式一致）：
+### 交付形态
+
+| 目录 | 是什么 | 谁用 |
+|---|---|---|
+| `skills/idea-manager/` | **内容源**：索引页 `SKILL.md` + `references/`（调用姿势、错误码、webhook、逐端点参数、典型场景） | 服务端随产物分发；仓库里改它 |
+| `skills/idea-manager-client/` | **薄壳**：`SKILL.md`（指针）+ `scripts/fetch.py`（取件器） | 装到 agent 的 skills 目录 |
+
+服务端这边有只读端点：`/skill/idea-manager/version` 给清单（版本 + 文件清单 + 逐个 sha256），
+`/skill/idea-manager/{path}` 给文件内容。路径拼错回 404，不会落到 SPA 兜底变成 200 + HTML。
+
+### 安装
+
+装的是**拷贝**，不是软链 —— 软链 `skills/idea-manager/`（内容源）会把内容源当成薄壳装过去，
+agent 手上就握着一份与服务端不同步的说明书：
 
 ```bash
-ln -s "$PWD/skills/idea-manager" ~/.claude/skills/idea-manager
-# 或
-ln -s "$PWD/skills/idea-manager" ~/.zcode/skills/idea-manager
-# 或直接复制一份
-cp -r skills/idea-manager ~/.zcode/skills/
+bash skills/install-agent-skill.sh                       # 装到 ~/.zcode/skills/idea-manager
+bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager
 ```
 
-连接配置走环境变量，不进仓库（命令行不接受密码）：
+脚本是幂等的：目标目录里认得出的旧形状残留会被清掉，不认识的文件只警告、不删。
+薄壳的约定是「那个目录里只有两个文件」—— 留着别的东西，agent 可能会直接去读它。
 
-| 变量 | 说明 |
-|---|---|
-| `IDEA_BASE_URL` | 如 `https://ideas.example.com` |
-| `IDEA_USER` | nginx basic auth 用户名 |
-| `IDEA_PASS` | nginx basic auth 密码 |
-| `IDEA_TOKEN` | 可选。若 nginx 侧另外校验 `X-Api-Key` 头则填 |
+### 连接配置
 
-自检：
+走环境变量，不进仓库（命令行不接受密码）：
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `IDEA_BASE_URL` | 是 | 实例地址，如 `https://ideas.example.com` |
+| `IDEA_USER` | 否 | nginx basic auth 用户名；与密码同时存在时才发 |
+| `IDEA_PASS` | 否 | nginx basic auth 密码 |
+| `IDEA_TOKEN` | 否 | 可选。若 nginx 侧另外校验 `X-Api-Key` 头则填 |
+| `IDEA_SKILL_CACHE_DIR` | 否 | 取件器的缓存根目录（默认 `${XDG_CACHE_HOME:-~/.cache}/idea-skill`） |
+
+### 取说明书
 
 ```bash
-python3 skills/idea-manager/scripts/idea.py list
+SKILL=~/.zcode/skills/idea-manager      # 装到哪儿就是哪儿
+
+python3 "$SKILL/scripts/fetch.py"                        # 索引页：有哪些能力、怎么调、细节去哪找
+python3 "$SKILL/scripts/fetch.py" references/errors.md   # 按索引页里的路由表取某一份细节
+python3 "$SKILL/scripts/fetch.py" /openapi/v1.json       # 完整接口契约
 ```
 
-打得通就说明目标实例可达、凭证正确。命令一览与错误码对照表见
-[`skills/idea-manager/SKILL.md`](skills/idea-manager/SKILL.md)：
+取件器把清单里的每个文件都取下来、逐个校验 sha256，全部通过才切到新版本 ——
+中途失败就保留上一版，不会出现「手册是新的、别的是旧的」。
+服务端暂时连不上、但本地有完好缓存时，它在 stderr 上打一行 `warning:`，
+这时拿到的是**上一版**手册。
+
+自检（打得通就说明地址对、凭证对、服务端分发了 skill 内容）：
 
 ```bash
-python3 skills/idea-manager/scripts/idea.py add "把导出功能改成异步任务" --tags 后端
-python3 skills/idea-manager/scripts/idea.py list --status open
+IDEA_BASE_URL=https://ideas.example.com python3 "$SKILL/scripts/fetch.py"
 ```
 
-端到端测试（会起一个真实的后端实例，用临时 SQLite 库）：
+### 调 API
+
+agent 直接用 curl 调 API，不经别的封装：
 
 ```bash
-bash skills/idea-manager/scripts/run-tests.sh
+# GET：列表
+curl -sS --fail-with-body "$IDEA_BASE_URL/api/ideas?status=open" \
+  -u "$IDEA_USER:$IDEA_PASS"
+
+# POST：请求体走文件（特殊字符最稳）
+curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas" \
+  -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
+  --data-binary @body.json
+
+# PATCH：只发要改的字段（不发的键一个都别带）
+curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
+  -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
+  --data-binary @patch.json
+```
+
+- 样板里的 `-u` **只在有凭据时保留**；`IDEA_TOKEN` 有值时再加 `-H "X-Api-Key: $IDEA_TOKEN"`。
+- **别把凭据写进 URL** —— nginx 会把 userinfo 原样写进访问日志。
+- 带请求体就要带 `Content-Type: application/json`（不带是 415）。
+- 4xx / 5xx 回 RFC 9457 的 ProblemDetails，顶层带机器可读的 `code` ——
+  **按 `code` 分支**，别去匹配 `detail` 的文字。
+
+**请求体别用 shell 拼字符串** —— 引号、换行、反斜杠会被 shell 吃掉。写进文件，
+或用带引号的 heredoc 直接喂给 curl（`<<'JSON'` 的引号不能省，否则 body 里的 `$` 会被展开）：
+
+```bash
+curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas" \
+  -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
+  --data-binary @- <<'JSON'
+{"content":"正文","title":"标题"}
+JSON
+```
+
+完整契约在服务端的 `/openapi/v1.json`（实时发，仓库里没有副本）。
+调用姿势、错误码全表、逐端点参数与可照抄的完整例子都在手册里：
+[`skills/idea-manager/SKILL.md`](skills/idea-manager/SKILL.md) 是索引页，
+它给的路由表指向 `references/` 下那几份。
+
+### 测试
+
+取件器的端到端测试（每个用例自己起一个假的 HTTP 服务端，不需要真的后端实例）：
+
+```bash
+bash skills/idea-manager-client/scripts/run-tests.sh
 ```

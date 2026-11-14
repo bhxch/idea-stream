@@ -631,54 +631,44 @@ server {
 
 ## 17. Agent Skill 交付物
 
-随项目一起交付一个可直接使用的 agent skill，放在仓库的 `skills/idea-manager/`：
+> **这一节是历史记录。** 交付物在 2026-11-13 那次改造后变了 ——
+> 现在是「**内容源（服务端分发）+ 薄壳（agent 侧）**」，
+> 设计与取舍见 [`2026-11-13-skill-distribution-design.md`](2026-11-13-skill-distribution-design.md)。
+
+现在交付两样东西：
 
 ```
-skills/idea-manager/
-  SKILL.md                  # 说明书：能力清单 + 典型用法 + 错误码对照
-  scripts/idea.py           # 命令行封装，纯标准库（urllib），无第三方依赖
-  references/openapi.json   # openapi/idea-v1.json 的副本
+skills/idea-manager/          # 内容源：手册本体
+  SKILL.md                    # 索引页：能力清单 + 路由表 + 最易错的坑
+  references/                 # 细节：调用姿势、错误码、webhook、逐端点参数、典型场景
+skills/idea-manager-client/   # 薄壳：装到 agent 侧
+  SKILL.md                    # 指针：frontmatter + 怎么取说明书
+  scripts/fetch.py            # 取件器：把服务端分发的内容同步到本地缓存
 ```
 
-**调用形态**：`scripts/idea.py` 用 argparse 做子命令，覆盖 §13 的全部能力：
+**内容源由服务端分发**：随产物走，在 `/skill/idea-manager/` 下取（清单在
+`/skill/idea-manager/version`）。**服务端是唯一权威** —— 服务端改了 API，
+agent 取到的手册跟着改，不用重新安装 agent 侧的 skill。
 
-```
-idea.py projects                              # 项目列表
-idea.py project add "项目名"
-idea.py project rename <id> "新名字"
-idea.py project delete <id>
-idea.py project restore <id>
-idea.py list [--project <id>] [--status all|open|done] [--tags a,b] [--tag-mode or|and]
-idea.py add "正文" [--project <id>] [--title "标题"] [--tags a,b]
-idea.py update <id> [--content "新正文"] [--title "新标题"]
-idea.py tags <id> "标签1,标签2"               # 覆盖式
-idea.py done <id> [--undo]
-idea.py delete <id>
-idea.py restore <id>
-idea.py merge <id1> <id2> [...] [--content "合并后的正文"]
-idea.py bulk done <id...> [--undo]
-idea.py bulk tags <id...> "a,b"
-idea.py bulk delete <id...>
-idea.py trash
-idea.py taglist
-idea.py webhook list|add|update|delete
-idea.py telegram-template                     # 打印 Telegram webhook 模板
-```
+**薄壳装到 agent 的 skills 目录**（`bash skills/install-agent-skill.sh`）：
+只有一个指针与一个取件器，不含手册正文。
+
+**调用形态**：agent 用 curl + 服务端实时发的 `/openapi/v1.json` 直接调 API，
+完整契约不进仓库。
 
 **连接配置**（环境变量，不进仓库）：
 
-| 变量 | 说明 |
-|---|---|
-| `IDEA_BASE_URL` | 如 `https://ideas.example.com` |
-| `IDEA_USER` | nginx basic auth 用户名 |
-| `IDEA_PASS` | nginx basic auth 密码 |
-| `IDEA_TOKEN` | 可选。若 nginx 侧另外校验 `X-Api-Key` 头则填 |
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `IDEA_BASE_URL` | 是 | 如 `https://ideas.example.com` |
+| `IDEA_USER` | 否 | nginx basic auth 用户名；与密码同时存在时才发 |
+| `IDEA_PASS` | 否 | nginx basic auth 密码 |
+| `IDEA_TOKEN` | 否 | 可选。若 nginx 侧另外校验 `X-Api-Key` 头则填 |
 
-**输出**：默认输出 JSON，便于 agent 直接解析；`--format text` 给人类看。出错时把 ProblemDetails 的 `code` 与 `detail` 原样打到 stderr，并以非 0 退出。
+**输出**：curl 的响应体就是 JSON（agent 直接解析）。出错时是 RFC 9457 的
+ProblemDetails，顶层带机器可读的 `code`，按 `code` 分支。
 
-**自检**：skill 附带一条自检命令（`idea.py list`），验证目标实例可达且凭证正确。
-
-**安装位置**：skill 目录可直接软链到 `~/.claude/skills/idea-manager` 或 `~/.zcode/skills/idea-manager`，两者格式一致。
+**自检**：`scripts/fetch.py`（不带参数）取得到索引页，就说明目标实例可达、凭证正确。
 
 ---
 
