@@ -13,8 +13,10 @@
 
 import base64
 import hashlib
+import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -27,6 +29,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.normpath(os.path.join(HERE, os.pardir, "scripts", "fetch.py"))
+
+# 仓库根（HERE 是 skills/idea-manager-client/tests，上三层就是它）。
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+
+# 手册的错误码那一页与薄壳：它们各自抄了一份取件器的错误码。
+MANUAL_ERRORS = os.path.join(ROOT, "skills", "idea-manager", "references", "errors.md")
+SHELL_SKILL = os.path.join(ROOT, "skills", "idea-manager-client", "SKILL.md")
+
+# 取件器的兜底码：main() 里遇到未预期的异常时直接写出去的一行
+# （不走 CliError，所以它不在 OWN_ERROR_CODES 里 —— 但它确实会出现在 stderr 上）。
+FALLBACK_CODE = "internal_error"
+
+# 手册里那一行「http_<状态码>」：那是**形态**不是码（取件器产出 http_404 这种）。
+HTTP_STATUS_ROW = "http_<状态码>"
 
 # 假服务端分发副本里的内容。名字取的是「将来」的样子（Task 4 之后内容源会拆成
 # 索引页 + references/*.md），取件器对它们一视同仁。
@@ -858,6 +874,156 @@ class FetchTest(unittest.TestCase):
         # 同步没成功：新版本目录没建立，临时目录也清掉了
         self.assertFalse(os.path.exists(os.path.join(self.cache, self.server.state.version)))
         self.assertEqual([name for name in os.listdir(self.cache) if name.startswith(".tmp-")], [])
+
+
+def fetcher_module():
+    """把取件器当模块导入（只为读它自己的码表，不跑它）。"""
+    spec = importlib.util.spec_from_file_location("idea_fetch_module", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return module
+
+
+def emittable_codes():
+    """取件器真的可能打在 stderr 上的码。
+
+    = 它自己的码表（``OWN_ERROR_CODES``）+ 它的兜底码（``internal_error``）。
+    """
+    codes = set(fetcher_module().OWN_ERROR_CODES)
+    codes.add(FALLBACK_CODE)
+
+    return codes
+
+
+def read_lines(path):
+    """读一个文本文件，按行拆开（行尾统一成 \\n）。"""
+    with open(path, encoding="utf-8") as handle:
+        return handle.read().replace("\r\n", "\n").split("\n")
+
+
+def section_body(lines, heading):
+    """某一节的正文：从标题的下一行到下一个二级标题之前。"""
+    start = lines.index(heading)
+    body = []
+
+    for line in lines[start + 1:]:
+        if line.startswith("## "):
+            break
+        body.append(line)
+
+    return body
+
+
+def manual_fetcher_section():
+    """手册「## 取件器的错误码」那一节的全文（表格 + 正文）。"""
+    return "\n".join(section_body(read_lines(MANUAL_ERRORS), "## 取件器的错误码"))
+
+
+def manual_table_codes():
+    """手册「## 取件器的错误码」那张表的 code 列。"""
+    codes = []
+    in_table = False
+    first_row = True
+
+    for line in section_body(read_lines(MANUAL_ERRORS), "## 取件器的错误码"):
+        stripped = line.strip()
+
+        if not stripped.startswith("|"):
+            # 表到这儿就结束了（后面是散文）。
+            if in_table:
+                break
+            continue
+
+        in_table = True
+        cells = stripped.split("|")
+
+        if len(cells) < 2:
+            continue
+
+        cell = cells[1].strip()
+
+        # 表头行与分隔行（`|---|---|`）不是数据行。
+        if first_row:
+            first_row = False
+            continue
+
+        if not cell or set(cell) <= set("-: "):
+            continue
+
+        codes.append(cell.strip("`"))
+
+    return codes
+
+
+def shell_codes():
+    """薄壳「取件失败怎么查」那一节里提到的码（反引号里的小写词）。"""
+    body = "\n".join(section_body(read_lines(SHELL_SKILL), "## 取件失败怎么查"))
+
+    # 只认「小写开头的标识符」：`IDEA_BASE_URL`（大写）、`skill/`（带斜杠）、
+    # `warning:`（带冒号）都不是码。
+    return re.findall(r"`([a-z][a-z0-9_]*)`", body)
+
+
+class ErrorCodeDocGuardTests(unittest.TestCase):
+    """手册与薄壳里说的取件器错误码，取件器真的产得出吗？
+
+    取件器的错误码有**三份**定义，而它们从没对过面：
+
+    * 取件器代码里的 ``OWN_ERROR_CODES``（真正的权威）；
+    * 手册 ``references/errors.md`` 的「## 取件器的错误码」那张表；
+    * 薄壳 ``SKILL.md`` 的「取件失败怎么查」那份精简清单。
+
+    任何一份改了而另两份没跟上，agent 拿到的就是「手册里查不到的码」，
+    或者「手册说有、其实永远不出现的码」—— 而两侧的测试各自绿，
+    这种漂移不会自己暴露（与「版本串的算法」是同一类病：
+    两边各自定义，从没对过面）。
+    """
+
+    def test_manual_table_only_lists_codes_the_fetcher_can_emit(self):
+        """手册那张表里的码，取件器真的产得出。"""
+        emittable = emittable_codes()
+
+        for code in manual_table_codes():
+            if code == HTTP_STATUS_ROW:
+                continue
+
+            self.assertIn(
+                code,
+                emittable,
+                "手册「取件器的错误码」表里的「{}」，取件器产不出来 —— "
+                "agent 按它分支的那条路永远不会发生。".format(code),
+            )
+
+    def test_every_code_the_fetcher_can_emit_is_documented(self):
+        """取件器产得出的码，手册里都写了（表格或正文）。"""
+        section = manual_fetcher_section()
+
+        for code in sorted(emittable_codes()):
+            self.assertIn(
+                code,
+                section,
+                "取件器会打出「{}」，手册的「取件器的错误码」一节里却没有它 —— "
+                "agent 拿到这个码时无处可查。".format(code),
+            )
+
+    def test_shell_hints_only_list_codes_the_fetcher_can_emit(self):
+        """薄壳的排查清单里说的码，取件器真的产得出。"""
+        emittable = emittable_codes()
+
+        for code in shell_codes():
+            self.assertIn(
+                code,
+                emittable,
+                "薄壳提到「{}」，但取件器产不出这个码 —— "
+                "那份排查清单是照着另一份码表抄的。".format(code),
+            )
+
+    def test_the_http_status_code_form_is_produced_by_the_fetcher(self):
+        """手册里「http_<状态码>」那一行，取件器真的产得出这种形态的码。"""
+        module = fetcher_module()
+
+        self.assertRegex("http_404", module.HTTP_CODE_PATTERN.pattern)
 
 
 if __name__ == "__main__":

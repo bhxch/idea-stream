@@ -59,6 +59,9 @@ public sealed class SkillCatalog
     /// 版本串是「全部文件的 (路径, 哈希) 排序后拼接再取哈希」：
     /// 同一份内容永远同一个版本串，内容变一个字节版本就变 ——
     /// 取件器拿它判断「要不要重新同步」，不能有第二种含义。
+    ///
+    /// 版本串是 **64 位小写十六进制**（sha256 的十六进制编码）：
+    /// 取件器拿它当缓存目录名，形状必须固定。
     /// </remarks>
     /// <exception cref="ApiException">
     /// 分发副本目录不存在，或里面没有入口文件（<c>SKILL.md</c>）—— 都是
@@ -91,9 +94,15 @@ public sealed class SkillCatalog
                 $"分发副本里没有入口文件 {EntryFileName}：目录 {Root}。");
         }
 
-        var version = Sha256Hex(Utf8.GetBytes(string.Join(
+        // 版本串 = sha256(「路径 + 换行 + 文件哈希」逐项按路径序拼接) 的十六进制编码。
+        //
+        // **哈希在这一行显式做**：helper 只负责 hex 编码（名字如实反映它做的事），
+        // 少哈希一次的话这里一眼看得见 —— 之前那个叫 `Sha256Hex` 的 helper
+        // 其实只做 hex 编码，版本串因此是「原文的十六进制」而不是哈希，
+        // 取件器的版本串形状校验（至多 128 字符）当场就把它拒了。
+        var version = HexLower(SHA256.HashData(Utf8.GetBytes(string.Join(
             "\n",
-            files.Select(file => file.Path + "\n" + file.Sha256))));
+            files.Select(file => file.Path + "\n" + file.Sha256)))));
 
         return new SkillManifestDto(version, entry, files);
     }
@@ -191,10 +200,19 @@ public sealed class SkillCatalog
     {
         using var stream = File.OpenRead(path);
 
-        return Sha256Hex(SHA256.HashData(stream));
+        return HexLower(SHA256.HashData(stream));
     }
 
-    /// <summary>字节串的 sha256（十六进制小写）。</summary>
-    private static string Sha256Hex(byte[] bytes) =>
+    /// <summary>
+    /// 字节串的十六进制编码（小写）。
+    /// </summary>
+    /// <remarks>
+    /// **它不哈希** —— 只是把字节编成十六进制。名字如实反映它做的事，
+    /// 是为了让人一眼看出「哈希在哪一步」：
+    /// 每个调用点自己写 <c>SHA256.HashData(...)</c>，少哈希一次就看得见。
+    /// （之前这个 helper 叫 <c>Sha256Hex</c>，名字骗人：它只编码不哈希，
+    /// 于是版本串变成了「原文的十六进制」而不是哈希。）
+    /// </remarks>
+    private static string HexLower(byte[] bytes) =>
         Convert.ToHexString(bytes).ToLowerInvariant();
 }

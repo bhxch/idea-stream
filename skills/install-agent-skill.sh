@@ -96,7 +96,10 @@ echo "  IDEA_PASS      nginx basic auth 密码                     （可选）"
 echo "  IDEA_TOKEN     API token，存在时额外发 X-Api-Key 头     （可选）"
 echo
 echo "自检（打得通就说明地址对、凭据对、服务端分发了 skill 内容）："
-echo "  IDEA_BASE_URL=... ${TARGET}/scripts/fetch.py"
+echo "  IDEA_BASE_URL=https://ideas.example.com IDEA_USER=ideauser IDEA_PASS='<密码>' \\"
+echo "    python3 ${TARGET}/scripts/fetch.py"
+echo "  注意：标准部署走 nginx basic auth —— 不带凭据跑自检会直接 auth_error（退出码 1）。"
+echo "  只有不带 basic auth 的实例才用得着空着跑。"
 echo
 echo "注意：agent 需要重新扫一遍本地 skill 目录才会发现这个 skill ——"
 echo "当前会话里还看不到的话，新开一个会话试试。"

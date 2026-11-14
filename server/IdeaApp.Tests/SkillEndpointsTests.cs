@@ -48,6 +48,11 @@ public sealed class SkillEndpointsTests
         var version = root.GetProperty("version").GetString();
         Assert.False(string.IsNullOrWhiteSpace(version));
 
+        // 版本串的**形状**是契约的一部分：取件器拿它当缓存目录名，
+        // 只收 64 位小写十六进制（sha256 的编码）。
+        // 这里守形状，守的是「形状本身」；形状背后的算法由下面那条守卫守。
+        AssertVersionShape(version);
+
         Assert.Equal("SKILL.md", root.GetProperty("entry").GetString());
 
         var files = root.GetProperty("files");
@@ -278,6 +283,64 @@ public sealed class SkillEndpointsTests
         }
     }
 
+    /// <summary>
+    /// 版本串必须是「文件清单的哈希」—— 真的是哈希，不是别的东西的十六进制编码。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 口径（设计文档 §9.1）：参与分发的全部文件，按相对路径升序，
+    /// 每项是「路径 + 换行 + 该文件的 sha256」，项与项之间也用换行分隔，
+    /// 整体取 UTF-8 字节后算 sha256，输出 64 位小写十六进制。
+    /// </para>
+    /// <para>
+    /// <b>期望值是独立算出来的常量</b>，不是照着被测代码再算一遍 ——
+    /// 再算一遍的话，被测代码算错时这条守卫也跟着错（它只是把自己抄了一遍）。
+    /// 下面的注释里给了复核它的一行 shell 命令。
+    /// </para>
+    /// <para>
+    /// 这条守的是「算法」；端到端的那一条在 <c>server/scripts/aot-smoke.sh</c> 里 ——
+    /// 那里是真 AOT 产物 + 仓库里那个真取件器（两边第一次对上面）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Version_is_the_sha256_of_the_file_list()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            await File.WriteAllBytesAsync(
+                Path.Combine(directory, "SKILL.md"),
+                Encoding.UTF8.GetBytes("# 索引页\n"));
+
+            await File.WriteAllBytesAsync(
+                Path.Combine(directory, "a.md"),
+                Encoding.UTF8.GetBytes("a"));
+
+            using var factory = new TestAppFactory(skillPath: directory);
+            using var client = factory.CreateClient();
+
+            var version = await ReadVersionAsync(client);
+
+            AssertVersionShape(version);
+
+            // 期望值（独立算出来的常量，可复核）：
+            //   printf 'SKILL.md\n%s\na.md\n%s' \
+            //     "$(printf '# 索引页\n' | sha256sum | cut -d' ' -f1)" \
+            //     "$(printf 'a'         | sha256sum | cut -d' ' -f1)" | sha256sum
+            // 路径按字节序排：「SKILL.md」在「a.md」前面（大写字母排在小写前面）。
+            Assert.Equal(
+                "f7fc4361a92014c40a70289100d53b4af405a9118cf4a2c65a628f72b569f36b",
+                version);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     /// <summary>取清单端点的版本串。</summary>
     private static async Task<string> ReadVersionAsync(HttpClient client)
     {
@@ -288,6 +351,20 @@ public sealed class SkillEndpointsTests
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
         return document.RootElement.GetProperty("version").GetString()!;
+    }
+
+    /// <summary>版本串的形状：64 位小写十六进制（sha256 的十六进制编码）。</summary>
+    /// <remarks>
+    /// 逐字符判，不走正则：正则的 <c>$</c> 也能匹配「串尾换行之前」，
+    /// 「64 位 hex 再加一个换行」会蒙混过关（取件器那侧用的是 fullmatch，
+    /// 同一个道理）。
+    /// </remarks>
+    private static void AssertVersionShape(string? version)
+    {
+        Assert.True(
+            version is { Length: 64 }
+                && version.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f'),
+            $"版本串不是 64 位小写十六进制：{version ?? "(null)"}");
     }
 
     /// <summary>取一个文件的内容类型。</summary>
@@ -317,7 +394,13 @@ public sealed class SkillEndpointsTests
         return await reader.ReadToEndAsync();
     }
 
-    /// <summary>文件字节的 sha256（十六进制小写）。</summary>
+    /// <summary>
+    /// 文件字节的 sha256（十六进制小写）。
+    /// </summary>
+    /// <remarks>
+    /// <b>测试自己的一份</b>，不复用被测代码里的任何 helper ——
+    /// 复用就等于自己抄自己：被测代码算错时，这条断言跟着一起错。
+    /// </remarks>
     private static string Sha256Hex(byte[] bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 }

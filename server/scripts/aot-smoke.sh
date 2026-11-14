@@ -13,6 +13,10 @@
 #
 # 新增端点时在文件末尾加一行 check_endpoint 调用即可。断言走 file-based
 # C# 程序，用的是真正的 System.Text.Json 解析路径（与 JsonDocument.Parse 同一套语义）。
+#
+# 脚本末尾还有一条**跨栈**检查：用仓库里那个真的取件器（skills/idea-manager-client/scripts/fetch.py）
+# 去取跑着的这个实例的说明书 —— .NET 造的东西，Python 收不收得下，只有真取一次才知道。
+# （两套测试各自绿、各自定义，谁也没对过面，跨栈的 bug 就这么全绿漏过去。）
 
 set -uo pipefail
 
@@ -426,6 +430,74 @@ echo "==> GET /skill/idea-manager/SKILL.md"
 SKILL_CODE="$(curl -sS -o "$WORK_DIR/skill.md" -w '%{http_code}' "$BASE_URL/skill/idea-manager/SKILL.md")"
 [[ "$SKILL_CODE" == "200" ]] || fail "/skill/idea-manager/SKILL.md 期望 HTTP 200，实际 $SKILL_CODE"
 grep -q '^---' "$WORK_DIR/skill.md" || fail "取到的 SKILL.md 不像 markdown（没有 frontmatter）"
+
+echo "==> 取件器取一次说明书（跨栈：真产物 + 仓库里的真取件器）"
+# 这一条把 .NET 与 Python 两侧第一次放到同一个进程边界上：
+# **.NET 造出来的东西，Python 收不收得下，只有真取一次才知道。**
+#
+# 为什么必须真取：两套测试各绿、各自定义，谁也没对过面 ——
+# .NET 侧只断言「version 非空」，Python 侧的假服务端按规格自己造版本。
+# 于是「version 只做十六进制编码、从不哈希」这种 bug 全绿漏过，
+# 真跑起来时取件器第一步就把清单拒了（版本串 1012 字符，超出形状上限）。
+#
+# 假服务端那套（skills/idea-manager-client/tests/test_fetch.py）按规格造数据，
+# **不构成跨栈验证** —— 它验的是「取件器能处理符合规格的清单」。
+if ! command -v python3 >/dev/null 2>&1; then
+    # 没有 python3 就跳过，不能让冒烟脚本因为缺解释器而失败。
+    echo "跳过：这台机器上没有 python3，取件器跑不起来（跨栈这条没验）。"
+else
+    # 连的是**跑着的这个实例**；缓存目录给个临时目录（跑完随 WORK_DIR 一起没）。
+    # 这个冒烟环境没有 basic auth，所以不用带凭据。
+    if ! IDEA_BASE_URL="$BASE_URL" IDEA_SKILL_CACHE_DIR="$WORK_DIR/skill-cache" \
+        python3 skills/idea-manager-client/scripts/fetch.py \
+        >"$WORK_DIR/fetched.md" 2>"$WORK_DIR/fetch.err"; then
+        echo "--- 取件器的 stderr ---" >&2
+        cat "$WORK_DIR/fetch.err" >&2
+        fail "取件器取说明书失败（跨栈检查没过：服务端给的清单它收不下）"
+    fi
+
+    # 取到的必须是索引页（清单里的 entry），不是空文件也不是错误页。
+    grep -q '^name: idea-manager' "$WORK_DIR/fetched.md" \
+        || fail "取件器取到的不是索引页（没有 name: idea-manager）"
+
+    # 分发副本的完整性（设计文档 §14 的「分发副本完整」那条守卫）：
+    # **产物里带的副本要跟内容源逐个文件对上。**
+    #
+    # 三个地方各自定义「发了什么」：内容源目录、csproj 的 glob、服务端枚举副本的规则 ——
+    # 中间没人对过面。少拷一份文件（agent 照索引页的路由表取不到）或者
+    # 带进一份开发残留，都只有真取一次、逐个文件比一遍才发现得了。
+    #
+    # 比的是**取回来的缓存**（= 清单说的那份副本），不是 publish 目录 ——
+    # 前者多经过了服务端这一跳，才是 agent 真正拿到的东西。
+    #
+    # 期望值：内容源里的 .md（点目录与 __pycache__ 是开发残留，不算内容）。
+    expected_list="$WORK_DIR/expected-files.txt"
+    actual_list="$WORK_DIR/fetched-files.txt"
+
+    (
+        cd skills/idea-manager
+        find . -type f -name '*.md' \
+            | sed 's|^\./||' \
+            | grep -v '__pycache__' \
+            | grep -v '/\.' \
+            | grep -v '^\.' \
+            | sort
+    ) >"$expected_list"
+
+    (
+        find "$WORK_DIR/skill-cache" -type f ! -name '.manifest.json' \
+            | sed "s|^$WORK_DIR/skill-cache/[^/]*/||" \
+            | sort
+    ) >"$actual_list"
+
+    if ! diff -u "$expected_list" "$actual_list" >"$WORK_DIR/files.diff"; then
+        echo "--- 内容源与分发副本的差异（- 内容源里有而副本里没有；+ 副本里有而内容源里没有）---" >&2
+        cat "$WORK_DIR/files.diff" >&2
+        fail "分发副本与内容源对不上（发布产物少拷或多拷了文件）"
+    fi
+
+    echo "跨栈通过：真产物给的清单，仓库里的真取件器收下了；副本与内容源逐个文件对得上。"
+fi
 
 echo "PASS: AOT 产物下所有被检查的端点都返回预期状态码与响应体"
 exit 0
