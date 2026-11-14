@@ -60,7 +60,7 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 | 标记完成 / 取消完成（`done` **必填**） | POST /api/ideas/{id}/complete |
 | 从回收站恢复想法 | POST /api/ideas/{id}/restore |
 | 批量标记完成 / 取消完成（`done` **必填**） | POST /api/ideas/bulk/complete |
-| 批量加标签（并集追加） | POST /api/ideas/bulk/tags |
+| 批量加标签（并集追加；给 `replace: true` 就是**覆盖式**） | POST /api/ideas/bulk/tags |
 | 批量删除想法（进回收站） | POST /api/ideas/bulk/delete |
 | 合并多条想法成一条 | POST /api/ideas/merge |
 | 项目列表 | GET /api/projects |

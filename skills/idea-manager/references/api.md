@@ -53,7 +53,7 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 |---|---|---|---|---|
 | GET /api/projects | 项目列表（裸数组） | 无 | 无 | 200 |
 | POST /api/projects | 新建项目 | 无 | `name` | 201 |
-| PATCH /api/projects/{id} | 改项目名 | 路径参数 `id` | `name` | 200 |
+| PATCH /api/projects/{id} | 改项目名 | 路径参数 `id` | `name`（**必填**） | 200 |
 | DELETE /api/projects/{id} | 删项目（连带想法进回收站） | 路径参数 `id` | 无 | 204 |
 | POST /api/projects/{id}/restore | 从回收站恢复项目 | 路径参数 `id` | 无 | 200 |
 | POST /api/projects/reorder | 重排项目顺序 | 无 | `ids`（数组） | 200 |
@@ -132,7 +132,7 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
 | POST /api/ideas/{id}/complete | `done` | **必填**：省略 = `false` = **取消完成** | `null` = 400 `invalid_request_body` | `true` = 标完成 |
 | POST /api/ideas/bulk/complete | `done` | 同上：省略 = **取消完成** | `null` = 400 | `true` = 标完成 |
 | POST /api/ideas/bulk/complete | `ids` | 空数组 = 200 + `[]`（**什么都没改**） | 空数组 = 同上 | 用它 |
-| POST /api/ideas/bulk/tags | `tags` | 空数组 = 追加空标签。**`replace` 不给或 `false` 时 = 不变**；**`replace: true` 时 = 清空全部标签** | 空数组 = 同上 | 用它 |
+| POST /api/ideas/bulk/tags | `tags` | **省略 ≡ `null` ≡ 空数组**（服务端都当空数组）：`replace` 不给或 `false` 时 = **不变**（并集追加一个空集 = 原标签都还在）；`replace: true` 时 = **清空全部标签** | 空数组 = 同上 | 用它 |
 | POST /api/ideas/bulk/tags | `replace` | `false` = 并集追加（不变） | — | `true` = **覆盖式**（`tags` 是空集就清空） |
 | POST /api/ideas/bulk/delete | `ids` | 空数组 = 200 + `[]`（**什么都没删**） | 空数组 = 同上 | 用它 |
 | POST /api/ideas/merge | `ids` | **400 `invalid_merge_selection`**（至少两条） | 空数组 = 400 | 用它 |
@@ -148,6 +148,9 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
 
 补充：
 
+- **给一个不存在的项目 id**：`POST /api/ideas` 的 `projectId` 给了
+  一个**不存在**（或在回收站里）的项目 id = 404 `project_not_found`
+  （不是落到收件箱，也不报错继续建）。不给、给空串才是落到内置收件箱。
 - **批量端点（`bulk/complete`、`bulk/tags`、`bulk/delete`）的 id 列表**：
   不存在的 id **直接跳过、不报错**（多端同步的常态）；
   已在回收站里的（`bulk/delete`）算**已处理**（幂等）；

@@ -35,6 +35,28 @@ public static class WebhookMasking
     };
 
     /// <summary>
+    /// 「要不要遮蔽」：<c>unmask</c> 不为 <c>true</c> 就遮。
+    /// </summary>
+    /// <remarks>
+    /// 两个 GET 端点各写了一份这个判断，形状还略有差异
+    /// （一个 <c>unmask != true</c>、一个 <c>unmask == true ? 原值 : 遮蔽</c>）——
+    /// 同一件事两个写法，迟早会漂。判断放在这里，两边都问它。
+    /// </remarks>
+    public static bool ShouldMask(bool? unmask) => unmask != true;
+
+    /// <summary>
+    /// 一批 webhook：按「要不要遮蔽」处理。
+    /// </summary>
+    /// <param name="webhooks">要处理的那些（列表端点用它；单个端点也走它）。</param>
+    /// <param name="unmask">显式给 <c>true</c> 才给原值（页面用）。</param>
+    /// <remarks>
+    /// 遮蔽版是**新**的列表：原对象不动（写接口拿到的回执也要遮蔽，
+    /// 但那是另一条路径 —— 它压根不给 <c>unmask</c>）。
+    /// </remarks>
+    public static List<WebhookDto> MaskAll(IEnumerable<WebhookDto> webhooks, bool? unmask) =>
+        ShouldMask(unmask) ? webhooks.Select(Mask).ToList() : webhooks.ToList();
+
+    /// <summary>
     /// 遮蔽 URL：只留 <c>scheme://host[:port]</c>，路径的每一段换成 <c>***</c>。
     /// </summary>
     /// <remarks>

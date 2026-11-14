@@ -37,17 +37,9 @@ public static class WebhookEndpoints
         // 裸 curl 的响应会原样进 agent 的上下文与日志，而 bot token 就在 url 里。
         // 要完整值得显式 ?unmask=true（页面用）。
         app.MapGet("/api/webhooks", (string? projectId, bool? unmask, WebhookService service) =>
-            ApiResults.Run(() =>
-            {
-                var webhooks = service.List(projectId).ToList();
-
-                if (unmask != true)
-                {
-                    webhooks = webhooks.Select(WebhookMasking.Mask).ToList();
-                }
-
-                return Results.Json(webhooks, IdeaJsonContext.Default.ListWebhookDto);
-            }))
+            ApiResults.Run(() => Results.Json(
+                WebhookMasking.MaskAll(service.List(projectId), unmask),
+                IdeaJsonContext.Default.ListWebhookDto)))
             .Produces<List<WebhookDto>>(StatusCodes.Status200OK);
 
         // 写接口的响应一律遮蔽：回执里不带完整凭据。
@@ -82,7 +74,8 @@ public static class WebhookEndpoints
             {
                 var webhook = service.Get(id);
 
-                return Results.Json(unmask == true ? webhook : WebhookMasking.Mask(webhook),
+                return Results.Json(
+                    WebhookMasking.ShouldMask(unmask) ? WebhookMasking.Mask(webhook) : webhook,
                     IdeaJsonContext.Default.WebhookDto);
             }))
             .Produces<WebhookDto>(StatusCodes.Status200OK)
