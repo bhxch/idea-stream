@@ -33,6 +33,10 @@ description: 管理本地 idea 记事本（项目、想法、标签、完成状�
 - `auth_error`：basic auth 的用户名或密码不对。
 - `network_error`：网络不可达或超时。
 - `skill_not_distributed`：服务端没有分发 skill 内容（部署漏了 `skill/` 目录）。
-- `not_found`：要取的文件不存在。
+- `not_found`：要取的文件不存在（服务端那两种 404 码都被折叠成它）。
 - `skill_integrity_error`：取到的内容与服务端清单对不上（多半是传输中被改了），重试一次。
-- 服务端暂时连不上、但本地有缓存时：stderr 会有一行 `warning:`，这时拿到的是**上一版**手册。
+- `invalid_response`：服务端的回答不是预期形状（多半是代理返回了 HTML）。
+- `internal_error`：未预期的错误（取件器的兜底，或服务端 500 透传下来）。
+- `http_<状态码>`：服务端回了非 2xx，但响应体里没有错误码字段（网关/代理层）。按状态码分支。
+- `degraded_cache`（退出码 **3**）：服务端连不上，用的是本地缓存里的**上一版**手册。内容可能已过时，重试一次。
+- `skill_file_not_found`：服务端说副本里没有这个文件 —— 直接调 API 时会看到它；经取件器时它被折叠成 `not_found`。

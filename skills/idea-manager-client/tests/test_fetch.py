@@ -71,6 +71,27 @@ def compute_version(files):
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
+def valid_manifest():
+    """一份**合法**的清单（与假服务端平时发的那份等价）。
+
+    用它做底，把某一处改坏 —— 清单校验的每个分支各改一处。
+    """
+    files = {ENTRY: ENTRY_BODY, REFERENCE: REFERENCE_BODY}
+
+    return {
+        "version": compute_version(files),
+        "entry": ENTRY,
+        "files": [
+            {
+                "path": path,
+                "sha256": sha256_hex(files[path]),
+                "size": len(files[path].encode("utf-8")),
+            }
+            for path in sorted(files)
+        ],
+    }
+
+
 class _State(object):
     """假服务端的状态：分发副本的内容、清单的行为、要不要拒鉴权。"""
 
@@ -79,6 +100,12 @@ class _State(object):
         self.version = compute_version(self.files)
         # 清单里的 version 覆盖（模拟服务端给了个不合法的版本串，比如带换行）。
         self.version_override = None
+        # **整份清单覆盖**：非 None 时清单端点原样返回它（不做任何加工）。
+        # 用它造「服务端说了什么就是什么」的清单 —— 取件器的清单校验
+        # 有六七个分支，光靠 version_override 只够覆盖其中一条。
+        self.manifest_override = None
+        # 清单端点回 302，指向这个地址（模拟重定向到别处）。
+        self.redirect_to = None
         # 清单端点的特殊行为：(状态码, code) 或 (状态码, code, detail)。
         # 非空时清单端点回这个错（problem+json）。
         self.manifest_problem = None
@@ -141,6 +168,20 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(404, b'{"code":"not_found","detail":"no"}', "application/problem+json")
 
     def _serve_manifest(self, state):
+        if state.redirect_to is not None:
+            # 302 到别处：跨 origin 的重定向取件器不该跟着走。
+            self.send_response(302)
+            self.send_header("Location", state.redirect_to)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        if state.manifest_override is not None:
+            # 整份清单原样返回：服务端说什么就是什么。
+            raw = json.dumps(state.manifest_override).encode("utf-8")
+            self._send(200, raw, "application/json")
+            return
+
         if state.echo_auth:
             # 回显请求头：凭据原样进了响应体，看取件器会不会把它抄进 stderr。
             auth = self.headers.get("Authorization", "")
@@ -722,6 +763,81 @@ class FetchTest(unittest.TestCase):
             self.assertNotIn("\r", name)
         self.assertEqual([name for name in names if name.startswith(".tmp-")], [])
 
+    # -- 清单校验的防御分支 -------------------------------------------------
+    #
+    # 清单是**服务端给的输入**：版本串会变成缓存目录名，path 会变成缓存里的
+    # 文件名，sha256 是「内容对不对」的唯一依据。
+    #
+    # 这些分支早先几乎一个用例都没有 —— 而「守卫没覆盖到」与「代码没写错」
+    # 在测试里长得一模一样：那个 1012 字符的版本串 bug 就是这么全绿漏过去的
+    # （两边各自按自己的理解造数据，从没对过面）。
+    #
+    # 每一条都断言三件事：退出码 1、stderr 是 ``skill_integrity_error: …``、
+    # **缓存目录里没有落下任何文件**（校验不过就不许写盘）。
+
+    def assert_rejected_manifest(self, manifest):
+        """喂一份坏清单给服务端，断言取件器把它挡在缓存之外。"""
+        self.server.state.manifest_override = manifest
+
+        code, out, err = self.run_fetch([])
+
+        self.assertEqual(code, 1, err)
+        self.assertTrue(err.startswith("skill_integrity_error: "), err)
+        self.assertEqual(len(err.strip().splitlines()), 1, "错误只该有一行：{}".format(err))
+        self.assertEqual(out, "")
+        self.assertEqual(
+            os.listdir(self.cache), [], "清单不合法时，缓存目录里不该落下任何文件"
+        )
+
+    def test_rejects_a_manifest_whose_path_escapes_the_cache_directory(self):
+        """清单里的 path 含 ``..`` → 清单不合法（那个 path 会变成缓存里的文件名）。"""
+        manifest = valid_manifest()
+        manifest["files"].append({"path": "../evil.md", "sha256": "0" * 64, "size": 1})
+
+        self.assert_rejected_manifest(manifest)
+
+    def test_rejects_a_manifest_whose_path_is_absolute(self):
+        """清单里的 path 是绝对路径 → 清单不合法（会写到缓存目录之外去）。"""
+        manifest = valid_manifest()
+        manifest["files"].append({"path": "/etc/passwd", "sha256": "0" * 64, "size": 1})
+
+        self.assert_rejected_manifest(manifest)
+
+    def test_rejects_a_manifest_whose_digest_has_the_wrong_shape(self):
+        """清单里的 sha256 形状不对 → 清单不合法（形状错了却放行 = 不校验）。"""
+        manifest = valid_manifest()
+        manifest["files"][0]["sha256"] = "not-a-sha256"
+
+        self.assert_rejected_manifest(manifest)
+
+    def test_rejects_a_manifest_whose_entry_is_not_in_files(self):
+        """清单里的 entry 不在 files 里 → 清单不合法（入口页不在副本内）。"""
+        manifest = valid_manifest()
+        manifest["entry"] = "index.md"
+
+        self.assert_rejected_manifest(manifest)
+
+    def test_rejects_a_manifest_whose_files_is_not_a_list(self):
+        """清单里的 files 不是数组 → 清单不合法。"""
+        manifest = valid_manifest()
+        manifest["files"] = {"SKILL.md": {}}
+
+        self.assert_rejected_manifest(manifest)
+
+    def test_rejects_a_manifest_with_no_files_at_all(self):
+        """清单里的 files 是空数组 → 清单不合法（没有可分发的东西）。"""
+        manifest = valid_manifest()
+        manifest["files"] = []
+
+        self.assert_rejected_manifest(manifest)
+
+    def test_rejects_a_manifest_whose_file_entry_is_not_an_object(self):
+        """清单里的 files 项不是对象 → 清单不合法。"""
+        manifest = valid_manifest()
+        manifest["files"] = [ENTRY]
+
+        self.assert_rejected_manifest(manifest)
+
     def test_does_not_mask_the_username_in_the_error_detail(self):
         """用户名不是秘密：detail 里出现它时不该被糊成 ***（否则错误没法看）。
 
@@ -812,7 +928,11 @@ class FetchTest(unittest.TestCase):
         )
 
     def test_falls_back_to_the_cache_when_the_manifest_cannot_be_fetched(self):
-        """取不到清单但本地有缓存 → 用缓存，stderr 给一行提示（不含凭据）。"""
+        """取不到清单但本地有缓存 → 用缓存，stderr 给一行提示（不含凭据）。
+
+        退出码是**专属的 3**：只看退出码的调用方必须能看出「这不是当前版本」——
+        上一版手册会让 agent 按旧语义操作，那正是这套改造要消除的东西。
+        """
         code, out, err = self.run_fetch([])
         self.assertEqual(code, 0, err)
 
@@ -822,9 +942,10 @@ class FetchTest(unittest.TestCase):
             [], base_url=dead, env={"IDEA_USER": "agent", "IDEA_PASS": password}
         )
 
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 3, err)
         self.assertEqual(out, ENTRY_BODY)
         self.assertEqual(len(err.strip().splitlines()), 1, "提示只该有一行：{}".format(err))
+        self.assertTrue(err.startswith("degraded_cache: "), err)
         # 降级的那行提示也不能带凭据
         self.assertNotIn(password, err)
         self.assertNotIn(password, out)
@@ -837,12 +958,24 @@ class FetchTest(unittest.TestCase):
         dead = "http://127.0.0.1:{}".format(free_port())
         code, out, err = self.run_fetch([], base_url=dead, env={"IDEA_PASS": "error"})
 
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 3, err)
         self.assertIn("（network_error）", err)
         self.assertNotIn("network_***", err)
 
+    def test_does_not_mark_the_stdout_when_degraded(self):
+        """降级时 stdout **只有手册正文**：加标记行会污染内容。"""
+        code, out, err = self.run_fetch([])
+        self.assertEqual(code, 0, err)
+
+        dead = "http://127.0.0.1:{}".format(free_port())
+        code, out, err = self.run_fetch([], base_url=dead)
+
+        self.assertEqual(code, 3, err)
+        self.assertEqual(out, ENTRY_BODY)
+        self.assertNotIn("degraded_cache", out)
+
     def test_reports_one_line_when_the_degraded_cache_lacks_the_file(self):
-        """降级 + 缓存里没有那个文件 → stderr 只该有一行（错误），不再另打 warning。"""
+        """降级 + 缓存里没有那个文件 → stderr 只该有一行（错误），不再另打提示。"""
         code, out, err = self.run_fetch([])
         self.assertEqual(code, 0, err)
 
@@ -852,7 +985,7 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("not_found", err)
         self.assertEqual(len(err.strip().splitlines()), 1, "错误只该有一行：{}".format(err))
-        self.assertNotIn("warning", err)
+        self.assertNotIn("degraded_cache", err)
         self.assertEqual(out, "")
 
     def test_falls_back_to_the_old_cache_when_a_download_is_cut_off(self):
@@ -867,13 +1000,101 @@ class FetchTest(unittest.TestCase):
 
         code, out, err = self.run_fetch([])
 
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 3, err)
         self.assertEqual(out, ENTRY_BODY)
         self.assertEqual(len(err.strip().splitlines()), 1, "提示只该有一行：{}".format(err))
 
         # 同步没成功：新版本目录没建立，临时目录也清掉了
         self.assertFalse(os.path.exists(os.path.join(self.cache, self.server.state.version)))
         self.assertEqual([name for name in os.listdir(self.cache) if name.startswith(".tmp-")], [])
+
+    # -- 管道下游提前关闭 ---------------------------------------------------
+
+    def test_exits_quietly_when_the_pipe_is_closed_early(self):
+        """``fetch.py | head``：管道下游先走 → 静默退出，不打那一行错误。
+
+        agent 把取件器的输出管给 head/less 是很自然的动作；
+        看到 ``internal_error: [Errno 32] Broken pipe`` 会以为取件失败了。
+        """
+        # 内容要比管道的缓冲大，写入才会真的撞上 EPIPE。
+        big = "x" * (1024 * 1024)
+        self.server.state.files[ENTRY] = big
+        self.server.state.version = compute_version(self.server.state.files)
+
+        environ = dict(os.environ)
+        for name in ("IDEA_BASE_URL", "IDEA_USER", "IDEA_PASS", "IDEA_TOKEN"):
+            environ.pop(name, None)
+        environ["IDEA_BASE_URL"] = self.base_url
+        environ["IDEA_SKILL_CACHE_DIR"] = self.cache
+
+        proc = subprocess.Popen(
+            [sys.executable, SCRIPT],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environ,
+        )
+
+        # 读一点就把管道关掉：写的那一端随后会撞上 EPIPE。
+        proc.stdout.read(1024)
+        proc.stdout.close()
+
+        _, err = proc.communicate(timeout=60)
+
+        self.assertEqual(proc.returncode, 0, err.decode("utf-8", "replace"))
+        self.assertNotIn("Broken pipe", err.decode("utf-8", "replace"))
+        self.assertNotIn("internal_error", err.decode("utf-8", "replace"))
+        self.assertEqual(err, b"")
+
+    # -- 重定向 -------------------------------------------------------------
+
+    def test_does_not_follow_a_redirect_to_another_origin(self):
+        """302 到别的 origin → 不跟随（凭据不跟着出本机），报 http_302。"""
+        other = _RecordingServer()
+        other.start()
+
+        try:
+            self.server.state.redirect_to = "{}/skill/idea-manager/version".format(other.url)
+
+            code, out, err = self.run_fetch(
+                [], env={"IDEA_USER": "agent", "IDEA_PASS": "pw-1234"}
+            )
+
+            self.assertEqual(code, 1, err)
+            self.assertIn("http_302", err)
+            self.assertEqual(out, "")
+
+            # 另一个 origin 一个请求都没收到 —— 凭据没跟着过去。
+            self.assertEqual(other.state.requested, [], "跨 origin 的重定向不该被跟随")
+        finally:
+            other.stop()
+
+
+class _RecordingServer(object):
+    """只记账的 HTTP 服务端：记下收到过哪些请求、哪些头。
+
+    用来验证「凭据有没有跟着重定向跑到别处去」。
+    """
+
+    def __init__(self):
+        self.state = _State()
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._server.state = self.state
+        self._thread = None
+
+    @property
+    def url(self):
+        return "http://127.0.0.1:{}".format(self._server.server_address[1])
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}
+        )
+        self._thread.daemon = True
+        self._thread.start()
+
+    def stop(self):
+        self._server.shutdown()
+        self._server.server_close()
 
 
 def fetcher_module():

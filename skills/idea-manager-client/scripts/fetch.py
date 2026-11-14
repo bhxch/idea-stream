@@ -44,6 +44,16 @@ CACHE_DIR_NAME = "idea-skill"
 # 留太多又白占地方（每份几十 KB），两个刚好。
 KEEP_VERSIONS = 2
 
+# 降级（服务端连不上、拿的是本地缓存里的**上一版**手册）时的退出码。
+#
+# **不是 0**：只看退出码的调用方（agent 的 shell 习惯）会把上一版手册
+# 当成当前版本用 —— 「agent 按旧语义操作」正是这套改造要消除的东西。
+# 手册里写了提示，但 stdout 被重定向到文件、stderr 被丢掉的调用方
+# 根本看不见那一行 —— 退出码是那种场景下**唯一**还在的信号。
+#
+# 3 是取件器自己的码，与 1（出错）/ 2（网络层失败）都不撞。
+DEGRADED_EXIT_CODE = 3
+
 # 清单快照：存在缓存副本里的一份清单。
 #
 # 取不到清单时（网络断了）要靠它知道「入口页是哪个、哪些文件在」——
@@ -85,6 +95,7 @@ OWN_ERROR_CODES = frozenset(
         "skill_not_distributed",
         "skill_file_not_found",
         "skill_endpoint_not_found",
+        "degraded_cache",
     }
 )
 
@@ -163,6 +174,7 @@ USERINFO_PATTERN = re.compile(
 # | 网络不可达 / 超时 / 传输中断 | network_error | 2 |
 # | argparse 的用法错误 | argparse 自己的用法提示 | 2 |
 # | 兜底（未预期的异常） | internal_error | 1 |
+# | 降级：服务端连不上，用的是本地缓存里的上一版 | degraded_cache | 3 |
 #
 # code 段分两类，处理方式不同：
 #
@@ -175,8 +187,10 @@ USERINFO_PATTERN = re.compile(
 #
 # 服务端/清单给的所有字符串都要过卡口 :func:`_gate` 才许进输出。
 #
-# 降级不是错误：取不到清单但本地有**完好**的缓存时，走缓存并在 stderr 打一行
-# ``warning:`` 提示，退出码仍是 0。
+# 降级不是「取件失败」：取不到清单但本地有**完好**的缓存时，走缓存并在 stderr
+# 打一行 ``degraded_cache:`` 提示，stdout 给的是**上一版**手册。
+# 退出码是 3（专属码）：只看退出码的调用方必须能看出「这不是当前版本」——
+# 上一版手册会让 agent 按旧语义操作，那正是这套改造要消除的东西。
 
 
 def _one_line(value: Any) -> str:
@@ -554,6 +568,65 @@ def build_request(url: str) -> urllib.request.Request:
     return urllib.request.Request(url, headers=headers, method="GET")
 
 
+class SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """只跟随**同源**的重定向。
+
+    urllib 的默认行为是把请求头**原样**带到重定向的目标上
+    （``redirect_request`` 只摘掉 content-length / content-type）——
+    也就是说 302 到另一个 origin 时，Authorization 与 X-Api-Key 一起过去了。
+
+    实测过：302 到另一个端口，Basic 头原样送达。
+    自托管单实例时这个风险低，但「裸凭据出本机」这条路不该留着 ——
+    跨源的重定向一律**不跟随**（返回 None = 不重定向），
+    urllib 会把它变成一个 302 的 HTTPError，调用方按 http_302 处理。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _same_origin(req.full_url, newurl):
+            return None
+
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _same_origin(url: str, other: str) -> bool:
+    """两个 URL 是不是同一个 origin（scheme + 主机 + 端口都相同）。"""
+    try:
+        left = urllib.parse.urlsplit(url)
+        right = urllib.parse.urlsplit(other)
+    except ValueError:
+        return False
+
+    if left.scheme.lower() != right.scheme.lower():
+        return False
+
+    try:
+        left_host = (left.hostname or "").lower()
+        right_host = (right.hostname or "").lower()
+    except ValueError:
+        return False
+
+    if left_host != right_host:
+        return False
+
+    return _effective_port(left) == _effective_port(right)
+
+
+def _effective_port(parts: urllib.parse.SplitResult) -> int:
+    """URL 的有效端口：没写就用 scheme 的默认端口。"""
+    try:
+        if parts.port is not None:
+            return parts.port
+    except ValueError:
+        # 端口不是数字：当成没有端口（下面的比较会判成不同源）。
+        return -1
+
+    return 443 if parts.scheme.lower() == "https" else 80
+
+
+# 取件器自己的 opener：**只跟随同源的重定向**（见 SameOriginRedirectHandler）。
+_OPENER = urllib.request.build_opener(SameOriginRedirectHandler())
+
+
 def fetch_bytes(url: str) -> bytes:
     """GET 一个 URL，返回响应体字节。
 
@@ -564,7 +637,7 @@ def fetch_bytes(url: str) -> bytes:
     request = build_request(url)
 
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as resp:
+        with _OPENER.open(request, timeout=TIMEOUT_SECONDS) as resp:
             return resp.read()
     except urllib.error.HTTPError as exc:
         raw = b""
@@ -605,6 +678,14 @@ def _error_for_status(status: int, raw: bytes) -> CliError:
             # 认出来的是**取件器自己的**码：常量，不含凭据，原样输出。
             return CliError("skill_not_distributed", detail or "服务端没有分发 skill 内容")
         return NotFoundError(detail or "要取的文件不存在")
+
+    if 300 <= status < 400:
+        # 跨 origin 的重定向：取件器**不跟随**（凭据不跟着出本机），
+        # 于是这个 3xx 走到这里。给一句说清的话，别让 agent 以为是别的错。
+        return CliError(
+            "http_{}".format(status),
+            "服务端把请求重定向到了另一个 origin，取件器不跟随（凭据不会带出本机）。",
+        )
 
     if code:
         # 服务端给的码：输出前先过卡口（见 :func:`_safe_server_code`）。
@@ -1139,6 +1220,23 @@ def _write_stderr(line: str) -> None:
     sys.stderr.buffer.flush()
 
 
+def _silence_stdout() -> None:
+    """把 stdout 指向 /dev/null（关掉解释器退出时那次 flush 的报错）。
+
+    管道下游已经关闭时，解释器退出前还会 flush 一次 stdout，那一次照样抛
+    ``BrokenPipeError``，Python 会往 stderr 打一句
+    ``Exception ignored in: <_io.TextIOWrapper name='<stdout>' ...>``。
+    那句同样不该出现在 agent 的上下文里 —— 它长得像个错误。
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+    except (OSError, ValueError):
+        # 关不掉就算了：那只是多一句解释器级别的抱怨，
+        # 不该因为它把整次取件变成失败。
+        pass
+
+
 # --------------------------------------------------------------------------
 # 参数与入口
 # --------------------------------------------------------------------------
@@ -1213,15 +1311,33 @@ def main(argv: Optional[List[str]] = None) -> int:
         except CliError as exc:
             raise CliError(exc.code, "（本次是离线降级，用的是本地缓存）{}".format(exc.detail))
 
+        # 一行提示：码 + 细节。码是 degraded_cache（取件器自己的码），
+        # agent 按它就能知道「拿到的是上一版」。
+        #
+        # **stdout 不加任何标记**：stdout 就是手册正文，加标记会污染内容。
         _write_stderr(
-            "warning: 同步失败（{}），改用本地缓存 {}".format(
+            "degraded_cache: 同步失败（{}），改用本地缓存 {}（拿到的是上一版手册）".format(
                 degraded, _gate(os.path.basename(cache_dir), "text")
             )
         )
         print_cached_file(cache_dir, target)
+
+        # 专属退出码：只看退出码的调用方必须能看出「这不是当前版本」。
+        return DEGRADED_EXIT_CODE
     except CliError as exc:
         _write_stderr(exc.render())
         return exc.exit_code
+    except BrokenPipeError:
+        # 管道下游先走了（`fetch.py | head`）：这是**正常**用法，不是取件失败。
+        #
+        # 静默退出，别打那一行错误 —— agent 把输出管给 head/less 是很自然的动作，
+        # 看到 internal_error 会以为取件失败了。
+        #
+        # 还要把 stdout 指向 /dev/null：解释器退出时会再 flush 一次 stdout，
+        # 那一次照样抛 BrokenPipeError，Python 会往 stderr 打一句
+        # "Exception ignored in: <_io.TextIOWrapper ...>" —— 同样不该出现。
+        _silence_stdout()
+        return 0
     except Exception as exc:  # noqa: BLE001 —— 兜底：干净地失败，别吐 traceback
         # 未预期的异常也要守住「stderr 一行 + 退出码非 0」的契约：
         # agent 侧要的是能读的一行，真实原因靠报告与服务端日志定位。
