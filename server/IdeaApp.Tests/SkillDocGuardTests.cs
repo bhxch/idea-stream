@@ -75,6 +75,25 @@ public sealed class SkillDocGuardTests
         RegexOptions.CultureInvariant);
 
     /// <summary>
+    /// 「路径到此为止」的边界：后面紧跟这些字符，说明路径还在继续（是另一条路径）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>只收 ASCII</b>：路径后面紧跟一个中文字母是中文手册的常态
+    /// （「取 references/errors.md即可」），不能因此把整条提及作废。
+    /// </para>
+    /// <para>
+    /// 「点 + 字母数字」也算继续（<c>references/api.md.bak</c> 是另一份文档），
+    /// 但光秃秃的句点不算（<c>见 references/api.md.</c> 里那是散文里的句号）。
+    /// </para>
+    /// <para>
+    /// 前向（抽提及）与后向（找提及）用**同一把尺子** ——
+    /// 否则会出现「前向说提到了、后向说没提到」的错位。
+    /// </para>
+    /// </remarks>
+    private const string MentionBoundary = @"(?!(?:[A-Za-z0-9_-]|\.[A-Za-z0-9_-]))";
+
+    /// <summary>
     /// 索引页里提到细节文档的形态：<c>references/api.md</c>。
     /// </summary>
     /// <remarks>
@@ -87,11 +106,13 @@ public sealed class SkillDocGuardTests
     /// <para>
     /// 惰性匹配：路径在**第一个** <c>.md</c> 处收尾 ——
     /// 「references/api.md 与 references/calling.md」不会被吃成一长串。
-    /// 末尾的否定前瞻保证 <c>api.mdx</c> 这种不算数（它不是一份 <c>.md</c> 文档）。
+    /// 末尾的边界（<see cref="MentionBoundary"/>）保证 <c>api.mdx</c> 这种不算数
+    /// （它不是一份 <c>.md</c> 文档），而 <c>references/api.md是</c> 里的路径
+    /// 仍然是 <c>references/api.md</c>（中文手册里这种写法很常见）。
     /// </para>
     /// </remarks>
     private static readonly Regex ReferenceDocPattern = new(
-        @"(?<path>references/[\p{L}\p{N}\p{M}._/-]+?\.md)(?![\p{L}\p{N}\p{M}_-])",
+        @"(?<path>references/[\p{L}\p{N}\p{M}._/-]+?\.md)" + MentionBoundary,
         RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -419,23 +440,39 @@ public sealed class SkillDocGuardTests
     /// 点目录里的 <c>.md</c> 也算：它们会被分发（csproj 的 glob 收）、也会进语料，
     /// 所以同样得在索引页里有位置。
     /// </para>
+    /// <para>
+    /// <b>已知限制</b>（两个方向并不对称，别当成对称的）：
+    /// <list type="bullet">
+    /// <item><b>前向看不见含空白或标点的文件名</b>（字符集不含它们）：
+    /// 「references/我的 笔记.md」这种名字只有**后向**认得
+    /// （后向按整条路径找，不靠正则切）。</item>
+    /// <item><b>比较是大小写不敏感的</b>：<c>OrdinalIgnoreCase</c> ——
+    /// 枚举的 glob 在 Windows 上不分大小写、在 Linux 上分，
+    /// 比较若分大小写，同一份文档换个机器就红。
+    /// 代价是 Linux 上两个只差大小写的文件（<c>api.md</c> 与 <c>API.md</c>）
+    /// 会被当成同一份，一个提及顶替两份 —— 那是枚举侧固有的歧义，
+    /// 不是这条守卫的错。</item>
+    /// </list>
+    /// </para>
     /// </remarks>
     [Fact]
     public void The_index_page_points_at_exactly_the_reference_docs()
     {
         var docs = ReferenceDocs();
-        var body = IndexPageBody();
+        var text = IndexPageText();
 
         // 后向：每份文档都得在索引页里被提到。
         // 按**整条路径**找，不靠正则切 —— 文件名带空格（references/我的 笔记.md）
         // 或带中文（references/接口.md）时也认得出来。
+        // 但要带边界：references/api.mdx 里的 references/api.md 不算提及
+        // （那是指着另一份不存在的文档）。
         var unmentioned = docs
-            .Where(doc => !body.Contains(doc, StringComparison.OrdinalIgnoreCase))
+            .Where(doc => !Mentions(text, doc))
             .OrderBy(doc => doc, StringComparer.Ordinal)
             .ToArray();
 
         // 前向：索引页提到的每条路径都得存在。
-        var dangling = ReferenceDocPattern.Matches(body)
+        var dangling = ReferenceDocPattern.Matches(text)
             .Select(match => match.Groups["path"].Value)
             .Where(mention => !docs.Any(doc => string.Equals(doc, mention, StringComparison.OrdinalIgnoreCase)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -599,9 +636,21 @@ public sealed class SkillDocGuardTests
             "references/api.md",
             ReferenceDocPattern.Match("`references/api.md` 与 `references/calling.md`").Groups["path"].Value);
 
+        // 路径后面紧跟中文字母：中文手册里「取 references/errors.md即可」很常见，
+        // 不能因此把整条提及作废。
+        Assert.Equal(
+            "references/api.md",
+            ReferenceDocPattern.Match("取 references/api.md即可").Groups["path"].Value);
+
+        // 后面是 ASCII 的 x：那不是一份 .md 文档。
         Assert.False(
             ReferenceDocPattern.IsMatch("`references/api.mdx`"),
             "「细节文档提及」的正则把 .mdx 当成了一份 .md 文档。");
+
+        // 后向的边界与前向同一把尺子。
+        Assert.True(Mentions("见 `references/api.md`。", "references/api.md"));
+        Assert.True(Mentions("取 references/api.md即可", "references/api.md"));
+        Assert.False(Mentions("见 `references/api.mdx`", "references/api.md"));
     }
 
     /// <summary>语料：索引页 + references/ 下（递归）的全部 .md。</summary>
@@ -632,12 +681,29 @@ public sealed class SkillDocGuardTests
             .ToList();
     }
 
-    /// <summary>索引页的正文（frontmatter 之后）。</summary>
+    /// <summary>索引页的全文（frontmatter 与正文都算）。</summary>
     /// <remarks>
-    /// frontmatter 里没有文档指针，只看正文。
+    /// spec §14 那行的措辞是「在索引页被提到」—— 不限定在哪一节。
     /// </remarks>
-    private static string IndexPageBody() =>
-        SplitFrontmatter(File.ReadAllText(RepoPaths.SkillIndex), "内容源的索引页").Body;
+    private static string IndexPageText() => File.ReadAllText(RepoPaths.SkillIndex);
+
+    /// <summary>索引页里有没有提到这份文档。</summary>
+    /// <remarks>
+    /// 判据：路径**整条**出现在索引页里，且紧跟其后的字符不会把路径**延长**成另一条
+    /// （见 <see cref="MentionBoundary"/>）：<c>references/api.mdx</c> 里的
+    /// <c>references/api.md</c> 不算提及，<c>`references/api.md`</c> 与
+    /// <c>references/api.md。</c> 都算。
+    /// <para>
+    /// 比较不分大小写 —— 与前向、与枚举口径一致（见守卫 remarks 里的「已知限制」）。
+    /// </para>
+    /// </remarks>
+    private static bool Mentions(string text, string doc)
+    {
+        return Regex.IsMatch(
+            text,
+            Regex.Escape(doc) + MentionBoundary,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
 
     /// <summary><c>references/</c> 下的全部 .md（相对内容源根的路径，正斜杠分隔）。</summary>
     /// <remarks>
@@ -652,7 +718,8 @@ public sealed class SkillDocGuardTests
     /// <para>
     /// 比较用**大小写不敏感**：枚举的 glob 在 Windows 上不分大小写、在 Linux 上分，
     /// 比较若分大小写，同一份文档换个机器就红。集合本身按大小写敏感存
-    /// （Linux 上真能有两个只差大小写的文件，不该被合并成一个）。
+    /// （两个只差大小写的文件都在），但比较时它们互相顶替 ——
+    /// 一个提及顶替两份，这是比较口径的代价（见守卫 remarks 里的「已知限制」）。
     /// </para>
     /// </remarks>
     private static HashSet<string> ReferenceDocs()
