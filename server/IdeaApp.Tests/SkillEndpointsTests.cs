@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using IdeaApp.Application;
 using IdeaApp.Endpoints;
+using IdeaApp.Infrastructure;
 using Microsoft.AspNetCore.Http;
 
 namespace IdeaApp.Tests;
@@ -521,6 +522,101 @@ public sealed class SkillEndpointsTests
 
             Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
             Assert.Equal("小的一份\n", await ok.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// 枚举之后那一份<b>读不到了</b> → 清单端点仍是 200，那一份不在清单里，不是 500。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 枚举清单与算哈希之间有缝（TOCTOU）：文件可能在这中间被删掉、
+    /// 被换掉、被别的进程独占着。早先造清单那一侧是<b>裸读</b>
+    /// （量大小、算哈希都是直接读），读失败抛 <c>IOException</c> →
+    /// 500 <c>internal_error</c> → 整个清单端点挂掉 →
+    /// agent 手上<b>一份手册都拿不到</b>。
+    /// </para>
+    /// <para>
+    /// 现在按「读不到 = 不在副本里」处理（与超限跳过同一类）：跳过那一份。
+    /// </para>
+    /// <para>
+    /// 这里用<b>独占打开</b>把文件占住：它还在（枚举看得见它），但读它会失败 ——
+    /// 这正是「枚举之后读不到」最现实的、且<b>时序确定</b>的形状。
+    /// （被删掉是同一条路径：<c>FileNotFoundException</c> 也是 <c>IOException</c>；
+    /// 而「删在哪一刻」没法确定地卡在枚举与算哈希之间。）
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Manifest_stays_200_when_a_file_cannot_be_read_after_the_enumeration()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(directory, "SKILL.md"), "# 索引页\n");
+
+            var unreadable = Path.Combine(directory, "unreadable.md");
+            await File.WriteAllTextAsync(unreadable, "读不到的一份\n");
+
+            using var factory = new TestAppFactory(skillPath: directory);
+            using var client = factory.CreateClient();
+
+            // 占住它：文件还在（枚举看得见），但别的句柄读不了它。
+            using var holder = new FileStream(unreadable, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            using var response = await client.GetAsync("/skill/idea-manager/version");
+
+            // 不是 500：一份文件读不到，不该把整个清单端点拖挂。
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.DoesNotContain("internal_error", body, StringComparison.Ordinal);
+
+            // 那一份不在清单里（当「副本里没有这个文件」）。
+            Assert.DoesNotContain("unreadable.md", body, StringComparison.Ordinal);
+
+            // 其余的照旧在清单里。
+            Assert.Contains("SKILL.md", body, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// 枚举之后那一份被<b>删掉</b>了 → 当「不在副本里」（不进清单），不是异常。
+    /// </summary>
+    /// <remarks>
+    /// 造清单那一步是「量大小 + 算哈希」两次读：文件在这中间没了，
+    /// 裸读会抛 <c>IOException</c>（→ 500，整个清单端点挂掉，
+    /// agent 一份手册都拿不到）。现在读不到就当副本里没有它 ——
+    /// 与超限的那一份同一类处理。
+    /// </remarks>
+    [Fact]
+    public void A_file_deleted_after_the_enumeration_is_treated_as_not_in_the_copy()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            var path = Path.Combine(directory, "gone.md");
+
+            File.WriteAllText(path, "删掉的一份\n");
+
+            // 枚举之后被删掉：路径还在，文件没了。
+            File.Delete(path);
+
+            Assert.Null(SkillCatalog.DescribeFile("gone.md", path));
         }
         finally
         {

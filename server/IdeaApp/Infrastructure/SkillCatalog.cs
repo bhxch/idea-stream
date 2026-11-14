@@ -110,6 +110,12 @@ public sealed class SkillCatalog
     ///
     /// 版本串是 **64 位小写十六进制**（sha256 的十六进制编码）：
     /// 取件器拿它当缓存目录名，形状必须固定。
+    ///
+    /// <para>
+    /// 清单里**只列取得到的文件**：枚举之后读不到的那一份（被删、被换、被占着）
+    /// 按「不在分发副本里」处理 —— 让它抛出去就是 500，整个清单端点挂掉，
+    /// agent 一份手册都拿不到（见 <see cref="DescribeFile"/>）。
+    /// </para>
     /// </remarks>
     /// <exception cref="ApiException">
     /// 分发副本目录不存在，或里面没有入口文件（<c>SKILL.md</c>）—— 都是
@@ -125,11 +131,13 @@ public sealed class SkillCatalog
                 NotDistributedDetail);
         }
 
+        // 枚举之后那一份**可能已经不在副本里了**（被删、被换、权限被抽掉）：
+        // 那时量大小 / 算哈希都会抛 IOException → 500 internal_error
+        // → 整个清单端点挂掉 → agent 一份手册都拿不到。
+        // 所以按「读不到 = 不在副本里」的口径跳过那一份（与超限跳过同一类处理）。
         var files = EnumerateFiles()
-            .Select(file => new SkillFileDto(
-                file.RelativePath,
-                Sha256HexOfFile(file.FullPath),
-                new FileInfo(file.FullPath).Length))
+            .Select(file => DescribeFile(file.RelativePath, file.FullPath))
+            .OfType<SkillFileDto>()
             .ToArray();
 
         var entry = files.FirstOrDefault(file => file.Path == EntryFileName)?.Path;
@@ -153,6 +161,48 @@ public sealed class SkillCatalog
             files.Select(file => file.Path + "\n" + file.Sha256)))));
 
         return new SkillManifestDto(version, entry, files);
+    }
+
+    /// <summary>
+    /// 一份文件在清单里的样子（相对路径 + 哈希 + 大小）；读不到就是 null（不在副本里）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>枚举与这里之间有缝</b>（TOCTOU）：文件可能在这中间被删掉、被换掉、
+    /// 权限被抽掉、被别的进程独占着。早先造清单那一侧是**裸读**
+    /// （量大小、算哈希都是直接读），读失败抛 <c>IOException</c> →
+    /// 500 <c>internal_error</c> → 整个清单端点挂掉 → agent 一份手册都拿不到。
+    /// </para>
+    /// <para>
+    /// 所以这里按「<b>读不到 = 不在副本里</b>」处理 —— 与超限的那一份同一类：
+    /// 清单里只列**取得到**的文件，取不到的那一份就当它不在副本里。
+    /// </para>
+    /// </remarks>
+    internal static SkillFileDto? DescribeFile(string relativePath, string fullPath)
+    {
+        var length = LengthOf(fullPath);
+
+        // 量不到大小 → 读不到 → 不在副本里。
+        if (length < 0)
+        {
+            return null;
+        }
+
+        // 超限的那一份**不在分发副本里**（与枚举清单同一条判据）：
+        // 清单里永远不会出现取文件端点取不到的文件。
+        if (!IsDistributedSize(length))
+        {
+            return null;
+        }
+
+        var sha256 = Sha256HexOfFileOrNull(fullPath);
+
+        if (sha256 is null)
+        {
+            return null;
+        }
+
+        return new SkillFileDto(relativePath, sha256, length);
     }
 
     /// <summary>
@@ -381,12 +431,24 @@ public sealed class SkillCatalog
             .Replace(Path.DirectorySeparatorChar, '/')
             .Replace(Path.AltDirectorySeparatorChar, '/');
 
-    /// <summary>文件字节的 sha256（十六进制小写）。</summary>
-    private static string Sha256HexOfFile(string path)
+    /// <summary>文件字节的 sha256（十六进制小写）；读不到就是 null。</summary>
+    /// <remarks>
+    /// 读不到（文件在枚举之后被删掉 / 被换掉 / 权限被抽掉 / 被别的进程独占着）时
+    /// 返回 null，而不是让 <c>IOException</c> 冒出去 ——
+    /// 那会让整个清单端点变成 500（agent 一份手册都拿不到）。
+    /// </remarks>
+    private static string? Sha256HexOfFileOrNull(string path)
     {
-        using var stream = File.OpenRead(path);
+        try
+        {
+            using var stream = File.OpenRead(path);
 
-        return HexLower(SHA256.HashData(stream));
+            return HexLower(SHA256.HashData(stream));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
