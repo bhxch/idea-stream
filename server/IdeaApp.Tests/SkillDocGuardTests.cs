@@ -752,10 +752,21 @@ public sealed class SkillDocGuardTests
             "references/api.md",
             FirstMentionedPath("取 references/api.md即可"));
 
-        // 句末的句点也不能被吃进路径。
+        // 句末的 **ASCII 句点**也不能被吃进路径（散文里的句号，不是路径的一部分）。
+        // 全角「。」本来就不在路径的字符集里，测不到这条 —— 用例必须用 ASCII 句点。
+        Assert.Equal(
+            "references/api.md",
+            FirstMentionedPath("见 references/api.md."));
+
+        // 全角句号也一样（它压根不在路径字符集里，削尾巴时碰不到它）。
         Assert.Equal(
             "references/api.md",
             FirstMentionedPath("见 references/api.md。"));
+
+        // 前向与后向**同一把尺子**：ASCII 句末句点下，后向认得它、前向也得抽得出它
+        // （不削那个句点，前向会抽出「references/api.md.」→ 判成悬空，
+        // 而后向认的是「references/api.md」→ 前后错位）。
+        Assert.True(Mentions("见 references/api.md.", "references/api.md"));
 
         // 后面是 ASCII 的 x：那不是一份 .md 文档 —— 但它**是个路径**，
         // 所以要看得见（提到什么路径，那个路径就得在）。
@@ -927,6 +938,12 @@ public sealed class SkillDocGuardTests
     /// 削的是**末尾**那一串不是「路径字符」的字符。路径里的中文**文件名**
     /// 不受影响：它后面还跟着扩展名（<c>references/接口.md</c>）。
     /// </para>
+    /// <para>
+    /// <b>末尾的句点也要削</b>：「见 references/api.md.」里的那个 ASCII 句点是
+    /// 散文里的句号，不是路径的一部分 —— 削掉它，前向与后向才**同一把尺子**
+    /// （后向的 <see cref="Mentions"/> 认得 <c>references/api.md</c>，
+    /// 前向也得抽得出它；不削就变成「前向说提到了、后向说没提到」的错位）。
+    /// </para>
     /// </remarks>
     private static string TrimMentionedPath(string mention)
     {
@@ -937,7 +954,8 @@ public sealed class SkillDocGuardTests
             end--;
         }
 
-        var trimmed = mention[..end];
+        // 句末的句点（'.' 在路径字符集里）：削掉。
+        var trimmed = mention[..end].TrimEnd('.');
 
         // 削完只剩一个目录（"references/"）说明整段都是散文：原样留着
         // （后面那道「得像个文件路径」的判据会把它放过去）。
