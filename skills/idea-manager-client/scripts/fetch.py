@@ -469,21 +469,6 @@ def _split_userinfo(authority: str) -> Tuple[str, str]:
     return userinfo, userinfo[colon + 1:]
 
 
-def _password_in_base_url() -> str:
-    """实例地址的 userinfo 里带的密码（没有就返回空串）。
-
-    按 URL 结构取（见 :func:`_split_userinfo`），不是靠正则的形状猜。
-
-    地址要先去掉首尾空白 —— 真正发出去的地址也是去空白的那个，
-    不然 ``" http://u:p@host"`` 里的密码就漏了（它带前导空格）。
-    """
-    raw = os.environ.get("IDEA_BASE_URL", "").strip()
-    _scheme, authority, _tail = _split_url(raw)
-    _userinfo, password = _split_userinfo(authority)
-
-    return password
-
-
 # --------------------------------------------------------------------------
 # 卡口
 # --------------------------------------------------------------------------
