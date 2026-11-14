@@ -166,18 +166,24 @@ public sealed class SkillDocGuardTests
     /// 目录级的删除：<c>rm -r</c> / <c>rm -rf</c> / <c>rm --recursive</c> 之类。
     /// </summary>
     /// <remarks>
-    /// 认的是「<c>rm</c> + 短选项里带 <c>r</c>」的那些写法
-    /// （<c>-r</c>、<c>-rf</c>、<c>-fr</c>……）**与长选项**里那两个
-    /// （<c>--recursive</c>、<c>--dir</c>）：
+    /// <para>
+    /// 认的是「<c>rm</c> + 短选项里带 <c>r</c>（或 <c>R</c>）」的那些写法
+    /// （<c>-r</c>、<c>-rf</c>、<c>-fr</c>……）**与长选项** <c>--recursive</c>：
     /// 早先只认短选项，<c>rm --recursive "${TARGET}"</c> 这种写法能溜过去 ——
     /// 而它删掉的正是同一个目录。
+    /// </para>
+    /// <para>
+    /// <b><c>--dir</c>（= <c>-d</c>）不算递归</b>：GNU rm 的 <c>--dir</c> 是
+    /// 「不删空目录」—— 恰恰是递归的**反面**，它删的是**单个文件**。
+    /// 早先把它当递归，会把将来合法的 <c>rm --dir &lt;某文件&gt;</c> 误拦。
+    /// </para>
     /// <para>
     /// <c>rm -f</c>（删一个文件）与 <c>rmdir</c>（删一个空目录）都不算 ——
     /// 那两个才是安装脚本该有的尺度。
     /// </para>
     /// </remarks>
     private static readonly Regex RecursiveRemovePattern = new(
-        @"\brm\s+(?:-[A-Za-z]*r|--(?:recursive|dir)\b)",
+        @"\brm\s+(?:-[A-Za-z]*r|--recursive\b)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -892,14 +898,16 @@ public sealed class SkillDocGuardTests
         Assert.Matches(RecursiveRemovePattern, "rm -r \"${TARGET}\"");
         // 长选项也是目录级的删除：早先只认短选项，`rm --recursive` 能溜过去。
         Assert.Matches(RecursiveRemovePattern, "rm --recursive \"${TARGET}\"");
-        Assert.Matches(RecursiveRemovePattern, "rm --dir \"${TARGET}\"");
+        // 但 --dir（= -d）**不是**递归：GNU rm 里它的意思是「不删空目录」，
+        // 删的是单个文件 —— 当成递归会误拦将来合法的 `rm --dir <某文件>`。
+        Assert.DoesNotMatch(RecursiveRemovePattern, "rm --dir \"${TARGET}/x\"");
         Assert.DoesNotMatch(RecursiveRemovePattern, "rm -f \"${TARGET}/x\"");
         Assert.DoesNotMatch(RecursiveRemovePattern, "rmdir \"${TARGET}/references\"");
         Assert.DoesNotMatch(RecursiveRemovePattern, "rm --force \"${TARGET}/x\"");
     }
 
     /// <summary>
-    /// 安装脚本不许出现**目录级**的删除（<c>rm -rf</c> / <c>rm -r</c>）。
+    /// 安装脚本不许出现**目录级**的删除（<c>rm -rf</c> / <c>rm -r</c> / <c>rm --recursive</c>）。
     /// </summary>
     /// <remarks>
     /// <para>
@@ -917,19 +925,63 @@ public sealed class SkillDocGuardTests
     [Fact]
     public void The_install_script_never_removes_a_whole_directory()
     {
-        var offending = File.ReadAllLines(RepoPaths.InstallScript)
-            .Select((line, index) => (Line: line, Number: index + 1))
-            .Where(entry => !entry.Line.TrimStart().StartsWith('#'))
-            .Where(entry => RecursiveRemovePattern.IsMatch(entry.Line))
-            .ToArray();
+        var offending = RecursiveRemoveOffenders(File.ReadAllText(RepoPaths.InstallScript));
 
         Assert.True(
             offending.Length == 0,
-            "安装脚本里出现了目录级的删除（rm -rf / rm -r）："
-            + string.Join("、", offending.Select(entry => $"第 {entry.Number} 行"))
+            "安装脚本里出现了目录级的删除（rm -rf / rm -r / rm --recursive）："
+            + string.Join("、", offending.Select(number => $"第 {number} 行"))
             + " —— 只能删旧 skill 那几个**具体文件**，目录只用 rmdir 删空的："
             + "用户自己放在同名目录里的东西（references/keep.txt 之类）会被误删。");
     }
+
+    /// <summary>
+    /// 安装脚本那条守卫只拦**真递归**的删除。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// GNU rm 的 <c>--dir</c>（= <c>-d</c>）是「不删空目录」——
+    /// 恰恰是递归的**反面**，它删的是**单个文件**。
+    /// 早先的判据把它当递归 → 将来安装脚本真要用 <c>rm --dir &lt;某文件&gt;</c>
+    /// 会被这条守卫误拦（方向上是保守的，但拦的是合法的写法）。
+    /// </para>
+    /// <para>
+    /// 真递归：<c>rm -r</c> / <c>rm -R</c> / <c>rm -rf</c> / <c>rm -fr</c> /
+    /// <c>rm --recursive</c> —— 这些必须红。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void The_install_script_guard_catches_only_real_recursive_removals()
+    {
+        // 红：真递归。
+        Assert.NotEmpty(RecursiveRemoveOffenders("rm -rf \"${TARGET}\"\n"));
+        Assert.NotEmpty(RecursiveRemoveOffenders("rm -r \"${TARGET}\"\n"));
+        Assert.NotEmpty(RecursiveRemoveOffenders("rm -R \"${TARGET}\"\n"));
+        Assert.NotEmpty(RecursiveRemoveOffenders("rm -fr \"${TARGET}\"\n"));
+        Assert.NotEmpty(RecursiveRemoveOffenders("rm --recursive \"${TARGET}\"\n"));
+
+        // 绿：不是递归 —— 删文件、删空目录，以及 --dir（= -d）。
+        Assert.Empty(RecursiveRemoveOffenders("rm -f \"${TARGET}/x\"\n"));
+        Assert.Empty(RecursiveRemoveOffenders("rmdir \"${TARGET}/references\"\n"));
+        Assert.Empty(RecursiveRemoveOffenders("rm --dir \"${TARGET}/x\"\n"));
+        Assert.Empty(RecursiveRemoveOffenders("rm -d \"${TARGET}/x\"\n"));
+
+        // 注释行不算（脚本里有几行注释正是在解释「为什么不用 rm -rf」）。
+        Assert.Empty(RecursiveRemoveOffenders("# 不用 rm -rf \"${TARGET}\"\n"));
+    }
+
+    /// <summary>脚本里出现**目录级删除**的行号（1 起）；注释行不算。</summary>
+    /// <remarks>
+    /// 注释行不算：安装脚本里有几行注释正是在解释「为什么不用 rm -rf」，
+    /// 提到它是应该的。
+    /// </remarks>
+    private static int[] RecursiveRemoveOffenders(string script) =>
+        script.Replace("\r\n", "\n").Split('\n')
+            .Select((line, index) => (Line: line, Number: index + 1))
+            .Where(entry => !entry.Line.TrimStart().StartsWith('#'))
+            .Where(entry => RecursiveRemovePattern.IsMatch(entry.Line))
+            .Select(entry => entry.Number)
+            .ToArray();
 
     /// <summary>语料：索引页 + references/ 下（递归）的全部 .md。</summary>
     /// <remarks>
