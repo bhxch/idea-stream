@@ -1,0 +1,176 @@
+# CI：把本地那几条闸门搬上 GitHub Actions。
+#
+# 本地对应物（每条命令都在本地跑通过，失败的除外，见报告）：
+#   - bash verify.sh  →  dotnet test / python 单测 / AOT 冒烟 / 取件器测试脚本
+#   - cd web && npm run typecheck / npm test / npm run build
+#   - bash web/e2e/run-e2e.sh --fresh   →  CI 里等价于 cd web && npm run e2e
+#
+# 拆成 5 个 job 而不是一个大 job：后端 / 前端 / E2E / 取件器 / AOT 各自独立，
+# 互不牵连（后端挂了不用等前端跑完），也让 required check 能各自标红。
+#
+# 版本钉死：
+#   - .NET SDK 10.0.113 —— 与本地一致；csproj 里那段 ILCompiler 10.0.14 的注释
+#     针对的正是这个 SDK 内置的 ILCompiler 10.0.13（换 SDK 结论要重验）。
+#   - Node 24 —— 与本地一致（本地 v24.13.0）。
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# 只读权限：CI 不写回仓库。
+permissions:
+  contents: read
+
+# 同一个 ref 的旧运行取消掉：同一分支连续推送时不排队跑。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
+jobs:
+  backend:
+    name: 后端测试（dotnet test）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.113'
+
+      - name: dotnet test
+        run: dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj
+
+  frontend:
+    name: 前端（typecheck / vitest / build）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: npm run typecheck（vue-tsc --noEmit）
+        run: npm run typecheck
+
+      - name: npm test（Vitest）
+        run: npm test
+
+      - name: npm run build（产物落 server/IdeaApp/wwwroot）
+        run: npm run build
+
+  e2e:
+    name: E2E（Playwright）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.113'
+
+      - name: npm ci
+        working-directory: web
+        run: npm ci
+
+      # 浏览器版本必须跟 package.json 里钉的 @playwright/test@1.64.1 匹配，
+      # 所以用本地那份 npx（不是 npx 自己现拉的最新版）。
+      - name: 装 Playwright 的 chromium（含系统依赖）
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      # 预热后端构建：playwright.config.ts 的 webServer 超时是 300 秒，
+      # 而 start-server.sh 内部要现跑一次 dotnet build（首次还要 restore），
+      # 先在这里构建一遍，把它挪出 webServer 的超时窗口。
+      - name: 预热构建（后端）
+        run: dotnet build server/IdeaApp -c Debug
+
+      # 起服务 + 跑用例由 playwright.config.ts 的 webServer 负责：
+      # web/e2e/start-server.sh 幂等起服务（端口 5299），Playwright 收工后收摊。
+      - name: npm run e2e
+        working-directory: web
+        run: npm run e2e
+
+      - name: 上传 playwright 报告与产物
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.run_id }}
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+  client:
+    name: 取件器（python 单测）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # runner 自带的 python3（ubuntu-24.04 是 3.12）够用：取件器只用标准库。
+      - name: 取件器单测
+        run: python3 -m unittest discover -s skills/idea-manager-client/tests
+
+      # verify.sh 的第四步：单测之外再加一条「拿真 HTTP 服务端冒烟」。
+      - name: 取件器测试脚本（含真 HTTP 服务端冒烟）
+        run: bash skills/idea-manager-client/scripts/run-tests.sh
+
+  aot:
+    name: AOT 冒烟（Native AOT 产物）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.113'
+
+      # Native AOT 在 Linux 上的构建依赖就是这两个（微软文档给的：
+      # apt-get install clang zlib1g-dev）。不赌 runner 镜像里有没有，直接装。
+      - name: 装 Native AOT 的构建依赖（clang + zlib 头文件）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang zlib1g-dev
+
+      # 发布前先构建前端：README 明确写了「publish 前必须先 npm run build」，
+      # 否则发布出来的是空 wwwroot（应用照常起，页面全白且不报错）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: 构建前端（产物落 server/IdeaApp/wwwroot）
+        working-directory: web
+        run: npm ci && npm run build
+
+      # 真 AOT 产物 + 跨栈检查（真产物 ↔ 真取件器）。
+      - name: AOT 冒烟
+        run: bash server/scripts/aot-smoke.sh
