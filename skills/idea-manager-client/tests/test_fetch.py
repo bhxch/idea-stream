@@ -1378,6 +1378,29 @@ class UrlCredentialValueTests(unittest.TestCase):
         self.assertNotIn("p@ss:word", line)
         self.assertIn("***", line)
 
+    def test_does_not_mask_common_words_when_the_url_has_only_a_username(self):
+        """地址里只有用户名、没有密码 → 用户名不是凭据，不该把常见词糊掉。
+
+        实测 ``IDEA_BASE_URL=http://a@host`` 时值级表里进了 ``a@host`` 与 ``a``，
+        于是 ``_redact('a failure happened')`` → ``'*** f***ilure h***ppened'``
+        —— 这正是 ``_credential_values`` 自己的注释警告的情况：
+        把常见词糊掉，错误信息就没法看了。
+        """
+        os.environ["IDEA_BASE_URL"] = "http://a@host"
+
+        self.assertEqual(
+            "a failure happened",
+            self.module._redact("a failure happened"),
+        )
+
+    def test_the_url_with_a_password_still_masks_it(self):
+        """有密码的地址照旧遮住密码（上面两条不是把闸门拆了）。"""
+        os.environ["IDEA_BASE_URL"] = "http://user:sekret-pw@host"
+
+        redacted = self.module._redact("sekret-pw 与 p@ss 两样都不许露")
+
+        self.assertNotIn("sekret-pw", redacted)
+        self.assertIn("***", redacted)
 
 
 if __name__ == "__main__":

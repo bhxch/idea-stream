@@ -374,6 +374,10 @@ def _url_credential_values() -> List[str]:
       ``http://user:p%40ss%3Aword@host`` 报的是 ``nonnumeric port: 'word@host'``）——
       那是密码的**片段**，所以每个冒号之后的片段（连主机名一起）也得进表。
 
+    **只有用户名、没有密码的地址不进表**：用户名不是凭据
+    （见 :func:`_credential_values` 的说明）—— 把 ``a`` 这种常见词糊掉，
+    错误信息就没法看了。
+
     没有 userinfo（地址里没带凭据）就是空表 —— 不凭空造值。
     """
     values: List[str] = []
@@ -385,10 +389,15 @@ def _url_credential_values() -> List[str]:
     if not userinfo:
         return values
 
-    values.append(userinfo)
+    # 只有用户名、没有密码 → 这不是凭据，整个 userinfo 都不进表
+    # （实测 IDEA_BASE_URL=http://a@host 时表里进了 'a@host' 与 'a'，
+    #   于是 _redact('a failure happened') → '*** f***ilure h***ppened'，
+    #   错误信息糊得没法看）。
+    if not password:
+        return values
 
-    if password:
-        values.append(password)
+    values.append(userinfo)
+    values.append(password)
 
     # 解码后的那几份：urllib 报的是解码之后的东西。
     decoded_userinfo = urllib.parse.unquote(userinfo)
