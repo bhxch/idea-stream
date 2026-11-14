@@ -19,5 +19,14 @@ export const router = createRouter({
     { path: '/trash', name: 'trash', component: TrashPage },
     { path: '/webhooks', name: 'webhooks', component: WebhooksPage },
     { path: '/projects/:id/webhooks', name: 'project-webhooks', component: ProjectWebhooksPage },
+    // 兜底：未知地址回首页。
+    //
+    // 后端把未匹配的 GET 兜成 index.html（MapFallbackToFile），所以未知地址
+    // 拿到的是 200 + 应用外壳 —— 但路由表里没有对应条目的话，RouterView 会
+    // 渲染成空，用户看到的是白屏（只有顶栏底色）。这条 catch-all 让它回首页。
+    //
+    // 必须放在最后：vue-router 按 routes 数组顺序匹配，前面的路由优先，
+    // /projects/:id/webhooks 这类不会被它抢走。
+    { path: '/:pathMatch(.*)*', name: 'fallback', redirect: '/' },
   ],
 });

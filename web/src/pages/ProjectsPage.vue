@@ -283,15 +283,21 @@ onMounted(() => {
           <span v-if="project.lastActivityAt" class="projects__activity">
             {{ formatRelativeTime(project.lastActivityAt) }}
           </span>
-          <button
-            class="projects__edit"
-            type="button"
-            :disabled="editingId !== null && editingId !== project.id"
-            @click="startRename(project)"
-          >
-            改名
-          </button>
-          <button class="projects__delete" type="button" @click="askDelete(project)">删除</button>
+          <!--
+            两个操作按钮是一组：窄屏换行时不能被拆开（「改名」留在上一行、
+            「删除」孤零零掉到下一行左下角）。
+          -->
+          <div class="projects__actions">
+            <button
+              class="projects__edit"
+              type="button"
+              :disabled="editingId !== null && editingId !== project.id"
+              @click="startRename(project)"
+            >
+              改名
+            </button>
+            <button class="projects__delete" type="button" @click="askDelete(project)">删除</button>
+          </div>
         </div>
 
         <div v-if="editingId === project.id" class="projects__bar">
@@ -386,6 +392,20 @@ onMounted(() => {
   align-items: baseline;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+/*
+ * 「改名」「删除」一组：换行时一起走、靠右。
+ *
+ * 之前两个按钮是行里的两个独立元素，窄屏下会被 flex 拆到两行 ——
+ * 「删除」这个破坏性按钮孤零零落在条目左下角。
+ */
+.projects__actions {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: none;
+  margin-left: auto;
 }
 
 .projects__name {

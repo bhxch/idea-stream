@@ -657,10 +657,26 @@ function confirmDelete(): void {
   text-decoration: line-through;
 }
 
+/*
+ * 卡片头：勾选框、「标记完成」、标题、时间戳并排。
+ *
+ * 纵向对齐用 baseline（不是 center）：标题换成多行时，center 会把三个控件
+ * 拉到标题块的正中，看着像挂在标题第三行上；baseline 让它们跟标题**首行**齐平。
+ */
 .head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
+}
+
+/*
+ * 复选框没有文字基线，单独顶对齐。
+ *
+ * 不这样的话整行的基线由它决定（复选框的基线是它的下边缘），
+ * 标题会被顶到复选框下边缘那条线上，比按钮与时间戳高一截。
+ */
+.select {
+  align-self: flex-start;
 }
 
 /* 请求在飞：按钮不可点，别让它看起来还能按。 */
@@ -723,6 +739,73 @@ function confirmDelete(): void {
 .action {
   padding: 2px 8px;
   font-size: 12px;
+}
+
+/*
+ * 手机上点按目标不小于 32×32。
+ *
+ * - 勾选框：原生复选框只有 13×13，手指根本点不中 ——
+ *   窄屏上改成自绘的 32×32 方框（勾在中间），外观与其它输入控件一致。
+ * - 小按钮（标签 / 删除）：12px 的字配 2px 内边距只有 25px 高 —— 窄屏上加高。
+ */
+@media (max-width: 640px) {
+  .select {
+    appearance: none;
+    -webkit-appearance: none;
+    display: grid;
+    place-content: center;
+    width: 32px;
+    height: 32px;
+    margin: 0;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  .select:checked::after {
+    content: '';
+    width: 7px;
+    height: 13px;
+    border: solid var(--accent);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg) translate(-1px, -1px);
+  }
+
+  .action {
+    padding: 6px 8px;
+  }
+
+  /*
+   * 窄屏上控件那一行会把标题挤成一条细窄的柱子（标题只剩 163px 宽，
+   * 一百来个字折成五行，卡片头被撑到 98px 高）。
+   *
+   * 窄屏改成两行：控件一行（时间戳靠右），标题独占一行、整行宽度都是它的。
+   * order 只调**视觉**顺序，DOM 顺序（勾选框 → 标记完成 → 标题 → 时间）没变，
+   * 读屏软件读到的顺序与源码一致。
+   */
+  .head {
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  /* 控件行里按中间对齐（复选框跟着按钮居中，别顶在上面）。 */
+  .select {
+    order: 1;
+    align-self: auto;
+  }
+
+  .done {
+    order: 2;
+  }
+
+  .time {
+    order: 3;
+    margin-left: auto;
+  }
+
+  .title {
+    order: 4;
+    flex: 1 1 100%;
+  }
 }
 
 .action--delete {

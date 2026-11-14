@@ -147,11 +147,18 @@ onMounted(() => {
       >
         <div class="webhooks__row">
           <span class="webhooks__name">{{ webhook.name }}</span>
-          <span class="webhooks__state">{{ webhook.enabled ? '已启用' : '已禁用' }}</span>
-          <span class="webhooks__events">
-            {{ webhook.events.length > 0 ? webhook.events.join('、') : '不订阅任何事件' }}
+          <!--
+            三个徽标是一组：窄屏换行时一起走。
+            之前它们是行里的独立元素，「无密钥」会单独掉到第二行左端、
+            落在名称正下方，看着像名称的状态而不是同组徽标。
+          -->
+          <span class="webhooks__badges">
+            <span class="webhooks__state">{{ webhook.enabled ? '已启用' : '已禁用' }}</span>
+            <span class="webhooks__events">
+              {{ webhook.events.length > 0 ? webhook.events.join('、') : '不订阅任何事件' }}
+            </span>
+            <span class="webhooks__secret">{{ webhook.hasSecret ? '已设密钥' : '无密钥' }}</span>
           </span>
-          <span class="webhooks__secret">{{ webhook.hasSecret ? '已设密钥' : '无密钥' }}</span>
         </div>
 
         <p class="webhooks__url">{{ webhook.url }}</p>
@@ -229,6 +236,15 @@ onMounted(() => {
   align-items: baseline;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+/* 徽标一组：换行时一起走、靠右，不跟名称拆到两处。 */
+.webhooks__badges {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: none;
+  margin-left: auto;
 }
 
 .webhooks__name {

@@ -5,6 +5,7 @@ import type { Idea, Project, TrashEntry } from '../api/types';
 import PageNav from '../components/PageNav.vue';
 import { reportError } from '../lib/errors';
 import { formatRelativeTime } from '../lib/format';
+import { loadProjects, projects } from '../stores/projects';
 
 /**
  * 回收站里的条目。
@@ -28,6 +29,18 @@ async function load(): Promise<void> {
   } catch (error) {
     reportError(error, '加载回收站失败');
   }
+}
+
+/**
+ * 顶层条目原来属于哪个项目（项目名）。
+ *
+ * 顶层条目 = 被单独删掉的想法，它的项目**还活着**（后端把「项目也被删了」
+ * 的想法归到容器条目下，见 server/IdeaApp/Application/TrashService.cs），
+ * 所以项目名从项目列表里查得到。查不到（项目列表没拉到）就返回 null ——
+ * 那时页面上只是少一行说明，其余照常。
+ */
+function originProjectName(projectId: string): string | null {
+  return projects.value.find((project) => project.id === projectId)?.name ?? null;
 }
 
 /** 容器是不是展开着的。 */
@@ -90,6 +103,9 @@ async function restoreIdea(ideaId: string): Promise<void> {
 
 onMounted(() => {
   void load();
+  // 项目列表：顶层条目要显示「原来属于哪个项目」，得靠它把 projectId 翻成项目名。
+  // 拉不到也不影响回收站本身 —— 只是那行说明不显示。
+  void loadProjects().catch((error) => reportError(error, '加载项目失败'));
 });
 </script>
 
@@ -113,16 +129,25 @@ onMounted(() => {
         <!-- 容器：已删的项目，下挂它下面仍在回收站里的想法。 -->
         <template v-if="entry.kind === 'project' && entry.project">
           <div class="trash__row">
-            <button class="trash__toggle" type="button" @click="toggle(entry.project.id)">
-              {{ isExpanded(entry.project.id) ? '收起' : '展开' }}
-            </button>
-            <span class="trash__name">{{ entry.project.name }}</span>
             <!--
-              条数取 ideas.length，**不是** project.ideaCount：
-              ideaCount 统计的是未删想法，已删项目恒为 0。
+              「展开」与项目名是一组：窄屏换行时不能被拆到两行去
+              （拆开就像「展开」跟项目名没关系）。
             -->
-            <span class="trash__count">{{ entry.ideas.length }} 条想法</span>
-            <span class="trash__time">{{ formatRelativeTime(entry.project.updatedAt) }}</span>
+            <div class="trash__main">
+              <button class="trash__toggle" type="button" @click="toggle(entry.project.id)">
+                {{ isExpanded(entry.project.id) ? '收起' : '展开' }}
+              </button>
+              <span class="trash__name">{{ entry.project.name }}</span>
+            </div>
+            <!-- 条数与时间是一组补充说明。 -->
+            <div class="trash__meta">
+              <!--
+                条数取 ideas.length，**不是** project.ideaCount：
+                ideaCount 统计的是未删想法，已删项目恒为 0。
+              -->
+              <span class="trash__count">{{ entry.ideas.length }} 条想法</span>
+              <span class="trash__time">{{ formatRelativeTime(entry.project.updatedAt) }}</span>
+            </div>
             <button
               class="trash__restore"
               type="button"
@@ -135,8 +160,12 @@ onMounted(() => {
 
           <ul v-if="isExpanded(entry.project.id)" class="trash__children">
             <li v-for="idea in entry.ideas" :key="idea.id" class="trash__child">
-              <span class="trash__child-body">{{ idea.content }}</span>
-              <span class="trash__time">{{ formatRelativeTime(idea.updatedAt) }}</span>
+              <div class="trash__main">
+                <span class="trash__child-body">{{ idea.content }}</span>
+              </div>
+              <div class="trash__meta">
+                <span class="trash__time">{{ formatRelativeTime(idea.updatedAt) }}</span>
+              </div>
               <button
                 class="trash__restore-idea"
                 type="button"
@@ -152,8 +181,20 @@ onMounted(() => {
         <!-- 顶层：被单独删掉的想法（它的项目还活着）。 -->
         <template v-else-if="entry.idea">
           <div class="trash__row">
-            <span class="trash__body">{{ entry.idea.content }}</span>
-            <span class="trash__time">{{ formatRelativeTime(entry.idea.updatedAt) }}</span>
+            <div class="trash__main">
+              <span class="trash__body">{{ entry.idea.content }}</span>
+              <!--
+                原属项目：条目上要看得见这条想法原来属于哪个项目。
+                项目名与说明写在**同一个文本节点**里（不是两个元素）——
+                这样「页面里有没有出现这个项目名」这种断言仍然是精确的。
+              -->
+              <span v-if="originProjectName(entry.idea.projectId)" class="trash__origin">
+                原属项目：{{ originProjectName(entry.idea.projectId) }}
+              </span>
+            </div>
+            <div class="trash__meta">
+              <span class="trash__time">{{ formatRelativeTime(entry.idea.updatedAt) }}</span>
+            </div>
             <button
               class="trash__restore"
               type="button"
@@ -195,6 +236,14 @@ onMounted(() => {
   box-shadow: var(--shadow);
 }
 
+/*
+ * 回收站条目行：主体（展开 + 名称，或正文）、补充说明（条数 / 时间）、操作按钮。
+ *
+ * 三块的分组是为了窄屏换行时不出事故：
+ * - 「展开」与项目名同一组，不会被拆到两行（「展开」跟它控制的名字分家了）；
+ * - 「恢复」按钮自己占一块，换行时靠右，不会掉到「展开」正下方，
+ *   看着像「展开」的下属按钮。
+ */
 .trash__row {
   display: flex;
   align-items: baseline;
@@ -202,8 +251,34 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
-.trash__name {
+.trash__main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.trash__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: none;
+}
+
+.trash__restore {
+  flex: none;
+  /* 换行时靠右：不在「展开」底下杵着。 */
+  margin-left: auto;
+}
+
+.trash__name {
+  /*
+   * flex-basis 取 0：项目名再长也不会被 flex 换行拆到「展开」下面去
+   * （名字自己折行，「展开」始终跟它同一行）。
+   */
+  flex: 1 1 0;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -223,6 +298,13 @@ onMounted(() => {
   white-space: nowrap;
 }
 
+/* 原属项目（顶层条目）：跟时间一样是补充说明，字小一号。 */
+.trash__origin {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .trash__children {
   display: flex;
   flex-direction: column;
@@ -238,6 +320,11 @@ onMounted(() => {
   align-items: baseline;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.trash__child .trash__restore-idea {
+  flex: none;
+  margin-left: auto;
 }
 
 .trash__child-body {

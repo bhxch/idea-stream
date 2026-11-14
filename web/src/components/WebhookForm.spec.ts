@@ -46,6 +46,16 @@ function valueOf(wrapper: ReturnType<typeof mountForm>, selector: string): strin
   return (wrapper.get(selector).element as HTMLInputElement | HTMLTextAreaElement).value;
 }
 
+/**
+ * 勾上第一个订阅事件（idea.created）。
+ *
+ * 保存要求**至少订阅一个事件**（见 WebhookForm.vue 的 onSave），
+ * 所以要走到「发请求」那一步的用例都得先勾一个。
+ */
+async function checkFirstEvent(wrapper: ReturnType<typeof mountForm>): Promise<void> {
+  await wrapper.findAll('.webhook-form__event')[0].setValue(true);
+}
+
 beforeEach(() => {
   apiGet.mockReset();
   apiSend.mockReset();
@@ -59,6 +69,7 @@ describe('WebhookForm', () => {
     await wrapper.get('.webhook-form__name').setValue('新 hook');
     await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
     await wrapper.get('.webhook-form__body').setValue('{"text":"{{idea.content}}"}');
+    await checkFirstEvent(wrapper);
     await wrapper.get('.webhook-form__save').trigger('click');
     await flushPromises();
 
@@ -68,7 +79,7 @@ describe('WebhookForm', () => {
       method: 'POST',
       headers: {},
       bodyTemplate: '{"text":"{{idea.content}}"}',
-      events: [],
+      events: ['idea.created'],
       scope: 'global',
       projectId: null,
       secret: null,
@@ -84,6 +95,7 @@ describe('WebhookForm', () => {
     await wrapper.get('.webhook-form__name').setValue('项目 hook');
     await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
     await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await checkFirstEvent(wrapper);
     await wrapper.get('.webhook-form__save').trigger('click');
     await flushPromises();
 
@@ -262,6 +274,7 @@ describe('WebhookForm', () => {
     await wrapper.get('.webhook-form__name').setValue('新 hook');
     await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
     await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await checkFirstEvent(wrapper);
     await wrapper.get('.webhook-form__save').trigger('click');
     await flushPromises();
 
@@ -290,11 +303,28 @@ describe('WebhookForm', () => {
     await wrapper.get('.webhook-form__name').setValue('新 hook');
     await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
     await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await checkFirstEvent(wrapper);
     await wrapper.get('.webhook-form__save').trigger('click');
     await flushPromises();
 
     expect(wrapper.emitted('saved')).toEqual([[webhook]]);
     wrapper.unmount();
+  });
+
+  it('一个事件都不选时不发请求（不静默存成「不订阅任何事件」）', async () => {
+    const wrapper = mountForm();
+    const toastHost = mount(ToastHost);
+    await wrapper.get('.webhook-form__name').setValue('没订阅事件的 hook');
+    await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
+    await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).not.toHaveBeenCalled();
+    expect(wrapper.emitted('saved')).toBeUndefined();
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('事件');
+    wrapper.unmount();
+    toastHost.unmount();
   });
 
   it('保存失败时给提示（不静默吞掉）', async () => {
@@ -312,6 +342,7 @@ describe('WebhookForm', () => {
     await wrapper.get('.webhook-form__name').setValue('新 hook');
     await wrapper.get('.webhook-form__url').setValue('not-a-url');
     await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await checkFirstEvent(wrapper);
     await wrapper.get('.webhook-form__save').trigger('click');
     await flushPromises();
 

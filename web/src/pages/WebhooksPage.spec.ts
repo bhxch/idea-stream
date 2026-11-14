@@ -106,6 +106,8 @@ describe('WebhooksPage', () => {
     await wrapper.get('.webhook-form__name').setValue('新 hook');
     await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
     await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    // 至少要订阅一个事件（表单的校验要求），否则不发请求。
+    await wrapper.findAll('.webhook-form__event')[0].setValue(true);
     await wrapper.get('.webhook-form__save').trigger('click');
     await flushPromises();
 
@@ -115,7 +117,7 @@ describe('WebhooksPage', () => {
       method: 'POST',
       headers: {},
       bodyTemplate: '{"text":"x"}',
-      events: [],
+      events: ['idea.created'],
       scope: 'global',
       projectId: null,
       secret: null,

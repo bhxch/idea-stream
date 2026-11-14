@@ -190,6 +190,16 @@ function confirmDelete(): void {
   font-size: 13px;
 }
 
+/*
+ * 手机上点按目标不小于 32×32（与 MessageItem 里的同名规则一致）：
+ * 批量操作条上的按钮也是一行字高，手指点不中。
+ */
+@media (max-width: 640px) {
+  .action {
+    padding: 6px 10px;
+  }
+}
+
 .action:disabled {
   opacity: 0.5;
   cursor: default;

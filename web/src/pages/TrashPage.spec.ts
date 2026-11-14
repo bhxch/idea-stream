@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { config, flushPromises, mount } from '@vue/test-utils';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import { ApiError } from '../api/client';
-import type { Idea, TrashEntry } from '../api/types';
+import type { Idea, Project, TrashEntry } from '../api/types';
 import ToastHost from '../components/ToastHost.vue';
+import { projects } from '../stores/projects';
 
 const { apiGet, apiSend } = vi.hoisted(() => ({ apiGet: vi.fn(), apiSend: vi.fn() }));
 
@@ -15,10 +16,10 @@ vi.mock('../api/client', async (importOriginal) => {
 import TrashPage from './TrashPage.vue';
 
 /** 一条想法。 */
-function makeIdea(id: string, content: string): Idea {
+function makeIdea(id: string, content: string, projectId = 'project-1'): Idea {
   return {
     id,
-    projectId: 'project-1',
+    projectId,
     title: null,
     content,
     tags: [],
@@ -31,8 +32,24 @@ function makeIdea(id: string, content: string): Idea {
 /** 容器里的两条想法。 */
 const childIdeas = [makeIdea('idea-a', '容器里的甲'), makeIdea('idea-b', '容器里的乙')];
 
-/** 顶层那条想法。 */
-const topIdea = makeIdea('idea-c', '顶层的一条');
+/**
+ * 顶层那条想法。
+ *
+ * 它的项目**还活着**（顶层条目的定义：项目没被删）—— 所以是 project-live，
+ * 不是容器里那个已删的 project-1。
+ */
+const topIdea = makeIdea('idea-c', '顶层的一条', 'project-live');
+
+/** 还活着的那个项目（顶层条目的原属项目）。 */
+const liveProject: Project = {
+  id: 'project-live',
+  name: '想法的原项目',
+  sortOrder: 1,
+  ideaCount: 1,
+  lastActivityAt: '2026-11-01T10:00:00Z',
+  createdAt: '2026-11-01T10:00:00Z',
+  updatedAt: '2026-11-01T10:00:00Z',
+};
 
 /**
  * 回收站的两类条目。
@@ -78,9 +95,14 @@ beforeEach(async () => {
     if (path === '/trash') {
       return Promise.resolve(entries);
     }
+    if (path === '/projects') {
+      return Promise.resolve([liveProject]);
+    }
     return Promise.resolve([]);
   });
   apiSend.mockResolvedValue({});
+  // 项目 store 是模块级的：上一个用例留下的项目名会串到下一个用例里。
+  projects.value = [];
 
   router = createRouter({
     history: createMemoryHistory(),
@@ -115,6 +137,42 @@ describe('TrashPage', () => {
 
     // project.ideaCount 是 0（已删项目下没有未删的想法），ideas.length 是 2。
     expect(wrapper.get('.trash__entry--container .trash__count').text()).toContain('2');
+    wrapper.unmount();
+  });
+
+  it('顶层条目显示它原来属于哪个项目', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    // 顶层条目的原属项目还活着 → 项目名查得到，条目上要看得见。
+    const origin = wrapper.get('.trash__entry--idea .trash__origin');
+    expect(origin.text()).toContain('想法的原项目');
+    // 项目名与说明写在同一个文本节点里：整段文本不等于项目名本身。
+    expect(origin.text()).not.toBe('想法的原项目');
+    wrapper.unmount();
+  });
+
+  it('项目列表拉不到时，回收站照常显示（只是少了原属项目那行）', async () => {
+    apiGet.mockImplementation((path: string) => {
+      if (path === '/trash') {
+        return Promise.resolve(entries);
+      }
+      if (path === '/projects') {
+        return Promise.reject(new ApiError({
+          title: '请求失败',
+          status: 500,
+          detail: '炸了',
+          code: 'boom',
+        }));
+      }
+      return Promise.resolve([]);
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.get('.trash__entry--idea .trash__body').text()).toBe('顶层的一条');
+    expect(wrapper.findAll('.trash__origin')).toHaveLength(0);
     wrapper.unmount();
   });
 

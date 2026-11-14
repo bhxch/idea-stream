@@ -80,11 +80,20 @@ function onKeydown(event: KeyboardEvent): void {
   background: var(--panel);
 }
 
+/*
+ * 输入框。
+ *
+ * 原来这里把边框与底色抹掉（border: none; background: transparent），
+ * 输入框整个融进 composer 的面板里 —— 浏览器画的原生缩放手柄
+ * （textarea 右下角那两道斜线）就悬在「记下」按钮左边 8px 的地方，
+ * 看着像按钮旁残留的坏字符，而不像「拖这里放大」。
+ *
+ * 保留全局表单控件的边框与底色（见 styles/base.css），
+ * 手柄就落在输入框自己的右下角，读得出是缩放角。
+ */
 .input {
   flex: 1;
   resize: vertical;
-  border: none;
-  background: transparent;
 }
 
 .input:focus {

@@ -180,6 +180,13 @@ async function onSave(): Promise<void> {
     showToast('Body 模板不能为空', 'error');
     return;
   }
+  if (events.value.length === 0) {
+    // 一个事件都不订阅 = 存下一个「什么都不发」的 webhook：用户以为配好了，
+    // 却永远收不到通知 —— 这种**静默的失败**要在保存时就说清楚，不能存下来。
+    // （后端仍然允许空的 events：那是 API 层的约定，见 WebhookService.ValidateEvents。）
+    showToast('至少要订阅一个事件', 'error');
+    return;
+  }
   saving.value = true;
   try {
     if (props.webhook) {
