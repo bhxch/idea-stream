@@ -260,6 +260,9 @@ bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager
 脚本是幂等的：目标目录里认得出的旧形状残留会被清掉，不认识的文件只警告、不删。
 薄壳的约定是「那个目录里只有两个文件」—— 留着别的东西，agent 可能会直接去读它。
 
+装完之后 agent 读到的就是薄壳那份 `SKILL.md`（指针）—— 它自己会先跑 `scripts/fetch.py`
+取说明书，不需要谁去提醒它。
+
 ### 连接配置
 
 走环境变量，不进仓库（命令行不接受密码）：
@@ -272,9 +275,19 @@ bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager
 | `IDEA_TOKEN` | 否 | 可选。若 nginx 侧另外校验 `X-Api-Key` 头则填 |
 | `IDEA_SKILL_CACHE_DIR` | 否 | 取件器的缓存根目录（默认 `${XDG_CACHE_HOME:-~/.cache}/idea-skill`） |
 
+设一次，后面每个命令都能用（`export` 只对当前 shell 生效）：
+
+```bash
+export IDEA_BASE_URL=https://ideas.example.com
+export IDEA_USER=ideauser
+export IDEA_PASS='<密码>'
+# export IDEA_TOKEN='<令牌>'    # nginx 侧另外校验 X-Api-Key 时才需要
+```
+
 ### 取说明书
 
 取件器是纯标准库脚本，**Python 3.9+** 就能跑（第三方依赖一个都没有）。
+下面假设上面那几个变量已经 `export` 过了：
 
 ```bash
 SKILL=~/.zcode/skills/idea-manager      # 装到哪儿就是哪儿
@@ -293,10 +306,11 @@ python3 "$SKILL/scripts/fetch.py" /openapi/v1.json       # 完整接口契约
 每个码是什么意思，见手册的 `references/errors.md`；
 薄壳 `SKILL.md` 里也有一份精简的排查提示（缺配置、鉴权不对、没分发、内容对不上……）。
 
-自检（打得通就说明地址对、凭证对、服务端分发了 skill 内容）：
+自检（打得通就说明地址对、凭证对、服务端分发了 skill 内容）—— 这一段自成一体，
+复制过去就能跑：
 
 ```bash
-# 标准部署是 nginx basic auth —— 凭据要带上
+SKILL=~/.zcode/skills/idea-manager
 IDEA_BASE_URL=https://ideas.example.com \
 IDEA_USER=ideauser IDEA_PASS='<密码>' \
 python3 "$SKILL/scripts/fetch.py"
@@ -307,7 +321,8 @@ python3 "$SKILL/scripts/fetch.py"
 
 ### 调 API
 
-agent 直接用 curl 调 API，不经别的封装：
+agent 直接用 curl 调 API，不经别的封装（`$IDEA_BASE_URL` / `$IDEA_USER` / `$IDEA_PASS`
+按上面「连接配置」里 `export` 好）：
 
 ```bash
 # GET：列表
@@ -330,9 +345,14 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 - 带请求体就要带 `Content-Type: application/json`（不带是 415）。
 - 4xx / 5xx 回 RFC 9457 的 ProblemDetails，顶层带机器可读的 `code` ——
   **按 `code` 分支**，别去匹配 `detail` 的文字。
-- **webhook 的 url 与 headers 默认是遮蔽版**（url 只留 `scheme://host`，路径段与请求头的值
-  显示成 `***`）—— 那是设计如此，不是 bug。要原值得显式加 `?unmask=true`；
-  除非用户明确要看原始 url，否则不要加这个参数。
+- **webhook 的 url 与 headers 默认是遮蔽版**（url 只留 `scheme://host[:port]`，路径段与
+  请求头的值显示成 `***`）—— 那是设计如此，不是 bug。要原值得显式加 `?unmask=true`，
+  而**只有 `GET /api/webhooks` 与 `GET /api/webhooks/{id}` 认它**（写接口的响应一律遮蔽，
+  加了也没用）；除非用户明确要看原始 url，否则不要加这个参数。
+  （细节见手册的 `references/webhooks.md`。）
+
+跑通了会看到响应体：列表是**裸数组**（`[{...}]`），单个资源是一个对象，
+`DELETE` 是 204、没有响应体。
 
 **请求体别用 shell 拼字符串** —— 引号、换行、反斜杠会被 shell 吃掉。写进文件，
 或用带引号的 heredoc 直接喂给 curl（`<<'JSON'` 的引号不能省，否则 body 里的 `$` 会被展开）：

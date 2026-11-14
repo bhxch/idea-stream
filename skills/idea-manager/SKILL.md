@@ -130,7 +130,8 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 | `scripts/fetch.py references/errors.md` | 分发副本里的某一份细节 |
 | `scripts/fetch.py /openapi/v1.json` | 服务端的完整契约 |
 
-完整契约在服务端的 `/openapi/v1.json` —— **实时发**，仓库里没有副本，契约里有全部路径。
+完整契约在服务端的 `/openapi/v1.json` —— **实时发**，契约里有全部路径。
+仓库根的 `openapi/idea-v1.json` 是同一份的快照，**skill 分发副本里没有第二份契约**。
 也可以直接
 `curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"`
 （这个端点同样要 basic auth，没凭据时删掉 `-u`）。
