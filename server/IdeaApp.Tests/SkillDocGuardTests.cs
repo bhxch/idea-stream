@@ -31,8 +31,14 @@ namespace IdeaApp.Tests;
 /// </summary>
 public sealed class SkillDocGuardTests
 {
-    /// <summary>开发侧的残留目录名：不进分发副本（与服务端 SkillCatalog 同一口径）。</summary>
+    /// <summary>
+    /// 开发侧的残留目录名：服务端 <c>SkillCatalog</c> 枚举分发副本时排除这一种段
+    /// （别的文件一律进清单 —— 垃圾文件不进分发副本靠的是 csproj 的 <c>*.md</c> glob）。
+    /// </summary>
     private const string ExcludedDirectoryName = "__pycache__";
+
+    /// <summary>操作系统留下的垃圾文件名（不进分发副本）。</summary>
+    private const string ResidueFileName = "Thumbs.db";
 
     /// <summary>
     /// OpenAPI 的 path item 里表示 HTTP 方法的属性名（小写）。
@@ -312,9 +318,11 @@ public sealed class SkillDocGuardTests
     /// 也会让子目录里的文档脱离「平铺 + 只允许 .md」的约束。
     /// </para>
     /// <para>
-    /// 开发侧的残留（<c>__pycache__</c> 目录、<c>.DS_Store</c> 之类）不算：
-    /// 它们不进分发副本（与服务端 <c>SkillCatalog</c> 枚举时的口径一致），
-    /// 别人机器上留一个也不该让这条守卫红。
+    /// <b>残留放过</b>：<c>__pycache__</c> 目录与点开头的目录/文件
+    /// （<c>.cache/</c>、<c>.vscode/</c>、<c>.DS_Store</c>、<c>.gitignore</c> 之类）
+    /// 是编辑器与工具留下的，别人的机器上会有 —— 守卫红一次，人就学会无视守卫。
+    /// 垃圾文件不进**分发副本**靠的是 csproj 的 <c>references/**/*.md</c> glob
+    /// （<c>SkillCatalog</c> 只排除 <c>__pycache__</c> 段，其余文件一律进清单）。
     /// </para>
     /// </remarks>
     [Fact]
@@ -324,12 +332,12 @@ public sealed class SkillDocGuardTests
             .EnumerateFileSystemEntries(RepoPaths.SkillDocs)
             .OrderBy(path => path, StringComparer.Ordinal))
         {
-            var name = Path.GetFileName(entry);
-
-            if (name == ExcludedDirectoryName || IsResidueFile(entry))
+            if (IsResiduePath(entry))
             {
                 continue;
             }
+
+            var name = Path.GetFileName(entry);
 
             if (name == "SKILL.md" || (name == "references" && Directory.Exists(entry)))
             {
@@ -345,7 +353,7 @@ public sealed class SkillDocGuardTests
             .EnumerateDirectories(RepoPaths.SkillReferences, "*", SearchOption.AllDirectories)
             .OrderBy(path => path, StringComparer.Ordinal))
         {
-            if (HasExcludedSegment(directory))
+            if (IsResiduePath(directory))
             {
                 continue;
             }
@@ -357,14 +365,9 @@ public sealed class SkillDocGuardTests
 
         foreach (var file in Directory
             .EnumerateFiles(RepoPaths.SkillReferences, "*", SearchOption.AllDirectories)
-            .Where(path => !HasExcludedSegment(path))
+            .Where(path => !IsResiduePath(path))
             .OrderBy(path => path, StringComparer.Ordinal))
         {
-            if (IsResidueFile(file))
-            {
-                continue;
-            }
-
             Assert.True(
                 file.EndsWith(".md", StringComparison.Ordinal),
                 $"references/ 下只允许 .md：{Path.GetRelativePath(RepoPaths.Root, file)} —— "
@@ -507,8 +510,8 @@ public sealed class SkillDocGuardTests
     /// 少读一份，等于有一整份文档不受任何守卫管。
     /// </para>
     /// <para>
-    /// 跳过 <c>__pycache__</c> 段：那是开发侧的残留，不进分发副本
-    /// （与服务端 <c>SkillCatalog</c> 枚举时的口径一致）。
+    /// 跳过 <c>__pycache__</c> 段：服务端 <c>SkillCatalog</c> 枚举分发副本时
+    /// 排除的也是这一种段（别的文件一律进清单）。
     /// </para>
     /// </remarks>
     private static List<CorpusFile> Corpus()
@@ -529,23 +532,58 @@ public sealed class SkillDocGuardTests
     }
 
     /// <summary>这条路径上有没有开发侧的残留目录（<c>__pycache__</c>）。</summary>
+    /// <remarks>
+    /// <c>SkillCatalog</c> 枚举分发副本时也只排除这一种段（别的文件一律进清单）。
+    /// </remarks>
     private static bool HasExcludedSegment(string path)
     {
-        return path
-            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-            .Any(segment => segment == ExcludedDirectoryName);
+        return SegmentsOf(path).Any(segment => segment == ExcludedDirectoryName);
+    }
+
+    /// <summary>
+    /// 这条路径是不是「残留」—— 内容源里不该有、也不该让形状守卫红的东西。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 判据：<b>相对于内容源根</b>的路径里，有任何一段以点开头，或有 <c>__pycache__</c> 段。
+    /// 点开头的（<c>.cache/</c>、<c>.vscode/</c>、<c>.DS_Store</c>、<c>.gitignore</c>）
+    /// 是编辑器与工具留下的，不是手册内容。
+    /// </para>
+    /// <para>
+    /// <b>普通目录不放行</b>（<c>scripts/</c>、<c>tests/</c>、<c>notes/</c> 那些）：
+    /// 那些是真该被红的东西 —— 守卫红一次，人就学会无视守卫。
+    /// </para>
+    /// <para>
+    /// 必须按**相对路径**判：仓库自己就躺在 <c>.worktrees/</c> 里，
+    /// 拿绝对路径判点开头会把整棵树都当成残留。
+    /// </para>
+    /// </remarks>
+    private static bool IsResiduePath(string path)
+    {
+        var segments = SegmentsOf(path);
+
+        // 不在内容源里的路径（相对路径带 ..）：不当残留处理 ——
+        // 那样会被静默跳过，而这条判据说的是「内容源里的残留」。
+        if (segments.Length > 0 && segments[0] == "..")
+        {
+            return false;
+        }
+
+        return segments.Any(segment =>
+            segment == ExcludedDirectoryName
+            || segment == ResidueFileName
+            || segment.StartsWith('.'));
+    }
+
+    /// <summary>路径相对内容源根之后的各段（相对路径，绕开仓库自己所在的 <c>.worktrees/</c>）。</summary>
+    private static string[] SegmentsOf(string path)
+    {
+        return Path.GetRelativePath(RepoPaths.SkillDocs, path)
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
     /// <summary>路径相对仓库根的样子（报错时看的是它，不是绝对路径）。</summary>
     private static string Relative(string path) => Path.GetRelativePath(RepoPaths.Root, path);
-
-    /// <summary>操作系统留下的垃圾文件（不进分发副本，也不该让守卫红）。</summary>
-    private static bool IsResidueFile(string path)
-    {
-        var name = Path.GetFileName(path);
-
-        return name == ".DS_Store" || name == "Thumbs.db";
-    }
 
     /// <summary>契约文件里的数据 API 端点（方法 + 路径）。</summary>
     /// <remarks>
