@@ -936,6 +936,61 @@ git commit -m "docs: 把文档改成 skill 随服务分发后的形态
 
 ---
 
+### Task 7: 修版本串没算哈希 + 加跨栈守卫
+
+> **这个 task 是计划外的** —— 它由 Task 6 的复审挖出来：服务端清单的 `version`
+> 根本没算哈希（helper 叫 `Sha256Hex` 但只做 hex 编码），version 长度 1012 字符，
+> 而取件器只接受 ≤128 字符 → **取件器第一步就拒掉清单，整条链路走不通**。
+> 而当时 332 个 .NET 测试与 44 个 Python 测试**全绿** —— 两边各自按自己的理解造数据，
+> **从没对过面**。
+
+**Files:**
+- Modify: `server/IdeaApp/Infrastructure/SkillCatalog.cs`（version 改成真哈希；helper 改名成不骗人的名字）
+- Modify: `server/IdeaApp.Tests/SkillEndpointsTests.cs`（钉死期望值）
+- Modify: `server/scripts/aot-smoke.sh`（加**跨栈检查**：用真取件器取跑着的 AOT 实例）
+- Modify: `skills/idea-manager-client/tests/test_fetch.py`（补跨栈的守卫）
+
+**Interfaces:**
+- Produces: `version` = 64 位小写 hex（sha256 of 「path\nsha256」的拼接）；
+  `aot-smoke.sh` 里多一条「真服务端 + 真取件器」的检查。
+
+**Steps:**
+
+- [ ] **Step 1: 修 version 的算法**
+
+```csharp
+// 之前：Sha256Hex 只做 hex 编码，名字骗人 —— 少哈希一次看不出来
+var version = HexLower(SHA256.HashData(Utf8.GetBytes(string.Join("\n", files.Select(f => f.Path + "\n" + f.Sha256)))));
+```
+
+helper 改名成**如实反映行为**的名字（`HexLower`），两个调用点各自显式写 `SHA256.HashData(...)`。
+
+- [ ] **Step 2: .NET 侧的守卫**
+
+断言 version 是 64 位小写 hex，且**等于测试自己独立算出来的期望值**
+（测试里自己 `SHA256.HashData` + hex，**不复用被测的 helper** —— 复用就等于自己抄自己）。
+
+- [ ] **Step 3: 跨栈检查（这次的真正教训）**
+
+在 `aot-smoke.sh` 里，用**仓库里那个真的取件器**去取**跑着的那个 AOT 实例**：
+
+```bash
+IDEA_BASE_URL="$BASE_URL" IDEA_SKILL_CACHE_DIR="$WORK_DIR/skill-cache" \
+  python3 skills/idea-manager-client/scripts/fetch.py > "$WORK_DIR/fetched.md"
+```
+
+断言退出码 0 且打出的内容含索引页的 frontmatter。
+假服务端那套（`test_fetch.py` 按规格造数据）**不构成跨栈验证** ——
+真正的验证是「.NET 造的东西，Python 收得下」。
+
+- [ ] **Step 4: 提交**
+
+```bash
+git commit -m "fix(server): 版本串改成真哈希，并把两侧第一次对过面"
+```
+
+---
+
 ## 自查
 
 - **spec 覆盖**：§9.1（端点/清单/错误码/穿越防护）→ Task 1；§9.2（分发副本、Skill:Path）→ Task 1；

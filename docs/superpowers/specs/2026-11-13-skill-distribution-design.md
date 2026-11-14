@@ -70,9 +70,17 @@ agent 手上的说明书还停在原地，于是 agent 会按旧语义操作 —
   不在 `/skill/**` 上做任何有副作用的事（不建项目、不发 webhook）。
 - **不能把凭据写进 skill 目录、缓存目录或任何日志**。取件从环境变量读凭据。
 - **不能让「取不到说明书」变成静默降级**。取件失败必须报错退出，不能装作没有说明书继续干活。
-- **不能让路径打错变成 200 + HTML**。`/skill/**` 下的路径打错必须回 404 + 结构化错误，
+- **不能让路径打错变成「读到了别的文件」**。`/skill/**` 下的路径打错必须回 404 + 结构化错误，
   不能落到 SPA 兜底 —— 理由与 `Program.cs` 里 `Map("/api/{**rest}")` 那段注释一样：
   agent 只看状态码的话，200 + HTML 会被当成成功。
+  **口径的边界**（评审实测后修订）：Kestrel 会先把路径里的点号段**归一化**掉，
+  所以 `..` 逃出 `/skill/` 前缀的请求根本不会命中 `/skill/**` 的任何端点 ——
+  它落到应用既有的 SPA 兜底（200 + HTML）。这是**全应用一致**的行为（`/api/**` 的路径同样如此），
+  不是本设计引入的。本设计保证的是：
+  ① **读不到任何文件**（穿越拿不到 `/etc/passwd`）；
+  ② **归一化后仍在 `/skill/` 下的路径**（含 `%2f` 那种不被归一化的形态）回 404 + 结构化错误；
+  ③ 取件器逐文件校验 sha256，服务端给回来的内容与清单对不上时它报 `skill_integrity_error`，
+  不会把 HTML 当手册用。
 - **不能让 webhook 的凭据默认回传**。url 里的 bot token、headers 里的 Bearer 令牌，
   不主动索取就拿不到。
 
@@ -623,7 +631,10 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 1. `dotnet publish` 产物里有 `skill/idea-manager/SKILL.md`、`skill/idea-manager/references/*.md`，
    且**没有** `tests/`、`__pycache__`。
 2. `GET /skill/idea-manager/SKILL.md` 返回 200 + `text/markdown`；内容与仓库里那份逐字相同。
-3. `GET /skill/idea-manager/../../etc/passwd` 之类的穿越尝试 → 404，不是文件内容。
+3. 路径穿越的三种形态各有确定结果（Kestrel 先归一化点号段）：
+   `..%2f..%2f` 那种不被归一化的形态 → 404 `skill_file_not_found`（不是文件内容）；
+   `..` 逃出 `/skill/` 前缀的形态 → 归一化后落到应用既有的 SPA 兜底（200 + HTML，**读不到任何文件**）；
+   归一化后仍在 `/skill/` 下的形态 → 200 + 手册原文。三条都写进了 `references/errors.md`。
 4. `GET /skill/idea-manager/version` 返回一份清单；清单里的 `files` 与磁盘上的分发副本一致；
    改动内容源后版本串变化。
 5. skill 目录不存在时，`GET /skill/idea-manager/SKILL.md` → 404 `skill_not_distributed`（不是 500）。
