@@ -1,0 +1,504 @@
+/**
+ * E2E 公共夹具：复位（reset）+ 造数据（seed）。
+ *
+ * 用例文件这样用：
+ *
+ * ```ts
+ * import { test, expect } from './fixtures';
+ *
+ * test('收件箱里能看到刚记的想法', async ({ page, seed }) => {
+ *   await seed.idea('今天想到一个点子');
+ *   await page.goto('/');
+ *   await expect(page.getByText('今天想到一个点子')).toBeVisible();
+ * });
+ * ```
+ *
+ * 每个用例开始前会自动复位一次（见文件末尾的 beforeEach）——
+ * 用例之间互不干扰，且与执行顺序无关。
+ *
+ * ⚠️ 复位走的是 HTTP API，**不碰数据库文件**。应用本身没有「彻底删除」
+ * 的入口（回收站只允许恢复，标签字典只增不减），所以复位之后：
+ *
+ * - 活动想法 0 条、活动项目只有「收件箱」、webhook 0 个 —— 这些是干净的；
+ * - **回收站里会留下残渣**：被删项目的容器条目，以及每个项目一条标题为
+ *   「e2e-reset」的合并产物；
+ * - **标签字典里会留下残渣**：用过的标签名还在，计数为 0。
+ *
+ * 这两处清不掉是应用的设计（见 server/IdeaApp/Application/TrashService.cs
+ * 与 Infrastructure/TagRepository.cs 的注释），不是夹具偷懒。
+ * 需要完全干净的库时用 {@link freshDatabase}（删库重建，约 5 秒）。
+ */
+
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { test as base, expect, type APIRequestContext } from '@playwright/test';
+
+/** 内置收件箱的项目 id（首次启动时写进库里的那一行）。 */
+export const INBOX_ID = 'inbox';
+/** 内置收件箱的项目名。 */
+export const INBOX_NAME = '收件箱';
+
+/** 复位留下的合并产物的标题与正文 —— 固定值，方便断言时把它排除掉。 */
+export const RESET_ARTIFACT = 'e2e-reset';
+
+// ── API 的返回类型（与 web/src/api/types.ts 对应） ───────────────────────
+// 单独抄一份：e2e 不 import 应用源码，应用改了类型也不该让 e2e 编译失败。
+
+export interface Idea {
+  id: string;
+  projectId: string;
+  title: string | null;
+  content: string;
+  tags: string[];
+  done: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  sortOrder: number;
+  ideaCount: number;
+  lastActivityAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Tag {
+  name: string;
+  count: number;
+}
+
+export interface Webhook {
+  id: string;
+  name: string;
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  bodyTemplate: string;
+  events: string[];
+  scope: 'global' | 'project';
+  projectId: string | null;
+  enabled: boolean;
+  hasSecret: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TrashEntry {
+  kind: 'project' | 'idea';
+  project: Project | null;
+  ideas: Idea[];
+  idea: Idea | null;
+}
+
+export interface CreateIdeaInput {
+  /** 所属项目；不传 = 收件箱。 */
+  projectId?: string;
+  content: string;
+  title?: string | null;
+  tags?: string[];
+}
+
+export interface CreateWebhookInput {
+  name?: string;
+  url?: string;
+  method?: string;
+  headers?: Record<string, string>;
+  bodyTemplate?: string;
+  events?: string[];
+  /** 'global'（默认，创建后禁用）或 'project'（创建后启用）。 */
+  scope?: 'global' | 'project';
+  projectId?: string | null;
+  secret?: string | null;
+}
+
+/** 列表接口的查询参数。 */
+export interface ListIdeasParams {
+  projectId?: string;
+  status?: 'all' | 'open' | 'done';
+  tags?: string[];
+  tagMode?: 'and' | 'or';
+}
+
+/**
+ * 应用 API 的薄封装。
+ *
+ * 全部走 Playwright 的 `request` 夹具 —— 它带着配置里的 baseURL
+ * （http://127.0.0.1:5299），所以路径都写成 '/api/...'。
+ */
+export class IdeaApi {
+  constructor(private readonly request: APIRequestContext) {}
+
+  /** 发一个请求；失败时把状态码与响应体一起抛出来（错误码 code 在 body 里）。 */
+  private async send<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const response = await this.request.fetch(path, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      data: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!response.ok()) {
+      const text = await response.text();
+      throw new Error(
+        `${method} ${path} 失败：HTTP ${response.status()} ${response.statusText()} —— ${text}`,
+      );
+    }
+    if (response.status() === 204) {
+      return undefined as T;
+    }
+    const text = await response.text();
+    return (text ? JSON.parse(text) : undefined) as T;
+  }
+
+  // ── 健康 ────────────────────────────────────────────────────────────
+
+  async health(): Promise<{ status: string }> {
+    return this.send('GET', '/api/health');
+  }
+
+  // ── 项目 ────────────────────────────────────────────────────────────
+
+  async listProjects(): Promise<Project[]> {
+    return this.send('GET', '/api/projects');
+  }
+
+  async createProject(name: string): Promise<Project> {
+    return this.send('POST', '/api/projects', { name });
+  }
+
+  async renameProject(id: string, name: string): Promise<Project> {
+    return this.send('PATCH', `/api/projects/${id}`, { name });
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    await this.send('DELETE', `/api/projects/${id}`);
+  }
+
+  async restoreProject(id: string): Promise<Project> {
+    return this.send('POST', `/api/projects/${id}/restore`);
+  }
+
+  // ── 想法 ────────────────────────────────────────────────────────────
+
+  async listIdeas(params: ListIdeasParams = {}): Promise<Idea[]> {
+    const query = new URLSearchParams();
+    if (params.projectId !== undefined) query.set('projectId', params.projectId);
+    if (params.status !== undefined) query.set('status', params.status);
+    if (params.tags !== undefined) query.set('tags', params.tags.join(','));
+    if (params.tagMode !== undefined) query.set('tagMode', params.tagMode);
+    const suffix = query.toString();
+    return this.send('GET', `/api/ideas${suffix ? `?${suffix}` : ''}`);
+  }
+
+  async createIdea(input: CreateIdeaInput): Promise<Idea> {
+    return this.send('POST', '/api/ideas', {
+      projectId: input.projectId ?? INBOX_ID,
+      content: input.content,
+      title: input.title ?? null,
+      tags: input.tags ?? [],
+    });
+  }
+
+  async updateIdea(id: string, patch: { title?: string | null; content?: string }): Promise<Idea> {
+    return this.send('PATCH', `/api/ideas/${id}`, patch);
+  }
+
+  async setTags(id: string, tags: string[]): Promise<Idea> {
+    return this.send('PUT', `/api/ideas/${id}/tags`, { tags });
+  }
+
+  async setDone(id: string, done: boolean): Promise<Idea> {
+    return this.send('POST', `/api/ideas/${id}/complete`, { done });
+  }
+
+  async deleteIdea(id: string): Promise<void> {
+    await this.send('DELETE', `/api/ideas/${id}`);
+  }
+
+  async restoreIdea(id: string): Promise<Idea> {
+    return this.send('POST', `/api/ideas/${id}/restore`);
+  }
+
+  /** 合并想法。源想法会被**硬删**（行真的没了），返回合并出来的那一条。 */
+  async mergeIdeas(
+    ids: string[],
+    options: { content?: string; title?: string } = {},
+  ): Promise<Idea> {
+    return this.send('POST', '/api/ideas/merge', {
+      ids,
+      content: options.content ?? null,
+      title: options.title ?? null,
+    });
+  }
+
+  // ── 标签 ────────────────────────────────────────────────────────────
+
+  async listTags(): Promise<Tag[]> {
+    return this.send('GET', '/api/tags');
+  }
+
+  async suggestTags(projectId: string, prefix: string): Promise<string[]> {
+    return this.send(
+      'GET',
+      `/api/tags/suggest?projectId=${encodeURIComponent(projectId)}&prefix=${encodeURIComponent(prefix)}`,
+    );
+  }
+
+  // ── webhook ─────────────────────────────────────────────────────────
+
+  /** 列 webhook。不给 projectId 时后端只回**全局**的。 */
+  async listWebhooks(projectId?: string): Promise<Webhook[]> {
+    const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+    return this.send('GET', `/api/webhooks${suffix}`);
+  }
+
+  async createWebhook(input: CreateWebhookInput = {}): Promise<Webhook> {
+    const scope = input.scope ?? 'global';
+    return this.send('POST', '/api/webhooks', {
+      name: input.name ?? '测试 webhook',
+      url: input.url ?? 'http://127.0.0.1:9/e2e',
+      method: input.method ?? 'POST',
+      headers: input.headers ?? {},
+      bodyTemplate: input.bodyTemplate ?? '{"text":"{{idea.content}}"}',
+      events: input.events ?? ['idea.created'],
+      scope,
+      projectId: scope === 'project' ? (input.projectId ?? null) : null,
+      secret: input.secret ?? null,
+    });
+  }
+
+  async deleteWebhook(id: string): Promise<void> {
+    await this.send('DELETE', `/api/webhooks/${id}`);
+  }
+
+  // ── 回收站与设置 ────────────────────────────────────────────────────
+
+  async listTrash(): Promise<TrashEntry[]> {
+    return this.send('GET', '/api/trash');
+  }
+
+  async getSettings(): Promise<Record<string, string>> {
+    return this.send('GET', '/api/settings');
+  }
+
+  async setSetting(key: string, value: string): Promise<Record<string, string>> {
+    return this.send('PUT', `/api/settings/${encodeURIComponent(key)}`, { value });
+  }
+
+  // ── 复位 ────────────────────────────────────────────────────────────
+
+  /**
+   * 把库恢复干净。走 API，不碰数据库文件。
+   *
+   * 顺序是有讲究的：
+   * 1. 先把回收站里的东西**恢复**回来 —— 回收站只进不出的坏处是
+   *    「删过的东西会一直堆在那儿」，恢复一遍等于把上一轮的东西平账。
+   *    恢复完之后所有项目、想法都回到活动状态。
+   * 2. 再清想法：同一个项目里的想法用合并**硬删**（行真的没了，标签链接
+   *    随外键级联清掉），只剩一条合并产物，把它清空标签后软删 ——
+   *    残渣统一成标题为「e2e-reset」的一条，形态可预测。
+   * 3. 再删项目（收件箱除外）：项目的想法随项目一起进回收站。
+   * 4. webhook 全删（这个是真删）。
+   * 5. 设置项复位成默认值。
+   */
+  async reset(): Promise<void> {
+    await this.restoreTrash();
+    await this.clearIdeas();
+    await this.clearProjects();
+    await this.clearWebhooks();
+    await this.setSetting('project.sort_mode', 'recent');
+  }
+
+  /** 把回收站里的条目全部恢复回来（回收站清空，所有项目与想法回到活动状态）。 */
+  private async restoreTrash(): Promise<void> {
+    const trash = await this.listTrash();
+    // 先恢复想法：容器的项目还没恢复时，恢复想法是允许的。
+    for (const entry of trash) {
+      if (entry.kind === 'idea' && entry.idea) {
+        await this.restoreIdea(entry.idea.id);
+      } else if (entry.kind === 'project') {
+        for (const idea of entry.ideas) {
+          await this.restoreIdea(idea.id);
+        }
+      }
+    }
+    // 再恢复项目：连带恢复「因删项目而删」的想法。
+    for (const entry of trash) {
+      if (entry.kind === 'project' && entry.project) {
+        await this.restoreProject(entry.project.id);
+      }
+    }
+  }
+
+  /**
+   * 清掉所有活动想法。
+   *
+   * 残渣形态：**每个有想法的项目留一条标题为「e2e-reset」的想法**。
+   * 单条想法的项目会临时造一条一起合并（合并至少要两条），
+   * 这样残渣的形态统一，断言时好排除。
+   */
+  private async clearIdeas(): Promise<void> {
+    const ideas = await this.listIdeas();
+    const byProject = new Map<string, Idea[]>();
+    for (const idea of ideas) {
+      const group = byProject.get(idea.projectId);
+      if (group) {
+        group.push(idea);
+      } else {
+        byProject.set(idea.projectId, [idea]);
+      }
+    }
+    for (const [projectId, group] of byProject) {
+      let ids = group.map((idea) => idea.id);
+      if (ids.length === 1) {
+        const helper = await this.createIdea({
+          projectId,
+          content: RESET_ARTIFACT,
+          title: RESET_ARTIFACT,
+        });
+        ids = [ids[0], helper.id];
+      }
+      // 合并 = 硬删：源想法的行没了，标签链接随外键级联清掉。
+      const merged = await this.mergeIdeas(ids, {
+        content: RESET_ARTIFACT,
+        title: RESET_ARTIFACT,
+      });
+      await this.setTags(merged.id, []);
+      await this.deleteIdea(merged.id);
+    }
+  }
+
+  /** 删掉除收件箱外的项目。 */
+  private async clearProjects(): Promise<void> {
+    for (const project of await this.listProjects()) {
+      if (project.id === INBOX_ID || project.name === INBOX_NAME) {
+        continue;
+      }
+      await this.deleteProject(project.id);
+    }
+  }
+
+  /** 删掉所有 webhook（全局的与项目级的都要删）。 */
+  private async clearWebhooks(): Promise<void> {
+    for (const webhook of await this.listWebhooks()) {
+      await this.deleteWebhook(webhook.id);
+    }
+    for (const project of await this.listProjects()) {
+      for (const webhook of await this.listWebhooks(project.id)) {
+        await this.deleteWebhook(webhook.id);
+      }
+    }
+  }
+}
+
+/** 造数据的便捷函数。 */
+export interface Seed {
+  /** 造一个项目（默认名「测试项目」）。 */
+  project(name?: string): Promise<Project>;
+  /** 造一条想法（默认落在收件箱）。 */
+  idea(
+    content: string,
+    options?: { title?: string | null; projectId?: string; tags?: string[] },
+  ): Promise<Idea>;
+  /** 造一条已完成的想法。 */
+  doneIdea(
+    content: string,
+    options?: { title?: string | null; projectId?: string; tags?: string[] },
+  ): Promise<Idea>;
+  /** 造一条带标签的想法，返回标签名（标签是全局字典，名字会自动建）。 */
+  tag(name: string, options?: { content?: string; projectId?: string }): Promise<string>;
+  /** 造一个 webhook（默认全局作用域、创建后是禁用的，不会真的发请求）。 */
+  webhook(options?: CreateWebhookInput): Promise<Webhook>;
+}
+
+export interface E2EFixtures {
+  /** 应用 API 的封装。 */
+  api: IdeaApi;
+  /** 造数据的便捷函数。 */
+  seed: Seed;
+}
+
+export const test = base.extend<E2EFixtures>({
+  api: async ({ request }, use) => {
+    await use(new IdeaApi(request));
+  },
+  seed: async ({ api }, use) => {
+    await use({
+      project: (name = '测试项目') => api.createProject(name),
+      idea: (content, options = {}) =>
+        api.createIdea({
+          projectId: options.projectId,
+          content,
+          title: options.title ?? null,
+          tags: options.tags ?? [],
+        }),
+      doneIdea: async (content, options = {}) => {
+        const idea = await api.createIdea({
+          projectId: options.projectId,
+          content,
+          title: options.title ?? null,
+          tags: options.tags ?? [],
+        });
+        return api.setDone(idea.id, true);
+      },
+      tag: async (name, options = {}) => {
+        await api.createIdea({
+          projectId: options.projectId,
+          content: options.content ?? `带标签「${name}」的想法`,
+          title: null,
+          tags: [name],
+        });
+        return name;
+      },
+      webhook: (options = {}) => api.createWebhook(options),
+    });
+  },
+});
+
+/**
+ * 每个用例开始前复位一次。
+ *
+ * 放在这里而不是让每个用例自己调 —— 「忘了复位」是顺序相关用例的常见来源，
+ * 复位这件事不该由写用例的人记着。
+ */
+test.beforeEach(async ({ api }) => {
+  await api.reset();
+});
+
+/**
+ * 把库恢复成**完全干净**的状态：删掉数据库文件、重建、重启服务。
+ *
+ * 复位（{@link IdeaApi.reset}）走 API，清不掉回收站与标签字典 ——
+ * 应用没有「彻底删除」的入口。需要那两处也干净时用这个（约 5 秒）。
+ *
+ * ⚠️ 它会**重启 E2E 服务**：只能在自己独占服务时用（配置里 workers 固定为 1，
+ * 所以同一时刻只有一个用例在跑）。
+ */
+export function freshDatabase(): void {
+  execFileSync('bash', [join(e2eDir(), 'start-server.sh'), '--fresh'], {
+    cwd: e2eDir(),
+    stdio: 'inherit',
+  });
+}
+
+/** e2e 目录（夹具文件所在目录）。 */
+function e2eDir(): string {
+  // import.meta.url 在 ESM 下可用；这里再兜一层 cwd 推断，
+  // 万一被当成 CommonJS 加载（__dirname 不可用）也不至于找不到脚本。
+  try {
+    return dirname(fileURLToPath(import.meta.url));
+  } catch {
+    for (const candidate of [join(process.cwd(), 'e2e'), join(process.cwd(), 'web', 'e2e')]) {
+      if (existsSync(join(candidate, 'start-server.sh'))) {
+        return candidate;
+      }
+    }
+    throw new Error('找不到 e2e 目录（start-server.sh 不在预期位置）');
+  }
+}
+
+export { expect };

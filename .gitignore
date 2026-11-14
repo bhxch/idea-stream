@@ -22,3 +22,13 @@ __pycache__/
 .temp/
 .superpowers/
 .worktrees/
+
+# E2E（Playwright）
+# E2E 数据库、PID、日志、锁
+web/e2e/.tmp/
+# 手工排查用的截图
+web/e2e/screenshots/
+# HTML 报告
+web/playwright-report/
+# Playwright 的产物（trace、截图、视频）
+web/test-results/

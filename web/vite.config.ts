@@ -1,5 +1,5 @@
 import vue from '@vitejs/plugin-vue';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   plugins: [vue()],
@@ -23,5 +23,9 @@ export default defineConfig({
     // 环境是 node 时只要有 spec import 了 router.ts 就会在收集阶段报
     // "window is not defined"。单文件 pragma 容易漏，这里全局设死。
     environment: 'jsdom',
+    // e2e/ 下的用例由 **Playwright** 跑（web/e2e/），不归 Vitest 管 ——
+    // 它们 import 的是 @playwright/test，在 Vitest 里跑不起来。
+    // Vitest 默认的 include 会把它们收进来，所以这里显式排掉。
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
 });

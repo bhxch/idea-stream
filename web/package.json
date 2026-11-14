@@ -9,13 +9,16 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "e2e:report": "playwright show-report"
   },
   "dependencies": {
     "vue": "^3.5.45",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@vitejs/plugin-vue": "^6.0.10",
     "@vue/test-utils": "^2.5.1",
     "jsdom": "^29.1.1",
