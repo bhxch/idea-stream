@@ -61,7 +61,8 @@ class _State(object):
     def __init__(self):
         self.files = {ENTRY: ENTRY_BODY, REFERENCE: REFERENCE_BODY}
         self.version = compute_version(self.files)
-        # 清单端点的特殊行为：(状态码, code)。非空时清单端点回这个错。
+        # 清单端点的特殊行为：(状态码, code) 或 (状态码, code, detail)。
+        # 非空时清单端点回这个错（problem+json）。
         self.manifest_problem = None
         # 清单里的哈希故意给错 —— 模拟「传输中内容被改了」。
         self.corrupt_hash = False
@@ -137,8 +138,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if state.manifest_problem is not None:
-            status, code = state.manifest_problem
-            body = json.dumps({"code": code, "detail": "manifest problem"}).encode("utf-8")
+            status, code = state.manifest_problem[0], state.manifest_problem[1]
+            detail = state.manifest_problem[2] if len(state.manifest_problem) > 2 else "manifest problem"
+            body = json.dumps({"code": code, "detail": detail}).encode("utf-8")
             self._send(status, body, "application/problem+json")
             return
 
@@ -319,6 +321,29 @@ class FetchTest(unittest.TestCase):
 
         self.assertEqual(code, 0, err)
         self.assertFalse(os.path.exists(leftover), "崩溃留下的临时目录该被清掉")
+
+    def test_prunes_the_temporary_directory_when_the_manifest_cannot_be_fetched(self):
+        """清单取不到（网络失败）→ 残留的临时目录也要清掉。
+
+        清理要挂在**所有出口**上：成功、失败、提前返回 —— 只挂在成功路径上的话，
+        取不到清单那次就把孤儿留下了。
+        """
+        leftover = os.path.join(self.cache, ".tmp-deadbeef-{}".format(dead_pid()))
+        os.makedirs(leftover)
+        with open(os.path.join(leftover, "SKILL.md"), "w", encoding="utf-8") as handle:
+            handle.write("半个文件")
+
+        code, out, err = self.run_fetch(
+            [], base_url="http://127.0.0.1:{}".format(free_port())
+        )
+
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("network_error: "), err)
+        self.assertFalse(os.path.exists(leftover), "取不到清单时残留的临时目录也要清掉")
+        # 缓存根目录里不该剩下任何临时目录
+        self.assertEqual(
+            [name for name in os.listdir(self.cache) if name.startswith(".tmp-")], []
+        )
 
     def test_syncs_a_new_version_and_replaces_the_cache(self):
         """服务端换版本 → 缓存跟着换，当前版本目录里是新版内容。
@@ -505,6 +530,8 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertTrue(err.startswith("network_error: "), err)
         self.assertNotIn("network_***", err)
+        # code 段逐字是 network_error：既没被值级脱敏改写，也没被换成别的码
+        self.assertEqual(err.split(":", 1)[0], "network_error")
 
     def test_does_not_echo_the_basic_auth_header_the_server_reflects(self):
         """服务端把 Authorization 头回显进错误体 → stderr 不含那串 base64。
@@ -531,6 +558,92 @@ class FetchTest(unittest.TestCase):
 
         self.assertNotIn("***", err)
         self.assertIn("host.invalid/a@b", err)
+
+    # -- 服务端给的 code ----------------------------------------------------
+    #
+    # code 段是 agent 要拿来分支的（network_error / not_found / …），
+    # 但它也是**服务端给的字符串**：回显型服务端/代理只要把凭据放进
+    # problem+json 的 code 字段（而不是 detail），凭据就跟着 code 进了 stderr
+    # 与 agent 的上下文。
+
+    def test_never_echoes_a_credential_the_server_puts_in_the_code(self):
+        """服务端把凭据塞进 code → stderr 里不许出现那个凭据。
+
+        密码这里特意取成「形状合法」的那一种（首字母 + 字母数字）：
+        这样能过的只有凭据检查那一关 —— 形状检查单独是拦不住它的。
+        """
+        password = "sekretpw9f3a"
+        self.server.state.manifest_problem = (500, password, "boom")
+
+        code, out, err = self.run_fetch([], env={"IDEA_PASS": password})
+
+        self.assertEqual(code, 1)
+        self.assertNotIn(password, err)
+        self.assertNotIn(password, out)
+        # 换成一个可解析的码（agent 还能按 code 分支）：逐字断言，别只看前缀
+        self.assertEqual(err, "http_500: boom\n")
+        self.assertEqual(out, "")
+
+    def test_keeps_a_valid_server_code_intact(self):
+        """服务端给一个合法的 code → 原样保留（agent 要按它分支）。"""
+        self.server.state.manifest_problem = (500, "skill_file_not_found", "boom")
+
+        code, out, err = self.run_fetch([])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "skill_file_not_found: boom\n")
+        self.assertEqual(out, "")
+
+    def test_checks_a_server_code_even_when_it_looks_like_one_of_our_own(self):
+        """服务端回一个叫 network_error 的码 → 照样要过凭据检查。
+
+        「取件器自己的码」与「服务端给的码」的区别在**出处**，不在长相：
+        服务端完全可以回一个叫 ``network_error`` 的码 —— 那种码是服务端给的
+        字符串，照样不许含凭据值。
+        """
+        self.server.state.manifest_problem = (500, "network_error", "boom")
+
+        code, out, err = self.run_fetch([], env={"IDEA_PASS": "network_error"})
+
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "http_500: boom\n")
+        self.assertNotIn("network_error", err)
+        self.assertEqual(out, "")
+
+    def test_masks_a_server_code_that_contains_the_password(self):
+        """服务端给的 code 里含着密码（形状合法也不行）→ 换成 http_<状态码>。"""
+        self.server.state.manifest_problem = (500, "server_error", "boom")
+
+        code, out, err = self.run_fetch([], env={"IDEA_PASS": "error"})
+
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith("http_500: "), err)
+        self.assertNotIn("server_error", err)
+
+    def test_replaces_a_server_code_with_a_newline(self):
+        """服务端给的 code 里有换行 → 换掉（stderr 恰好一行是硬约定）。"""
+        self.server.state.manifest_problem = (500, "boom\nsecond line", "boom")
+
+        code, out, err = self.run_fetch([])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(len(err.strip().splitlines()), 1, "错误只该有一行：{}".format(err))
+        self.assertTrue(err.startswith("http_500: "), err)
+
+    def test_does_not_mask_the_username_in_the_error_detail(self):
+        """用户名不是秘密：detail 里出现它时不该被糊成 ***（否则错误没法看）。
+
+        密码该遮还是遮 —— 掩码表里有密码、token 与它们的 base64，没有用户名。
+        """
+        self.server.state.manifest_problem = (500, "boom", "用户 agent 的密码 pw-1234 不对")
+
+        code, out, err = self.run_fetch(
+            [], env={"IDEA_USER": "agent", "IDEA_PASS": "pw-1234"}
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("agent", err)
+        self.assertNotIn("pw-1234", err)
 
     # -- 认证头与 --help ----------------------------------------------------
 

@@ -62,6 +62,34 @@ VERSION_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # 清单里的哈希：64 位十六进制。
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 
+# 取件器自己的错误码（固定词汇表）。
+#
+# 这些是**代码里的常量**，不含凭据 —— 所以原样输出，永不参与值级脱敏
+# （agent 要按 code 分支，code 被改成 network_*** 就分不了了）。
+#
+# 服务端给的 code 不在这张表里管：那是一段**服务端给的字符串**，输出前要过校验
+# （见 :func:`_safe_server_code`）—— 脏的是服务端的码，不是取件器自己的码。
+OWN_ERROR_CODES = frozenset(
+    {
+        "missing_config",
+        "invalid_config",
+        "network_error",
+        "auth_error",
+        "not_found",
+        "skill_integrity_error",
+        "invalid_response",
+        "skill_not_distributed",
+        "skill_file_not_found",
+        "skill_endpoint_not_found",
+    }
+)
+
+# 服务端给的 code 的形状：首字符是字母，其余是字母数字下划线，长度 ≤ 64。
+#
+# 不许有换行（错误输出占一行是硬约定），也不许有空格、冒号之类
+# （code 要能被 agent 解析出来）。
+SERVER_CODE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+
 # 脱敏用的占位符。
 MASK = "***"
 
@@ -102,11 +130,20 @@ USERINFO_PATTERN = re.compile(
 # | 要取的文件不存在 | not_found | 1 |
 # | 取回来的内容与服务端清单对不上 | skill_integrity_error | 1 |
 # | 清单不是合法 JSON（多半是代理返回了 HTML） | invalid_response | 1 |
-# | 服务端回了别的业务错误码 | 服务端给的 code | 1 |
+# | 服务端回了别的业务错误码 | 服务端给的 code（校验过，见 _safe_server_code） | 1 |
 # | 别的非 2xx | http_<状态码> | 1 |
 # | 网络不可达 / 超时 / 传输中断 | network_error | 2 |
 # | argparse 的用法错误 | argparse 自己的用法提示 | 2 |
 # | 兜底（未预期的异常） | internal_error | 1 |
+#
+# code 段分两类，处理方式不同：
+#
+# * **取件器自己的码**（:data:`OWN_ERROR_CODES` 里的常量）—— 原样输出，
+#   永不参与值级脱敏。它们是代码里的常量，不含凭据；脱敏会把 code 改坏
+#   （``network_error`` 被改成 ``network_***``），agent 就分不了分支了。
+#   出口在 :func:`_safe_code`。
+# * **服务端给的 code** —— 一段服务端给的字符串，原样输出前要过校验
+#   （形状 + 不含凭据），不合格就换成 ``http_<状态码>``。见 :func:`_safe_server_code`。
 #
 # 降级不是错误：取不到清单但本地有**完好**的缓存时，走缓存并在 stderr 打一行
 # ``warning:`` 提示，退出码仍是 0。
@@ -133,7 +170,10 @@ class CliError(Exception):
 
     def render(self) -> str:
         # 脱敏在这一层做（而不是各错误码各做一遍）：所有错误码都从这里过。
-        return "{}: {}".format(self.code, _redact(_one_line(self.detail)))
+        # **只脱敏 detail**：code 段是 agent 要拿来分支的，不能被改坏
+        # （network_error 被改成 network_***，agent 就分不了支了）。
+        # code 段自身的安全由 :func:`_safe_code` 兜着。
+        return "{}: {}".format(_safe_code(self.code), _redact(_one_line(self.detail)))
 
 
 class ConfigError(CliError):
@@ -189,13 +229,13 @@ def _redact(text: str) -> str:
     stderr 会进日志、进 agent 的上下文。
 
     两道一起上：
-    * **已知的凭据值**（环境变量里的密码 / token、地址里带的密码）→ 换成 ``***``；
+    * **已知的凭据值**（密码 / token / 地址里带的密码）→ 换成 ``***``；
     * **文本里 URL 的 userinfo**（``user:password@host``）→ 换成 ``***@``。
 
     只做第二道不够：异常消息未必带着 URL（比如 urllib 抱怨端口时只说
     ``nonnumeric port: 'sekret-pw@host'``），密码会**原样**出现在里面。
     """
-    for value in _secret_values():
+    for value in _credential_values():
         if value:
             text = text.replace(value, MASK)
 
@@ -214,24 +254,31 @@ def _redact_userinfo(match: "re.Match") -> str:
     return "{}***@{}".format(scheme, host)
 
 
-def _secret_values() -> List[str]:
-    """本进程里可能出现在输出中的凭据值。
+def _credential_values() -> List[str]:
+    """本进程里可能出现在输出中的**凭据**值。
 
     凭据可能来自两处：
-    * 环境变量（``IDEA_USER`` / ``IDEA_PASS`` / ``IDEA_TOKEN``）；
+    * 环境变量（``IDEA_PASS`` / ``IDEA_TOKEN``）；
     * **实例地址里的 userinfo** —— 有人会把密码写进 URL，
       那时它不在环境变量里，但也绝不能进 stderr。
+
+    **不含 ``IDEA_USER``**：用户名不是秘密。把它做值级替换会把错误详情里的
+    ``admin`` / ``user`` / ``agent`` 这类常见词糊成 ``***``，甚至把整条消息糊掉
+    —— 错误信息的可诊断性会垮。真正会泄漏的是密码、token 与它们的 base64
+    （用户名出现在 ``Authorization`` 头里时，已经随整段 base64 被遮住了）。
+
+    还有一样：实际发出去的那串 basic auth（base64）。
+    base64 可逆 —— 只掩裸密码、放过 base64 等于掩了个寂寞。
     """
     values: List[str] = []
 
-    for name in ("IDEA_USER", "IDEA_PASS", "IDEA_TOKEN"):
+    for name in ("IDEA_PASS", "IDEA_TOKEN"):
         raw = os.environ.get(name, "")
         for value in (raw, raw.strip()):
             if value:
                 values.append(value)
 
-    # 实际发出去的那串 basic auth：请求头若被回显，它就是凭据
-    # （base64 可逆 —— 只掩裸密码、放过 base64 等于掩了个寂寞）。
+    # 实际发出去的那串 basic auth：请求头若被回显，它就是凭据。
     user = os.environ.get("IDEA_USER", "").strip()
     password = os.environ.get("IDEA_PASS", "").strip()
     if user and password:
@@ -402,7 +449,7 @@ def _error_for_status(status: int, raw: bytes) -> CliError:
     """把一个非 2xx 响应变成异常。
 
     404 要分开看：服务端说「没分发 skill 内容」与「文件不存在」是两回事，
-    装 skill 的人该知道该去查哪一头 —— 所以认服务端的 ``code``，
+    装 skill 的人该知道该查哪一头 —— 所以认服务端的 ``code``，
     认不出来才退回通用的 ``not_found``。
     """
     code, detail = _problem_fields(raw)
@@ -412,13 +459,72 @@ def _error_for_status(status: int, raw: bytes) -> CliError:
 
     if status == 404:
         if code == "skill_not_distributed":
+            # 认出来的是**取件器自己的**码：常量，不含凭据，原样输出。
             return CliError("skill_not_distributed", detail or "服务端没有分发 skill 内容")
         return NotFoundError(detail or "要取的文件不存在")
 
     if code:
-        return CliError(code, detail or "HTTP {}".format(status))
+        # 服务端给的码：输出前先校验（见 :func:`_safe_server_code`）。
+        return CliError(
+            _safe_server_code(code, status), detail or "HTTP {}".format(status)
+        )
 
     return CliError("http_{}".format(status), detail or "HTTP {}".format(status))
+
+
+def _safe_code(code: str) -> str:
+    """code 段原样输出前的最后一道关。
+
+    code 段分两类，**出处**不同、待遇也不同：
+
+    * **取件器自己的码**（:data:`OWN_ERROR_CODES` 里的常量）→ 原样输出，
+      永不参与值级脱敏。它们是代码里的常量，不含凭据；
+      脱敏会把 ``network_error`` 改成 ``network_***``，agent 就分不了支了。
+    * **服务端给的码** → 过 :func:`_safe_server_code`（形状 + 不含凭据）。
+
+    自己的码与服务端给的码**长相可能一模一样**（服务端完全可以回一个叫
+    ``network_error`` 的码）—— 所以分类靠的是出处，不是名字：
+    服务端给的码一律要过凭据检查（见 :func:`_error_for_status`）。
+    """
+    if code in OWN_ERROR_CODES:
+        return code
+
+    return _safe_server_code(code, None)
+
+
+def _safe_server_code(code: str, status: Optional[int]) -> str:
+    """服务端给的 code 能不能原样输出。
+
+    服务端的 code 是一段**服务端给的字符串**，它会原样进 stderr（agent 按它分支），
+    也可能被回显型服务端/代理塞进凭据 —— 所以输出前要过两道：
+
+    * **形状**：``^[A-Za-z][A-Za-z0-9_]{0,63}$``。
+      不合形状就换掉：换行会破掉「stderr 恰好一行」这条硬约定，
+      空格、冒号之类会让 code 解析不出来。
+    * **不含凭据**：code 里不许出现任何已知的凭据值（见 :func:`_credential_values`）。
+
+    任一条不满足 → 换成 ``http_<状态码>``（取不到状态码就 ``invalid_response``）。
+    校验通过才原样输出。
+
+    注意：这道关卡只管**服务端给的**码。取件器自己的码（:data:`OWN_ERROR_CODES`
+    里的常量）不经过这里 —— 它们是代码里的常量，不含凭据，
+    原样输出，agent 才分得出 ``network_error`` 与 ``not_found``。
+    """
+    if not SERVER_CODE_PATTERN.match(code):
+        return _fallback_code(status)
+
+    for secret in _credential_values():
+        if secret and secret in code:
+            return _fallback_code(status)
+
+    return code
+
+
+def _fallback_code(status: Optional[int]) -> str:
+    """服务端给的码不可信时的替代：``http_<状态码>``（仍是可解析的码）。"""
+    if status is None:
+        return "invalid_response"
+    return "http_{}".format(status)
 
 
 def _problem_fields(raw: bytes) -> Tuple[Optional[str], str]:
@@ -690,8 +796,6 @@ def _prune(cache_root: str, keep: str) -> None:
         if path not in survivors:
             _remove_path(path)
 
-    _prune_temporaries(cache_root)
-
 
 def _prune_temporaries(cache_root: str) -> None:
     """清掉崩溃留下的临时目录（``.tmp-<version>-<pid>``）。
@@ -702,8 +806,20 @@ def _prune_temporaries(cache_root: str) -> None:
     判据是「主人还在不在」而不是「新旧」：主人没了的目录就是残骸
     （刚崩的残骸也是新的，但没人要它）；主人还活着的目录有人在写，
     不能动。pid 认不出来的（旧版固定名 ``.tmp-<version>``）一律当残骸。
+
+    这一步要挂在**所有出口**上（成功、失败、提前返回）——
+    只挂在同步成功那条路上，取不到清单那次就会把孤儿留下。
+    调用点在 :func:`main` 的 finally 里。
     """
-    for name in os.listdir(cache_root):
+    if not os.path.isdir(cache_root):
+        return
+
+    try:
+        names = os.listdir(cache_root)
+    except OSError:
+        return
+
+    for name in names:
         if not name.startswith(TEMP_PREFIX):
             continue
 
@@ -861,6 +977,9 @@ def _write_stderr(line: str) -> None:
     **这里不再脱敏**：传进来的整行里带着错误码，而错误码是 agent 要拿来
     分支的（``network_error: …`` 里的 network_error 不能被改成 network_***）。
     脱敏只在 detail 段做 —— 见 :meth:`CliError.render` 与各调用点。
+
+    code 段里的换行不会漏到这里：服务端给的码过了形状校验
+    （:func:`_safe_server_code`），取件器自己的码是常量。
     """
     sys.stderr.buffer.write((line + "\n").encode("utf-8"))
     sys.stderr.buffer.flush()
@@ -891,7 +1010,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # 缓存根目录跟地址无关：先定下来，finally 里不管走哪条出口都能清临时目录。
+    #
+    # 解析放在 try 里（跟地址的解析一样）：万一它抛了，要走 internal_error
+    # 那条路，而不是吐一个裸 traceback。定不下来时留空串 ——
+    # finally 里的清理认得空串（不是目录，什么都不做）。
+    cache_root = ""
+
     try:
+        cache_root = resolve_cache_root()
         base_url = resolve_base_url()
 
         # 绝对路径：直连服务端要那一份原文，不走分发副本。
@@ -899,7 +1026,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             print_from_server(base_url, args.path)
             return 0
 
-        cache_root = resolve_cache_root()
         degraded = ""
 
         try:
@@ -941,6 +1067,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         # 脱敏只作用在 detail 段：code 段（internal_error）不能被改写。
         _write_stderr("internal_error: {}".format(_redact(_one_line(exc))))
         return 1
+    finally:
+        # 临时目录（``.tmp-<version>-<pid>``）是同步过程的半成品：
+        # 主人进程没了就该回收 —— 成功、失败、提前返回都要过这一遍。
+        try:
+            _prune_temporaries(cache_root)
+        except OSError:
+            pass
 
     return 0
 
