@@ -816,7 +816,9 @@ agent 现在用 curl + 服务端实时发的 /openapi/v1.json 直接调 API。
 // 对每个 (方法, 路径)，语料里必须出现 "方法 /路径" 这个 token。
 
 [Fact] public void Every_api_path_in_the_manual_exists_in_the_contract()
-// 扫语料里的 token：正则 (?<method>GET|POST|PUT|PATCH|DELETE)\s+(?<path>/api/[^\s`）)、，,。]+)
+// 扫语料里的 token：正则 (?<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE)\s+(?<path>/api/[^\s`）)、，,。]+)
+// 方法清单要与 HttpMethodNames 对齐（八种）——契约一旦出现 HEAD 端点，守卫要能认出来，
+// 而不是永远红或永远漏。
 // 每个 (方法, 路径) 都必须在契约里存在。
 
 [Fact] public void Manual_error_code_table_matches_the_registry()

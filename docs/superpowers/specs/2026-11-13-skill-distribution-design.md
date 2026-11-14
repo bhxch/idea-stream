@@ -182,6 +182,14 @@ skills/idea-manager/
 免得被当成分发内容拷进产物 —— csproj 的 glob 是 `skills/idea-manager/**`，
 按目录段精确匹配，`idea-manager-client` 不在其中）。
 
+**`references/` 是平铺的**：只有上面这五份 `.md`，**下面不许再开子目录**。
+这是 §14 的「内容源形状」守卫断言的不变量 —— 守卫比书面契约严是最糟的做法，
+所以这条在这里写明。
+
+> 分发链路本身**支持**嵌套（csproj 的 `references/**/*.md` 会保留目录层级，
+> `SkillCatalog` 递归枚举、`fetch.py` 按相对路径取文件）。真要拆子目录时，
+> 改这条与那条守卫一起改 —— 那是一次有意识的结构调整，不是意外。
+
 ### 8.2 索引页（`SKILL.md`）该放什么
 
 索引页是 agent 触发 skill 后唯一必然读的一页，它要回答四件事：
