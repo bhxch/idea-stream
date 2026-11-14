@@ -92,7 +92,8 @@ dotnet publish server/IdeaApp -c Release -r linux-x64 \
   -p:PublishAot=true -p:InvariantGlobalization=true
 ```
 
-产物在 `server/IdeaApp/bin/Release/net10.0/linux-x64/publish/`：`IdeaApp` 可执行文件 + `wwwroot/`。
+产物在 `server/IdeaApp/bin/Release/net10.0/linux-x64/publish/`：`IdeaApp` 可执行文件 +
+`wwwroot/` + `skill/idea-manager/`（skill 的分发副本，见「部署」一节）。
 
 > ⚠️ **publish 前必须先 `cd web && npm run build`** ——
 > `wwwroot/` 被 gitignore 排除，仓库里没有它。忘了这一步就会发布一个
@@ -193,8 +194,9 @@ nginx -t && systemctl reload nginx
 `X-Accel-Buffering: no`，否则实时推送会被 nginx 攒着不发。
 
 发布产物里带着 skill 的分发副本（`skill/idea-manager/`）—— agent 的说明书由它提供，
-部署时跟应用一起拷过去。少了它，`/skill/**` 会回 404 `skill_not_distributed`，
-agent 取不到说明书（副本在哪儿由 `Skill:Path` 决定）。
+部署时跟应用一起拷过去。少了它，取说明书的那个端点会回 404 `skill_not_distributed`
+（副本在哪儿由 `Skill:Path` 决定）；**路径写错是另外两个码**：skill 名字拼错 →
+`skill_endpoint_not_found`，文件名拼错 → `skill_file_not_found`，排查方向不一样。
 
 应用侧接了 `UseForwardedHeaders()`：`X-Forwarded-Proto` / `X-Forwarded-For` /
 `X-Forwarded-Host` 会被采信，**但只信回环地址来的代理**。nginx 与应用同机时直接可用；
@@ -232,13 +234,14 @@ nginx 在别的机器上要在代码里显式加 `KnownProxies`，否则这些�
 
 agent skill 的**权威内容在服务端**：应用把 `skills/idea-manager/`（索引页 + `references/`）
 随产物一起分发出去，agent 取到的手册与服务端**同一版本** ——
-服务端改了 API，agent 手上的说明书跟着改，不用重新装 skill。
+服务端改了 API，agent 手上的说明书跟着改：**不用重新装 skill**（薄壳一个文件都不用动），
+每次取件都会重新同步一次。
 
 ### 交付形态
 
 | 目录 | 是什么 | 谁用 |
 |---|---|---|
-| `skills/idea-manager/` | **内容源**：索引页 `SKILL.md` + `references/`（调用姿势、错误码、webhook、逐端点参数、典型场景） | 服务端随产物分发；仓库里改它 |
+| `skills/idea-manager/` | **内容源**：索引页 `SKILL.md` + `references/`（各管一件事，路由表在索引页里） | 服务端随产物分发；仓库里改它 |
 | `skills/idea-manager-client/` | **薄壳**：`SKILL.md`（指针）+ `scripts/fetch.py`（取件器） | 装到 agent 的 skills 目录 |
 
 服务端这边有只读端点：`/skill/idea-manager/version` 给清单（版本 + 文件清单 + 逐个 sha256），
@@ -271,6 +274,8 @@ bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager
 
 ### 取说明书
 
+取件器是纯标准库脚本，**Python 3.9+** 就能跑（第三方依赖一个都没有）。
+
 ```bash
 SKILL=~/.zcode/skills/idea-manager      # 装到哪儿就是哪儿
 
@@ -284,11 +289,21 @@ python3 "$SKILL/scripts/fetch.py" /openapi/v1.json       # 完整接口契约
 服务端暂时连不上、但本地有完好缓存时，它在 stderr 上打一行 `warning:`，
 这时拿到的是**上一版**手册。
 
+取件**硬失败**时，它往 stderr 打**一行** `code: detail`、退出码非 0（不吐 traceback）。
+每个码是什么意思，见手册的 `references/errors.md`；
+薄壳 `SKILL.md` 里也有一份精简的排查提示（缺配置、鉴权不对、没分发、内容对不上……）。
+
 自检（打得通就说明地址对、凭证对、服务端分发了 skill 内容）：
 
 ```bash
-IDEA_BASE_URL=https://ideas.example.com python3 "$SKILL/scripts/fetch.py"
+# 标准部署是 nginx basic auth —— 凭据要带上
+IDEA_BASE_URL=https://ideas.example.com \
+IDEA_USER=ideauser IDEA_PASS='<密码>' \
+python3 "$SKILL/scripts/fetch.py"
 ```
+
+**不带凭据跑自检会直接 `auth_error`**（退出码 1）：本项目的标准部署走 nginx basic auth，
+只有不带 basic auth 的实例才用得着空着跑。
 
 ### 调 API
 
@@ -315,6 +330,9 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 - 带请求体就要带 `Content-Type: application/json`（不带是 415）。
 - 4xx / 5xx 回 RFC 9457 的 ProblemDetails，顶层带机器可读的 `code` ——
   **按 `code` 分支**，别去匹配 `detail` 的文字。
+- **webhook 的 url 与 headers 默认是遮蔽版**（url 只留 `scheme://host`，路径段与请求头的值
+  显示成 `***`）—— 那是设计如此，不是 bug。要原值得显式加 `?unmask=true`；
+  除非用户明确要看原始 url，否则不要加这个参数。
 
 **请求体别用 shell 拼字符串** —— 引号、换行、反斜杠会被 shell 吃掉。写进文件，
 或用带引号的 heredoc 直接喂给 curl（`<<'JSON'` 的引号不能省，否则 body 里的 `$` 会被展开）：
@@ -327,7 +345,8 @@ curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas" \
 JSON
 ```
 
-完整契约在服务端的 `/openapi/v1.json`（实时发，仓库里没有副本）。
+完整契约在服务端的 `/openapi/v1.json`（实时发）。仓库根的 `openapi/idea-v1.json` 是同一份的
+快照，**skill 分发副本里没有第二份契约** —— agent 手上这一份是服务端运行时发的。
 调用姿势、错误码全表、逐端点参数与可照抄的完整例子都在手册里：
 [`skills/idea-manager/SKILL.md`](skills/idea-manager/SKILL.md) 是索引页，
 它给的路由表指向 `references/` 下那几份。
