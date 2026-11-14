@@ -163,16 +163,21 @@ public sealed class SkillDocGuardTests
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// 目录级的删除：<c>rm -r</c> / <c>rm -rf</c> 之类。
+    /// 目录级的删除：<c>rm -r</c> / <c>rm -rf</c> / <c>rm --recursive</c> 之类。
     /// </summary>
     /// <remarks>
     /// 认的是「<c>rm</c> + 短选项里带 <c>r</c>」的那些写法
-    /// （<c>-r</c>、<c>-rf</c>、<c>-fr</c>……）：
+    /// （<c>-r</c>、<c>-rf</c>、<c>-fr</c>……）**与长选项**里那两个
+    /// （<c>--recursive</c>、<c>--dir</c>）：
+    /// 早先只认短选项，<c>rm --recursive "${TARGET}"</c> 这种写法能溜过去 ——
+    /// 而它删掉的正是同一个目录。
+    /// <para>
     /// <c>rm -f</c>（删一个文件）与 <c>rmdir</c>（删一个空目录）都不算 ——
     /// 那两个才是安装脚本该有的尺度。
+    /// </para>
     /// </remarks>
     private static readonly Regex RecursiveRemovePattern = new(
-        @"\brm\s+-[A-Za-z]*r",
+        @"\brm\s+(?:-[A-Za-z]*r|--(?:recursive|dir)\b)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -827,8 +832,12 @@ public sealed class SkillDocGuardTests
         // 安装脚本那条守卫的判据：认得出目录级的删除，认不出「删文件」与「删空目录」。
         Assert.Matches(RecursiveRemovePattern, "rm -rf \"${TARGET}\"");
         Assert.Matches(RecursiveRemovePattern, "rm -r \"${TARGET}\"");
+        // 长选项也是目录级的删除：早先只认短选项，`rm --recursive` 能溜过去。
+        Assert.Matches(RecursiveRemovePattern, "rm --recursive \"${TARGET}\"");
+        Assert.Matches(RecursiveRemovePattern, "rm --dir \"${TARGET}\"");
         Assert.DoesNotMatch(RecursiveRemovePattern, "rm -f \"${TARGET}/x\"");
         Assert.DoesNotMatch(RecursiveRemovePattern, "rmdir \"${TARGET}/references\"");
+        Assert.DoesNotMatch(RecursiveRemovePattern, "rm --force \"${TARGET}/x\"");
     }
 
     /// <summary>
@@ -958,7 +967,7 @@ public sealed class SkillDocGuardTests
         var trimmed = mention[..end].TrimEnd('.');
 
         // 削完只剩一个目录（"references/"）说明整段都是散文：原样留着
-        // （后面那道「得像个文件路径」的判据会把它放过去）。
+        //（后面那道「得像个文件路径」的判据会把它放过去）。
         return trimmed.Length == 0 || trimmed.EndsWith('/') ? mention : trimmed;
     }
 
