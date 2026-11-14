@@ -14,9 +14,12 @@
 # 新增端点时在文件末尾加一行 check_endpoint 调用即可。断言走 file-based
 # C# 程序，用的是真正的 System.Text.Json 解析路径（与 JsonDocument.Parse 同一套语义）。
 #
-# 脚本末尾还有一条**跨栈**检查：用仓库里那个真的取件器（skills/idea-manager-client/scripts/fetch.py）
+# 脚本末尾还有一组**跨栈**检查：用仓库里那个真的取件器（skills/idea-manager-client/scripts/fetch.py）
 # 去取跑着的这个实例的说明书 —— .NET 造的东西，Python 收不收得下，只有真取一次才知道。
 # （两套测试各自绿、各自定义，谁也没对过面，跨栈的 bug 就这么全绿漏过去。）
+#
+# 这组检查**缺 python3 就失败**，不跳过：它是整个分支唯一的跨栈证据，
+# 它不跑而脚本还报 PASS，等于什么都没验。整个闸门用仓库根的 verify.sh 一条命令跑。
 
 set -uo pipefail
 
@@ -442,62 +445,119 @@ echo "==> 取件器取一次说明书（跨栈：真产物 + 仓库里的真取�
 #
 # 假服务端那套（skills/idea-manager-client/tests/test_fetch.py）按规格造数据，
 # **不构成跨栈验证** —— 它验的是「取件器能处理符合规格的清单」。
-if ! command -v python3 >/dev/null 2>&1; then
-    # 没有 python3 就跳过，不能让冒烟脚本因为缺解释器而失败。
-    echo "跳过：这台机器上没有 python3，取件器跑不起来（跨栈这条没验）。"
-else
-    # 连的是**跑着的这个实例**；缓存目录给个临时目录（跑完随 WORK_DIR 一起没）。
-    # 这个冒烟环境没有 basic auth，所以不用带凭据。
-    if ! IDEA_BASE_URL="$BASE_URL" IDEA_SKILL_CACHE_DIR="$WORK_DIR/skill-cache" \
-        python3 skills/idea-manager-client/scripts/fetch.py \
-        >"$WORK_DIR/fetched.md" 2>"$WORK_DIR/fetch.err"; then
-        echo "--- 取件器的 stderr ---" >&2
-        cat "$WORK_DIR/fetch.err" >&2
-        fail "取件器取说明书失败（跨栈检查没过：服务端给的清单它收不下）"
-    fi
+#
+# 缺 python3 是**失败**不是跳过：这条检查是整个分支唯一的跨栈证据，
+# 它不跑、脚本却报 PASS，等于什么都没验 —— 而 agent 侧本来就需要 python3，
+# 缺了说明环境不对（规格里也把 python3 列成 agent 侧的硬依赖）。
+command -v python3 >/dev/null 2>&1 \
+    || fail "这台机器上没有 python3，取件器跑不起来（跨栈这条没法验，不许跳过）"
 
-    # 取到的必须是索引页（清单里的 entry），不是空文件也不是错误页。
-    grep -q '^name: idea-manager' "$WORK_DIR/fetched.md" \
-        || fail "取件器取到的不是索引页（没有 name: idea-manager）"
-
-    # 分发副本的完整性（设计文档 §14 的「分发副本完整」那条守卫）：
-    # **产物里带的副本要跟内容源逐个文件对上。**
-    #
-    # 三个地方各自定义「发了什么」：内容源目录、csproj 的 glob、服务端枚举副本的规则 ——
-    # 中间没人对过面。少拷一份文件（agent 照索引页的路由表取不到）或者
-    # 带进一份开发残留，都只有真取一次、逐个文件比一遍才发现得了。
-    #
-    # 比的是**取回来的缓存**（= 清单说的那份副本），不是 publish 目录 ——
-    # 前者多经过了服务端这一跳，才是 agent 真正拿到的东西。
-    #
-    # 期望值：内容源里的 .md（点目录与 __pycache__ 是开发残留，不算内容）。
-    expected_list="$WORK_DIR/expected-files.txt"
-    actual_list="$WORK_DIR/fetched-files.txt"
-
-    (
-        cd skills/idea-manager
-        find . -type f -name '*.md' \
-            | sed 's|^\./||' \
-            | grep -v '__pycache__' \
-            | grep -v '/\.' \
-            | grep -v '^\.' \
-            | sort
-    ) >"$expected_list"
-
-    (
-        find "$WORK_DIR/skill-cache" -type f ! -name '.manifest.json' \
-            | sed "s|^$WORK_DIR/skill-cache/[^/]*/||" \
-            | sort
-    ) >"$actual_list"
-
-    if ! diff -u "$expected_list" "$actual_list" >"$WORK_DIR/files.diff"; then
-        echo "--- 内容源与分发副本的差异（- 内容源里有而副本里没有；+ 副本里有而内容源里没有）---" >&2
-        cat "$WORK_DIR/files.diff" >&2
-        fail "分发副本与内容源对不上（发布产物少拷或多拷了文件）"
-    fi
-
-    echo "跨栈通过：真产物给的清单，仓库里的真取件器收下了；副本与内容源逐个文件对得上。"
+# 连的是**跑着的这个实例**；缓存目录给个临时目录（跑完随 WORK_DIR 一起没）。
+# 这个冒烟环境没有 basic auth，所以不用带凭据。
+if ! IDEA_BASE_URL="$BASE_URL" IDEA_SKILL_CACHE_DIR="$WORK_DIR/skill-cache" \
+    python3 skills/idea-manager-client/scripts/fetch.py \
+    >"$WORK_DIR/fetched.md" 2>"$WORK_DIR/fetch.err"; then
+    echo "--- 取件器的 stderr ---" >&2
+    cat "$WORK_DIR/fetch.err" >&2
+    fail "取件器取说明书失败（跨栈检查没过：服务端给的清单它收不下）"
 fi
 
-echo "PASS: AOT 产物下所有被检查的端点都返回预期状态码与响应体"
+# 取到的必须是索引页（清单里的 entry），不是空文件也不是错误页。
+grep -q '^name: idea-manager' "$WORK_DIR/fetched.md" \
+    || fail "取件器取到的不是索引页（没有 name: idea-manager）"
+
+# 分发副本的完整性（设计文档 §14 的「分发副本完整」那条守卫）：
+# **产物里带的副本要跟内容源逐个文件对上，而且要逐字节对上。**
+#
+# 三个地方各自定义「发了什么」：内容源目录、csproj 的 glob、服务端枚举副本的规则 ——
+# 中间没人对过面。少拷一份文件（agent 照索引页的路由表取不到）或者
+# 带进一份开发残留，都只有真取一次、逐个文件比一遍才发现得了。
+#
+# 比的是**取回来的缓存**（= 清单说的那份副本），不是 publish 目录 ——
+# 前者多经过了服务端这一跳，才是 agent 真正拿到的东西。
+#
+# 比 **sha256** 而不是比文件名：文件名对上不代表内容对上（服务端可能发的是
+# 另一份同名文件）。这条链在**字节层面**钉死：内容源 → 产物 → 服务端 → agent。
+expected_sums="$WORK_DIR/expected-sums.txt"
+actual_sums="$WORK_DIR/actual-sums.txt"
+
+# 期望侧 = 产物里该有的那一份：csproj 显式列的两组文件
+#（SKILL.md 与 references/ 下的 *.md），再按服务端口径去掉 __pycache__ 段
+#（SkillCatalog 只排除这一种段）。
+#
+# **不能把点目录排掉**：csproj 的 glob 收点目录里的 .md，服务端也会分发它们 ——
+# 期望侧排掉的话，内容源里一出现 .cache/x.md，这条检查就假红。
+(
+    cd skills/idea-manager
+    {
+        find . -maxdepth 1 -type f -name 'SKILL.md'
+        find ./references -type f -name '*.md'
+    } 2>/dev/null \
+        | sed 's|^\./||' \
+        | grep -v '__pycache__' \
+        | sort \
+        | while read -r file; do
+            printf '%s  %s\n' "$(sha256sum "$file" | cut -d' ' -f1)" "$file"
+        done
+) >"$expected_sums"
+
+# 实际侧 = 取回来的缓存（去掉清单快照那个文件）。
+cache_version="$(find "$WORK_DIR/skill-cache" -mindepth 1 -maxdepth 1 -type d \
+    ! -name '.tmp-*' | head -n 1)"
+[[ -n "$cache_version" ]] || fail "缓存里没有版本目录"
+
+(
+    cd "$cache_version"
+    find . -type f ! -name '.manifest.json' \
+        | sed 's|^\./||' \
+        | sort \
+        | while read -r file; do
+            printf '%s  %s\n' "$(sha256sum "$file" | cut -d' ' -f1)" "$file"
+        done
+) >"$actual_sums"
+
+if ! diff -u "$expected_sums" "$actual_sums" >"$WORK_DIR/sums.diff"; then
+    echo "--- 内容源与分发副本的差异（sha256 + 路径；- 内容源里有而副本里没有，+ 反之）---" >&2
+    cat "$WORK_DIR/sums.diff" >&2
+    fail "分发副本与内容源对不上（发布产物少拷、多拷或拷错了文件）"
+fi
+
+echo "==> 取件器取一份子文档（跨栈：references/ 下的那一份）"
+# 相对路径的拼接（references/ 前缀 + 文件名）是取件器自己做的 ——
+# 拼错了这里就会 404。取回来的内容还要与内容源**逐字节**相同。
+if ! IDEA_BASE_URL="$BASE_URL" IDEA_SKILL_CACHE_DIR="$WORK_DIR/skill-cache" \
+    python3 skills/idea-manager-client/scripts/fetch.py references/errors.md \
+    >"$WORK_DIR/fetched-errors.md" 2>"$WORK_DIR/fetch-errors.err"; then
+    echo "--- 取件器的 stderr ---" >&2
+    cat "$WORK_DIR/fetch-errors.err" >&2
+    fail "取件器取子文档失败（references/ 前缀的拼接可能不对）"
+fi
+
+expected_errors_sum="$(sha256sum skills/idea-manager/references/errors.md | cut -d' ' -f1)"
+actual_errors_sum="$(sha256sum "$WORK_DIR/fetched-errors.md" | cut -d' ' -f1)"
+[[ "$expected_errors_sum" == "$actual_errors_sum" ]] \
+    || fail "取回来的子文档与内容源不是同一份内容"
+
+echo "==> 取件器取一个不存在的文件（跨栈：ProblemDetails 的 code 在顶层）"
+# 错误路径也要跨栈对过面：服务端的 code 在 ProblemDetails 的**顶层**，
+# 取件器按它分支（404 折叠成 not_found），退出码非 0。
+if IDEA_BASE_URL="$BASE_URL" IDEA_SKILL_CACHE_DIR="$WORK_DIR/skill-cache" \
+    python3 skills/idea-manager-client/scripts/fetch.py /skill/idea-manager/nope.md \
+    >"$WORK_DIR/fetch-nope.out" 2>"$WORK_DIR/fetch-nope.err"; then
+    fail "取一个不存在的文件应当失败（退出码非 0），实际却成功了"
+fi
+
+if ! grep -q '^not_found: ' "$WORK_DIR/fetch-nope.err"; then
+    echo "--- 取件器的 stderr ---" >&2
+    cat "$WORK_DIR/fetch-nope.err" >&2
+    fail "取件器没有把服务端的 404 折叠成 not_found（ProblemDetails 的 code 没在顶层？）"
+fi
+
+echo
+echo "PASS: 跑过的检查 ——"
+echo "  * AOT 产物下每个被检查的端点都返回预期的状态码与响应体（含 skill 分发端点）"
+echo "  * 跨栈：仓库里的真取件器收下了真产物的清单"
+echo "  * 跨栈：分发副本与内容源逐文件、逐字节（sha256）对上"
+echo "  * 跨栈：子文档（references/ 下的那一份）能取到，且与内容源是同一份"
+echo "  * 跨栈：不存在的文件回 not_found、退出码非 0（ProblemDetails 的 code 在顶层）"
 exit 0
