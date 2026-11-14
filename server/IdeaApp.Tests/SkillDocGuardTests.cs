@@ -78,11 +78,20 @@ public sealed class SkillDocGuardTests
     /// 索引页里提到细节文档的形态：<c>references/api.md</c>。
     /// </summary>
     /// <remarks>
-    /// 路由表里那五行就是这个形态（<c>`references/calling.md`</c>）。
+    /// <para>
+    /// 字符集收的是**字母、数字、字母记号**与 <c>. _ / -</c>：
+    /// 非 ASCII 的字母也在内（中文文件名 <c>references/接口.md</c> 要抽得出来），
+    /// 而空白与标点（反引号、括号、句号、逗号……）一律不收 ——
+    /// 路径尾部那个标点不能被吃进路径。
+    /// </para>
+    /// <para>
+    /// 惰性匹配：路径在**第一个** <c>.md</c> 处收尾 ——
+    /// 「references/api.md 与 references/calling.md」不会被吃成一长串。
     /// 末尾的否定前瞻保证 <c>api.mdx</c> 这种不算数（它不是一份 <c>.md</c> 文档）。
+    /// </para>
     /// </remarks>
     private static readonly Regex ReferenceDocPattern = new(
-        @"(?<path>references/[A-Za-z0-9_./-]+\.md)(?![A-Za-z0-9_-])",
+        @"(?<path>references/[\p{L}\p{N}\p{M}._/-]+?\.md)(?![\p{L}\p{N}\p{M}_-])",
         RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -391,36 +400,54 @@ public sealed class SkillDocGuardTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 索引页的路由表是 agent 取细节的**唯一入口**：它照着表去取，
-    /// 表里那份文档不在了就是 404 —— 而且 agent 只知道自己「按表取」，
-    /// 不会想到是表错了。这种悬空指针最难查。
+    /// 索引页（尤其是那张路由表）是 agent 取细节的**指引**：它照着指引去取，
+    /// 指引里那份文档不在了就是 404 —— 而且 agent 只知道自己「按指引取」，
+    /// 不会想到是指引错了。这种悬空指针最难查。
     /// </para>
     /// <para>
     /// 双向：前向（「提到的必须存在」）关掉悬空指针 ——
     /// 不管文件被挪到哪儿（哪怕挪进点目录），索引页的指针断了就红；
     /// 后向（「每份都被提到」）关掉「多了一份文档但索引页不知道」——
-    /// agent 按路由表取不到它，那份文档等于不存在。
+    /// agent 照索引页取不到它，那份文档等于不存在。
+    /// </para>
+    /// <para>
+    /// <b>正文里任何一处提到都算</b>（不限是不是在路由表那一节）：
+    /// 路由表是给人看的指引，而 agent 照**任何**指引去取都要能取到 ——
+    /// 所以判据是「索引页提过这份文档」，不是「路由表里有这一行」。
     /// </para>
     /// <para>
     /// 点目录里的 <c>.md</c> 也算：它们会被分发（csproj 的 glob 收）、也会进语料，
-    /// 所以同样得在索引页的路由表里有位置。
+    /// 所以同样得在索引页里有位置。
     /// </para>
     /// </remarks>
     [Fact]
     public void The_index_page_points_at_exactly_the_reference_docs()
     {
-        var mentioned = IndexPageMentions();
         var docs = ReferenceDocs();
+        var body = IndexPageBody();
 
-        var dangling = mentioned.Except(docs).OrderBy(path => path, StringComparer.Ordinal).ToArray();
-        var unmentioned = docs.Except(mentioned).OrderBy(path => path, StringComparer.Ordinal).ToArray();
+        // 后向：每份文档都得在索引页里被提到。
+        // 按**整条路径**找，不靠正则切 —— 文件名带空格（references/我的 笔记.md）
+        // 或带中文（references/接口.md）时也认得出来。
+        var unmentioned = docs
+            .Where(doc => !body.Contains(doc, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(doc => doc, StringComparer.Ordinal)
+            .ToArray();
+
+        // 前向：索引页提到的每条路径都得存在。
+        var dangling = ReferenceDocPattern.Matches(body)
+            .Select(match => match.Groups["path"].Value)
+            .Where(mention => !docs.Any(doc => string.Equals(doc, mention, StringComparison.OrdinalIgnoreCase)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
 
         Assert.True(
             dangling.Length == 0 && unmentioned.Length == 0,
-            "索引页的路由表与 references/ 对不上："
+            "索引页与 references/ 对不上："
             + (dangling.Length > 0 ? $"索引页提到的 {string.Join("、", dangling)} 不在那儿（指针悬空）；" : string.Empty)
             + (unmentioned.Length > 0 ? $"{string.Join("、", unmentioned)} 没被索引页提到。" : string.Empty)
-            + "索引页的路由表是 agent 取细节的唯一入口，两边必须一一对应。");
+            + "索引页是 agent 取细节的指引，两边必须一一对应。");
     }
 
     /// <summary>
@@ -550,7 +577,7 @@ public sealed class SkillDocGuardTests
         Assert.Empty(HardcodedCounts("每次只发一个接口"));
         Assert.Empty(HardcodedCounts("只有一条路径"));
 
-        // 细节文档的提及：认得出带子目录的形态，也不把 .mdx 当成 .md。
+        // 细节文档的提及：认得出中文文件名与带点的名字，也不把标点吃进路径。
         Assert.Equal(
             "references/api.md",
             ReferenceDocPattern.Match("取哪份 | `references/api.md` |").Groups["path"].Value);
@@ -558,6 +585,19 @@ public sealed class SkillDocGuardTests
         Assert.Equal(
             "references/.api/api.md",
             ReferenceDocPattern.Match("`references/.api/api.md`").Groups["path"].Value);
+
+        Assert.Equal(
+            "references/接口.md",
+            ReferenceDocPattern.Match("见 `references/接口.md`。").Groups["path"].Value);
+
+        Assert.Equal(
+            "references/api.v2.md",
+            ReferenceDocPattern.Match("`references/api.v2.md`").Groups["path"].Value);
+
+        // 两个提及挨着时，路径在第一个 .md 处就收尾。
+        Assert.Equal(
+            "references/api.md",
+            ReferenceDocPattern.Match("`references/api.md` 与 `references/calling.md`").Groups["path"].Value);
 
         Assert.False(
             ReferenceDocPattern.IsMatch("`references/api.mdx`"),
@@ -592,26 +632,27 @@ public sealed class SkillDocGuardTests
             .ToList();
     }
 
-    /// <summary>索引页里提到的细节文档（相对内容源根的路径，正斜杠分隔）。</summary>
+    /// <summary>索引页的正文（frontmatter 之后）。</summary>
     /// <remarks>
-    /// 只看索引页**正文**（frontmatter 之后）—— frontmatter 里没有文档指针。
+    /// frontmatter 里没有文档指针，只看正文。
     /// </remarks>
-    private static HashSet<string> IndexPageMentions()
-    {
-        var body = SplitFrontmatter(File.ReadAllText(RepoPaths.SkillIndex), "内容源的索引页").Body;
-
-        return ReferenceDocPattern.Matches(body)
-            .Select(match => match.Groups["path"].Value)
-            .ToHashSet(StringComparer.Ordinal);
-    }
+    private static string IndexPageBody() =>
+        SplitFrontmatter(File.ReadAllText(RepoPaths.SkillIndex), "内容源的索引页").Body;
 
     /// <summary><c>references/</c> 下的全部 .md（相对内容源根的路径，正斜杠分隔）。</summary>
     /// <remarks>
+    /// <para>
     /// 与索引页里提到的形态同一个坐标系（都是相对内容源根）：
     /// 索引页写的是 <c>references/api.md</c>，这里也得是它。
+    /// </para>
     /// <para>
     /// 与语料同一口径：递归、跳过 <c>__pycache__</c> 段，
     /// **点目录里的 .md 也算**（它们会被分发、也会进语料）。
+    /// </para>
+    /// <para>
+    /// 比较用**大小写不敏感**：枚举的 glob 在 Windows 上不分大小写、在 Linux 上分，
+    /// 比较若分大小写，同一份文档换个机器就红。集合本身按大小写敏感存
+    /// （Linux 上真能有两个只差大小写的文件，不该被合并成一个）。
     /// </para>
     /// </remarks>
     private static HashSet<string> ReferenceDocs()
