@@ -79,11 +79,15 @@ beforeEach(async () => {
 });
 
 describe('ProjectWebhooksPage', () => {
-  it('用路由参数里的项目 id 列 webhook（列表请求带 projectId）', async () => {
+  it('用路由参数里的项目 id 列 webhook（列表请求带 projectId，也要 unmask=true）', async () => {
     const wrapper = mountPage();
     await flushPromises();
 
-    expect(apiGet).toHaveBeenCalledWith('/webhooks', { projectId: 'project-1' });
+    // 后端默认回传的是遮蔽版，页面要完整配置，所以显式要原值。
+    expect(apiGet).toHaveBeenCalledWith('/webhooks', {
+      projectId: 'project-1',
+      unmask: 'true',
+    });
     expect(wrapper.findAll('.webhooks__item')).toHaveLength(1);
     expect(wrapper.get('.webhooks__item .webhooks__name').text()).toBe('项目通知');
     wrapper.unmount();

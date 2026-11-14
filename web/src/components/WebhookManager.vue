@@ -36,13 +36,19 @@ const confirmingId = ref<string | null>(null);
  *
  * 全局作用域不带 `projectId`（后端按「不带就是只列全局的」处理）；
  * 项目作用域带上项目 id（后端列绑定到该项目的那些）。
+ *
+ * 带上 `unmask=true`：后端默认回传的是遮蔽版（url 的路径段与请求头的值
+ * 都换了 `***`），页面要编辑配置、要看完整的 url，所以显式要原值。
  */
 async function load(): Promise<void> {
   try {
     webhooks.value =
       props.scope === 'project'
-        ? await apiGet<Webhook[]>('/webhooks', { projectId: props.projectId })
-        : await apiGet<Webhook[]>('/webhooks');
+        ? await apiGet<Webhook[]>('/webhooks', {
+            projectId: props.projectId,
+            unmask: 'true',
+          })
+        : await apiGet<Webhook[]>('/webhooks', { unmask: 'true' });
   } catch (error) {
     reportError(error, '加载 webhook 列表失败');
   }
@@ -76,11 +82,12 @@ async function onSaved(): Promise<void> {
 /** 启用 / 禁用。 */
 async function toggleEnabled(webhook: Webhook): Promise<void> {
   try {
-    const updated = await apiSend<Webhook>('PATCH', `/webhooks/${webhook.id}`, {
+    await apiSend<void>('PATCH', `/webhooks/${webhook.id}`, {
       enabled: !webhook.enabled,
     });
-    // 用后端返回的覆盖本地（状态以服务端为准）。
-    webhooks.value = webhooks.value.map((item) => (item.id === updated.id ? updated : item));
+    // PATCH 的响应是遮蔽版（写接口不返回完整凭据），不能拿它覆盖列表里的行 ——
+    // 改成再拉一次列表：多一次 GET，换来列表状态与服务端一致。
+    await load();
   } catch (error) {
     reportError(error, '切换启用状态失败');
   }

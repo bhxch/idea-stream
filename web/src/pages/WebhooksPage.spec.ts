@@ -85,11 +85,13 @@ beforeEach(async () => {
 });
 
 describe('WebhooksPage', () => {
-  it('列出全局作用域的 webhook（列表请求不带 projectId）', async () => {
+  it('列出全局作用域的 webhook（列表请求不带 projectId，但要 unmask=true）', async () => {
     const wrapper = mountPage();
     await flushPromises();
 
-    expect(apiGet).toHaveBeenCalledWith('/webhooks');
+    // 后端默认回传的是遮蔽版（url 的路径段与请求头的值都换了 ***），
+    // 页面要完整配置，所以显式要原值。
+    expect(apiGet).toHaveBeenCalledWith('/webhooks', { unmask: 'true' });
     const items = wrapper.findAll('.webhooks__item');
     expect(items).toHaveLength(2);
     expect(items[0].text()).toContain('全局通知');
@@ -132,14 +134,21 @@ describe('WebhooksPage', () => {
     wrapper.unmount();
   });
 
-  it('启用/禁用：PATCH 只带 enabled', async () => {
+  it('启用/禁用：PATCH 只带 enabled，之后重新拉列表', async () => {
     const wrapper = mountPage();
     await flushPromises();
+
+    const listCallsBefore = apiGet.mock.calls.filter((call) => call[0] === '/webhooks').length;
 
     await wrapper.get('[data-webhook-id="wh-2"] .webhooks__toggle').trigger('click');
     await flushPromises();
 
     expect(apiSend).toHaveBeenCalledWith('PATCH', '/webhooks/wh-2', { enabled: true });
+
+    // PATCH 的响应是遮蔽版，不能拿它覆盖列表里的行：toggle 之后要再拉一次列表。
+    const listCallsAfter = apiGet.mock.calls.filter((call) => call[0] === '/webhooks').length;
+    expect(listCallsAfter).toBe(listCallsBefore + 1);
+
     wrapper.unmount();
   });
 

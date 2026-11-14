@@ -710,6 +710,10 @@ public sealed class WebhookApiTests
     /// 单查响应体同样不带 secret 明文 —— 这是「secret 不回传」的关键路径之一：
     /// 单查会把整个配置面（URL、Body 模板、请求头）原样回传。
     /// </summary>
+    /// <remarks>
+    /// 这里显式要 <c>?unmask=true</c>：默认的响应是遮蔽版（URL 与请求头的值都换了）。
+    /// 遮蔽归遮蔽，secret 仍然只进不出 —— 就算是明文的配置面，密钥也不在里面。
+    /// </remarks>
     [Fact]
     public async Task Get_webhook_returns_config_without_secret_plaintext()
     {
@@ -734,7 +738,7 @@ public sealed class WebhookApiTests
         using var document = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
         var id = document.RootElement.GetProperty("id").GetString()!;
 
-        var response = await client.GetAsync($"/api/webhooks/{id}");
+        var response = await client.GetAsync($"/api/webhooks/{id}?unmask=true");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -753,6 +757,213 @@ public sealed class WebhookApiTests
         // 但密钥明文一个字都不在里面。
         Assert.DoesNotContain("single-secret", body, StringComparison.Ordinal);
         Assert.False(root.TryGetProperty("secret", out _));
+    }
+
+    /// <summary>
+    /// 列表默认返回遮蔽版：URL 只留 scheme 与 host，headers 只留键名。
+    /// </summary>
+    /// <remarks>
+    /// 命令层删掉之后，脱敏的归处就是服务端：裸 curl 拿到的响应会原样进
+    /// agent 的上下文与日志，而 Telegram 的 bot token 就在 URL 路径里。
+    /// </remarks>
+    [Fact]
+    public async Task List_returns_masked_url_and_header_keys_by_default()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        await CreateWebhookAsync(
+            client,
+            scope: "global",
+            projectId: null,
+            url: "https://api.telegram.org/bot123456:SECRET/sendMessage",
+            headers: new Dictionary<string, string> { ["Authorization"] = "Bearer SECRET2" });
+
+        var response = await client.GetAsync("/api/webhooks");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        using var document = JsonDocument.Parse(body);
+        var item = document.RootElement.EnumerateArray().Single();
+
+        // URL：host 可读（知道打的是谁），凭据不可读（路径整段换成 ***）。
+        var url = item.GetProperty("url").GetString()!;
+        Assert.StartsWith("https://api.telegram.org/", url, StringComparison.Ordinal);
+        Assert.DoesNotContain("123456", url, StringComparison.Ordinal);
+        Assert.DoesNotContain("SECRET", url, StringComparison.Ordinal);
+
+        // headers：键名留着（调用方要靠它认出这是哪个请求头），值一律 ***。
+        var headers = item.GetProperty("headers");
+        var header = headers.EnumerateObject().Single();
+        Assert.Equal("Authorization", header.Name);
+        Assert.Equal("***", header.Value.GetString());
+
+        // 整份响应里都不该出现凭据。
+        Assert.DoesNotContain("SECRET", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>要完整值得显式说一声：<c>?unmask=true</c> 返回原值。</summary>
+    [Fact]
+    public async Task List_returns_the_raw_values_when_unmask_is_true()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        await CreateWebhookAsync(
+            client,
+            scope: "global",
+            projectId: null,
+            url: "https://api.telegram.org/bot123456:SECRET/sendMessage",
+            headers: new Dictionary<string, string> { ["Authorization"] = "Bearer SECRET2" });
+
+        var response = await client.GetAsync("/api/webhooks?unmask=true");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var item = document.RootElement.EnumerateArray().Single();
+
+        Assert.Equal("https://api.telegram.org/bot123456:SECRET/sendMessage",
+            item.GetProperty("url").GetString());
+        Assert.Equal("Bearer SECRET2",
+            item.GetProperty("headers").GetProperty("Authorization").GetString());
+    }
+
+    /// <summary>单查同样默认遮蔽；<c>?unmask=true</c> 才给原值。</summary>
+    [Fact]
+    public async Task Get_returns_masked_url_by_default()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var id = await CreateWebhookAsync(
+            client,
+            scope: "global",
+            projectId: null,
+            url: "https://api.telegram.org/bot123456:SECRET/sendMessage",
+            headers: new Dictionary<string, string> { ["Authorization"] = "Bearer SECRET2" });
+
+        var masked = await client.GetAsync($"/api/webhooks/{id}");
+
+        Assert.Equal(HttpStatusCode.OK, masked.StatusCode);
+
+        var maskedBody = await masked.Content.ReadAsStringAsync();
+
+        using (var document = JsonDocument.Parse(maskedBody))
+        {
+            var item = document.RootElement;
+            Assert.Equal("https://api.telegram.org/***/***", item.GetProperty("url").GetString());
+            Assert.Equal("***", item.GetProperty("headers").GetProperty("Authorization").GetString());
+        }
+
+        Assert.DoesNotContain("SECRET", maskedBody, StringComparison.Ordinal);
+
+        var raw = await client.GetAsync($"/api/webhooks/{id}?unmask=true");
+
+        Assert.Equal(HttpStatusCode.OK, raw.StatusCode);
+
+        using var rawDocument = JsonDocument.Parse(await raw.Content.ReadAsStringAsync());
+        Assert.Equal("https://api.telegram.org/bot123456:SECRET/sendMessage",
+            rawDocument.RootElement.GetProperty("url").GetString());
+        Assert.Equal("Bearer SECRET2",
+            rawDocument.RootElement.GetProperty("headers").GetProperty("Authorization").GetString());
+    }
+
+    /// <summary>写接口的响应一律遮蔽：新建的回执里不该带完整凭据。</summary>
+    [Fact]
+    public async Task Create_response_is_masked()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/webhooks", new
+        {
+            name = "钩子",
+            url = "https://api.telegram.org/bot123456:SECRET/sendMessage",
+            method = "POST",
+            headers = new Dictionary<string, string> { ["Authorization"] = "Bearer SECRET2" },
+            bodyTemplate = ValidBodyTemplate,
+            events = new[] { "idea.created" },
+            scope = "global",
+            projectId = (string?)null
+        });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        using var document = JsonDocument.Parse(body);
+        var item = document.RootElement;
+
+        Assert.Equal("https://api.telegram.org/***/***", item.GetProperty("url").GetString());
+        Assert.Equal("***", item.GetProperty("headers").GetProperty("Authorization").GetString());
+        Assert.DoesNotContain("SECRET", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 改配置的响应也遮蔽。
+    /// </summary>
+    /// <remarks>
+    /// 这里只改 name：更新接口的 url 是三态的（传 null = 不改），
+    /// 所以「回执是遮蔽版」不会把库里的 URL 改坏 —— 遮蔽只发生在出参上。
+    /// </remarks>
+    [Fact]
+    public async Task Update_response_is_masked()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var id = await CreateWebhookAsync(
+            client,
+            scope: "global",
+            projectId: null,
+            url: "https://api.telegram.org/bot123456:SECRET/sendMessage",
+            headers: new Dictionary<string, string> { ["Authorization"] = "Bearer SECRET2" });
+
+        var response = await client.PatchAsJsonAsync($"/api/webhooks/{id}", new { name = "改个名" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        using var document = JsonDocument.Parse(body);
+        var item = document.RootElement;
+
+        Assert.Equal("改个名", item.GetProperty("name").GetString());
+        Assert.Equal("https://api.telegram.org/***/***", item.GetProperty("url").GetString());
+        Assert.Equal("***", item.GetProperty("headers").GetProperty("Authorization").GetString());
+        Assert.DoesNotContain("SECRET", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 遮蔽只动路径：scheme 与 host 留着，路径的段数也留着。
+    /// </summary>
+    /// <remarks>
+    /// host 可读是刻意的：调用方要知道「打的是哪个服务」，
+    /// 而路径段（token 在那里）一律换成 ***。
+    /// </remarks>
+    [Fact]
+    public async Task Masked_url_keeps_scheme_and_host()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var id = await CreateWebhookAsync(
+            client,
+            scope: "global",
+            projectId: null,
+            url: "https://api.telegram.org/botX/sendMessage");
+
+        var response = await client.GetAsync($"/api/webhooks/{id}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal("https://api.telegram.org/***/***",
+            document.RootElement.GetProperty("url").GetString());
     }
 
     /// <summary>
@@ -824,14 +1035,21 @@ public sealed class WebhookApiTests
     }
 
     /// <summary>建一个 webhook 并返回它的 id。</summary>
-    private static async Task<string> CreateWebhookAsync(HttpClient client, string scope, string? projectId)
+    /// <param name="url">URL；不给就用默认的。</param>
+    /// <param name="headers">请求头；不给就用空字典。</param>
+    private static async Task<string> CreateWebhookAsync(
+        HttpClient client,
+        string scope,
+        string? projectId,
+        string? url = null,
+        Dictionary<string, string>? headers = null)
     {
         var response = await client.PostAsJsonAsync("/api/webhooks", new
         {
             name = "钩子",
-            url = "https://example.com/hook",
+            url = url ?? "https://example.com/hook",
             method = "POST",
-            headers = new Dictionary<string, string>(),
+            headers = headers ?? new Dictionary<string, string>(),
             bodyTemplate = ValidBodyTemplate,
             events = new[] { "idea.created" },
             scope,

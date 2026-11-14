@@ -1170,6 +1170,13 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "unmask",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -1267,6 +1274,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "unmask",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
