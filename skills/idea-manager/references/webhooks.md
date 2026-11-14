@@ -13,8 +13,11 @@ webhook 的 `url` 里可能有凭据（Telegram 的 bot token 就在 URL 的路�
 | `url` | 只留 `scheme://host[:port]`，路径的**每一段**换成 `***`（段数不变）；query、fragment、userinfo 一律丢弃 |
 | `headers` | 只保留键名，值一律换成 `***` |
 
-例：真实地址 `https://api.telegram.org/bot123456:ABCDEF/sendMessage` →
+例：真实地址 `https://api.telegram.org/botXXXXXX:ABCDEF/sendMessage` →
 遮蔽版 `https://api.telegram.org/***/***`。
+
+（bot token 的形状是 `bot<数字>:<token>`。文档与测试里一律用 `botXXXXXX` 这种
+**占位形状**：真 token 一旦进了仓库，删掉它也删不掉历史里的那一份。）
 
 - 要完整值得显式加 `?unmask=true`（`GET /api/webhooks` 与 `GET /api/webhooks/{id}` 都认）。
   **除非用户明确要看原始 url，否则不要加这个参数** —— 加了它，凭据就进 agent 的上下文与日志了。

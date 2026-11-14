@@ -776,7 +776,7 @@ public sealed class WebhookApiTests
             client,
             scope: "global",
             projectId: null,
-            url: "https://api.telegram.org/bot123456:SECRET/sendMessage",
+            url: "https://api.telegram.org/botXXXXXX:SECRET/sendMessage",
             headers: new Dictionary<string, string> { ["Authorization"] = "Bearer SECRET2" });
 
         var response = await client.GetAsync("/api/webhooks");
@@ -815,7 +815,7 @@ public sealed class WebhookApiTests
             client,
             scope: "global",
             projectId: null,
-            url: "https://api.telegram.org/bot123456:SECRET/sendMessage",
+            url: "https://api.telegram.org/botXXXXXX:SECRET/sendMessage",
             headers: new Dictionary<string, string> { ["Authorization"] = "Bearer SECRET2" });
 
         var response = await client.GetAsync("/api/webhooks?unmask=true");
@@ -825,7 +825,7 @@ public sealed class WebhookApiTests
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         var item = document.RootElement.EnumerateArray().Single();
 
-        Assert.Equal("https://api.telegram.org/bot123456:SECRET/sendMessage",
+        Assert.Equal("https://api.telegram.org/botXXXXXX:SECRET/sendMessage",
             item.GetProperty("url").GetString());
         Assert.Equal("Bearer SECRET2",
             item.GetProperty("headers").GetProperty("Authorization").GetString());
@@ -842,7 +842,7 @@ public sealed class WebhookApiTests
             client,
             scope: "global",
             projectId: null,
-            url: "https://api.telegram.org/bot123456:SECRET/sendMessage",
+            url: "https://api.telegram.org/botXXXXXX:SECRET/sendMessage",
             headers: new Dictionary<string, string> { ["Authorization"] = "Bearer SECRET2" });
 
         var masked = await client.GetAsync($"/api/webhooks/{id}");
@@ -865,7 +865,7 @@ public sealed class WebhookApiTests
         Assert.Equal(HttpStatusCode.OK, raw.StatusCode);
 
         using var rawDocument = JsonDocument.Parse(await raw.Content.ReadAsStringAsync());
-        Assert.Equal("https://api.telegram.org/bot123456:SECRET/sendMessage",
+        Assert.Equal("https://api.telegram.org/botXXXXXX:SECRET/sendMessage",
             rawDocument.RootElement.GetProperty("url").GetString());
         Assert.Equal("Bearer SECRET2",
             rawDocument.RootElement.GetProperty("headers").GetProperty("Authorization").GetString());
@@ -881,7 +881,7 @@ public sealed class WebhookApiTests
         var response = await client.PostAsJsonAsync("/api/webhooks", new
         {
             name = "钩子",
-            url = "https://api.telegram.org/bot123456:SECRET/sendMessage",
+            url = "https://api.telegram.org/botXXXXXX:SECRET/sendMessage",
             method = "POST",
             headers = new Dictionary<string, string> { ["Authorization"] = "Bearer SECRET2" },
             bodyTemplate = ValidBodyTemplate,
@@ -919,7 +919,7 @@ public sealed class WebhookApiTests
             client,
             scope: "global",
             projectId: null,
-            url: "https://api.telegram.org/bot123456:SECRET/sendMessage",
+            url: "https://api.telegram.org/botXXXXXX:SECRET/sendMessage",
             headers: new Dictionary<string, string> { ["Authorization"] = "Bearer SECRET2" });
 
         var response = await client.PatchAsJsonAsync($"/api/webhooks/{id}", new { name = "改个名" });

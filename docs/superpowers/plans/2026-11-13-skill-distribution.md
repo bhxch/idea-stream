@@ -537,10 +537,10 @@ agent 侧只留两个文件：SKILL.md（frontmatter + 指针）与 scripts/fetc
 
 ```csharp
 [Fact] public async Task List_returns_masked_url_and_header_keys_by_default()
-// 建一个 url = "https://api.telegram.org/bot123456:SECRET/sendMessage"、
+// 建一个 url = "https://api.telegram.org/botXXXXXX:SECRET/sendMessage"、
 // headers = { "Authorization": "Bearer SECRET2" } 的全局 webhook；
 // GET /api/webhooks → 200；那一项的 url 以 "https://api.telegram.org/" 开头，
-// 且**不含** "123456" 与 "SECRET"；headers 的键是 "Authorization"，值是 "***"。
+// 且**不含** "XXXXXX" 与 "SECRET"；headers 的键是 "Authorization"，值是 "***"。
 
 [Fact] public async Task List_returns_the_raw_values_when_unmask_is_true()
 // GET /api/webhooks?unmask=true → url 与 headers 的值都是原值。
