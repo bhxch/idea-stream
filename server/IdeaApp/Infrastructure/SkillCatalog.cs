@@ -13,6 +13,11 @@ namespace IdeaApp.Infrastructure;
 /// 服务端是它唯一的权威来源：agent 按清单同步到本地缓存，
 /// 清单里的每个哈希都对应分发副本里的一个文件。
 /// </para>
+///
+/// <para>
+/// <b>哪些路径算分发副本的一部分，只有一处定义</b>（<see cref="IsDistributedPath"/>）：
+/// 枚举清单与取文件端点都用它。两个地方各写一份时迟早会漂移。
+/// </para>
 /// </summary>
 public sealed class SkillCatalog
 {
@@ -33,24 +38,46 @@ public sealed class SkillCatalog
     /// 与当前工作目录无关 —— 与 <c>Database:Path</c> 同一条约定
     /// （见 <see cref="SqliteDatabase.AppDirectory"/>）；绝对路径原样使用。
     /// </param>
+    /// <remarks>
+    /// **空路径 = 没有分发**，不是错误。
+    /// <para>
+    /// 早先这里对空路径抛 <see cref="ArgumentException"/>，而注册是**惰性单例** ——
+    /// 异常要等到有人第一次访问 <c>/skill/**</c> 才炸出来，那就是 500。
+    /// 而「没分发」本来就有专门的错误码（<c>skill_not_distributed</c>），
+    /// 规格里也明写「目录缺失时不要 500」。所以这里把空路径记成
+    /// 「没配分发目录」，由取用的一方回 404。
+    /// </para>
+    /// <para>
+    /// 也不能让空路径退化成「应用目录」：那样取文件端点会把应用目录里的
+    /// 文件（数据库、配置）顺着发出去。
+    /// </para>
+    /// </remarks>
     public SkillCatalog(string configuredPath)
     {
-        // 空路径会让 Root 变成应用目录本身 —— 那样这个端点会把应用目录里的
-        // 文件（数据库、配置）顺着取文件端点发出去。路径写错是部署问题，
-        // 不能默默变成「把应用目录当分发副本」（与 SqliteDatabase 同一个口径：
-        // 数据库路径为空时直接报错）。
-        if (string.IsNullOrWhiteSpace(configuredPath))
-        {
-            throw new ArgumentException("skill 分发副本的路径不能为空。", nameof(configuredPath));
-        }
-
-        Root = Path.IsPathRooted(configuredPath)
-            ? Path.GetFullPath(configuredPath)
-            : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, configuredPath));
+        Root = string.IsNullOrWhiteSpace(configuredPath)
+            ? string.Empty
+            : Path.IsPathRooted(configuredPath)
+                ? Path.GetFullPath(configuredPath)
+                : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, configuredPath));
     }
 
-    /// <summary>分发副本的根目录（绝对路径）。</summary>
+    /// <summary>分发副本的根目录（绝对路径）。没配路径时是空串。</summary>
     public string Root { get; }
+
+    /// <summary>
+    /// 分发副本在不在（路径配了，且目录存在）。
+    /// </summary>
+    /// <remarks>
+    /// 「没分发」有两种：路径没配（空串）、目录不存在。两者对 agent 是同一件事 ——
+    /// 服务端手上没有 skill 内容 —— 所以是同一个错误码。
+    /// </remarks>
+    public bool IsDistributed => Root.Length > 0 && Directory.Exists(Root);
+
+    /// <summary>「没分发」的说明（进错误详情）。</summary>
+    public string NotDistributedDetail =>
+        Root.Length == 0
+            ? "服务端没有分发 skill 内容：Skill:Path 没有配置（空路径）。"
+            : $"服务端没有分发 skill 内容：目录 {Root} 不存在。";
 
     /// <summary>
     /// 出一份清单：版本、入口、逐个文件的哈希与大小。
@@ -69,12 +96,12 @@ public sealed class SkillCatalog
     /// </exception>
     public SkillManifestDto BuildManifest()
     {
-        if (!Directory.Exists(Root))
+        if (!IsDistributed)
         {
             throw new ApiException(
                 404,
                 "skill_not_distributed",
-                $"服务端没有分发 skill 内容：目录 {Root} 不存在。");
+                NotDistributedDetail);
         }
 
         var files = EnumerateFiles()
@@ -110,18 +137,27 @@ public sealed class SkillCatalog
     /// <summary>
     /// 把「相对分发副本根目录的路径」解析成磁盘上的绝对路径。
     /// </summary>
-    /// <param name="relativePath">相对路径（用 <c>/</c> 分隔）。</param>
+    /// <param name="relativePath">相对路径（用 <c>/</c> 分隔）。可以是 null（路径没给到）。</param>
     /// <param name="fullPath">解析成功时给出绝对路径，否则是空串。</param>
     /// <returns>解析成功且文件存在时为 true。</returns>
     /// <remarks>
     /// 拒绝的情形一律返回 false（不回错误、不抛异常）：绝对路径、含 <c>..</c> 段的路径、
-    /// 解析后跑到副本目录之外的路径、以及副本里根本没有的文件。
+    /// 解析后跑到副本目录之外的路径、**不属于分发副本的路径**（见 <see cref="IsDistributedPath"/>），
+    /// 以及副本里根本没有的文件。
     /// </remarks>
-    public bool TryResolveFile(string relativePath, out string fullPath)
+    public bool TryResolveFile(string? relativePath, out string fullPath)
     {
         fullPath = string.Empty;
 
         if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return false;
+        }
+
+        // 没配分发目录：没有根可解析。
+        // 这一条不能省 —— 根是空串时 Path.Combine("", 相对路径) 会解析到
+        // **当前工作目录**下去，后面的「必须落在根之下」检查也就形同虚设。
+        if (Root.Length == 0)
         {
             return false;
         }
@@ -135,6 +171,13 @@ public sealed class SkillCatalog
         // 含 ".." 段：直接拒绝，不去「先解析再判断」——
         // 解析后的形态依赖规范化规则，多绕一圈就多一个能出错的环节。
         if (relativePath.Split('/', '\\').Any(segment => segment == ".."))
+        {
+            return false;
+        }
+
+        // 不属于分发副本的路径（开发残留目录）：与枚举清单用的是同一条规则 ——
+        // 清单里没有的文件，取文件端点也不该给。
+        if (!IsDistributedPath(relativePath))
         {
             return false;
         }
@@ -181,13 +224,28 @@ public sealed class SkillCatalog
         return Directory
             .EnumerateFiles(Root, "*", SearchOption.AllDirectories)
             .Select(path => (RelativePath: ToRelativePath(path), FullPath: path))
-            .Where(file => !file.RelativePath
-                .Split('/')
-                .Any(segment => segment == ExcludedDirectoryName))
+            .Where(file => IsDistributedPath(file.RelativePath))
             // 按路径升序：版本串与清单的顺序都取决于它，
             // 必须与取件器那侧一致（那边按字节序排）。
             .OrderBy(file => file.RelativePath, StringComparer.Ordinal);
     }
+
+    /// <summary>
+    /// 这个相对路径算不算「分发副本的一部分」。
+    /// </summary>
+    /// <remarks>
+    /// **枚举清单与取文件共用这一条规则**：同一个概念只许有一份定义。
+    /// 两处各写一份时，迟早会漂移 —— 清单里有而取文件端点取不到
+    /// （agent 按索引页的路由表去取就 404），或者反过来（清单里没有、
+    /// 取文件却给得出去）。
+    /// <para>
+    /// 规则本身：除了开发侧的残留目录（<c>__pycache__</c>），副本里的文件一律算数 ——
+    /// 包括点目录里的（<c>.cache/x.md</c>）：产物是 csproj 的 glob 收的，
+    /// 它收什么就分发什么。
+    /// </para>
+    /// </remarks>
+    private static bool IsDistributedPath(string relativePath) =>
+        !relativePath.Split('/', '\\').Any(segment => segment == ExcludedDirectoryName);
 
     /// <summary>文件在副本里的相对路径（统一用 <c>/</c> 分隔）。</summary>
     private string ToRelativePath(string fullPath) =>

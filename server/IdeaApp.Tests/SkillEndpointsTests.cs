@@ -133,14 +133,25 @@ public sealed class SkillEndpointsTests
     }
 
     /// <summary>
-    /// 路径穿越读不到分发副本之外的文件。
-    ///
-    /// <para>
-    /// 请求路径里的 <c>..</c> 由客户端自己先归一化了（<see cref="Uri"/> 按 RFC 3986
-    /// 去掉点号段），所以这里直接用 <see cref="Microsoft.AspNetCore.TestHost.TestServer.SendAsync"/>
-    /// 把**未经归一化**的原始路径塞给服务端 —— 那才是真正要防的请求形态。
-    /// </para>
+    /// 路径穿越**形态**的路径进了 <c>TryResolveFile</c>，解析不出副本之外的文件。
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>这条守的是函数级的防御，不是 HTTP 层的保证。</b>
+    /// </para>
+    /// <para>
+    /// <see cref="Microsoft.AspNetCore.TestHost.TestServer"/> 根本不解析请求行 ——
+    /// 这里是直接把 <c>Request.Path</c> 设成未经归一化的原始路径塞进去的。
+    /// 真实 HTTP 请求里，Kestrel 会先按 RFC 3986 去掉点号段
+    /// （<c>/skill/idea-manager/../../etc/passwd</c> 归一化成 <c>/etc/passwd</c>），
+    /// 于是那条请求根本到不了取文件端点 —— 它落到前端的 SPA 兜底上（200 + HTML）。
+    /// </para>
+    /// <para>
+    /// HTTP 层那条保证由 <see cref="SkillRawRequestTests"/> 守：那里用裸 socket
+    /// 发**真的请求行**，断言「归一化后逃出 <c>/skill/</c> 前缀的路径读不到任何文件」。
+    /// 两条守的是不同的东西，少一条都不行。
+    /// </para>
+    /// </remarks>
     [Fact]
     public async Task File_endpoint_rejects_path_traversal()
     {
@@ -166,6 +177,11 @@ public sealed class SkillEndpointsTests
     /// <remarks>
     /// 这一条走的是普通的 HTTP 客户端：<c>%2f</c> 是保留字符，<see cref="Uri"/> 不会
     /// 把它归一化掉，于是这串路径真的送到了服务端。
+    /// <para>
+    /// 服务端这一侧：<c>%2f</c> 解出来是路径分隔符，但**归一化发生在解码之前**，
+    /// 所以点号段没被去掉 —— 路径原样进了取文件端点，由
+    /// <c>TryResolveFile</c> 挡下（404 + <c>skill_file_not_found</c>）。
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task File_endpoint_rejects_an_encoded_path_traversal()
@@ -181,6 +197,101 @@ public sealed class SkillEndpointsTests
 
         Assert.Equal("skill_file_not_found", ReadCode(body));
         Assert.DoesNotContain("root:", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 路径参数没取到值（<c>GET /skill/idea-manager</c>）→ 404，不是 400。
+    /// </summary>
+    /// <remarks>
+    /// 早先路径参数没写 <c>[FromRoute]</c>：catch-all 取不到值时框架会退回
+    /// **从请求体绑定**，而 GET 没有请求体 → 400 + <c>invalid_request_body</c>
+    /// 「请求体不是合法的 JSON」—— 对一个压根没有请求体的端点来说，这句话是误导，
+    /// 而且契约里也没有声明 400 这条。
+    /// <para>
+    /// 显式绑定之后，取不到值就是「副本里没有这个文件」→ 404 + 稳定的错误码。
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("/skill/idea-manager")]
+    [InlineData("/skill/idea-manager/")]
+    public async Task File_endpoint_without_a_path_returns_404_not_found(string path)
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync(path);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal("skill_file_not_found", ReadCode(body));
+        Assert.DoesNotContain("invalid_request_body", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 开发残留目录（<c>__pycache__</c>）里的文件既不在清单里，也取不到。
+    /// </summary>
+    /// <remarks>
+    /// 「哪些路径算分发副本的一部分」只有一处定义（<c>SkillCatalog</c> 里的那条规则），
+    /// 枚举清单与取文件端点共用它。少一端就会漂移：清单里有而取不到
+    /// （agent 按索引页去取就 404），或者反过来（清单里没有却给得出去）。
+    /// </remarks>
+    [Fact]
+    public async Task Development_residue_is_neither_listed_nor_served()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "idea-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(Path.Combine(directory, "__pycache__"));
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(directory, "SKILL.md"), "# 索引页\n");
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "__pycache__", "leftover.md"),
+                "开发残留\n");
+
+            using var factory = new TestAppFactory(skillPath: directory);
+            using var client = factory.CreateClient();
+
+            // 清单里没有它。
+            using var manifest = await client.GetAsync("/skill/idea-manager/version");
+            var manifestBody = await manifest.Content.ReadAsStringAsync();
+
+            Assert.DoesNotContain("__pycache__", manifestBody, StringComparison.Ordinal);
+
+            // 取文件端点也不给。
+            using var response = await client.GetAsync("/skill/idea-manager/__pycache__/leftover.md");
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Equal("skill_file_not_found", ReadCode(await response.Content.ReadAsStringAsync()));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// 分发副本的路径没配（空串）→ 404 + <c>skill_not_distributed</c>，不是 500。
+    /// </summary>
+    /// <remarks>
+    /// 早先空路径让 <c>SkillCatalog</c> 的构造抛 <c>ArgumentException</c>，
+    /// 而注册是**惰性单例** —— 异常要等到有人第一次访问 <c>/skill/**</c> 才炸出来，
+    /// 那就是 500。「没分发」本来就有专门的错误码，规格里也明写「不要 500」。
+    /// </remarks>
+    [Theory]
+    [InlineData("/skill/idea-manager/version")]
+    [InlineData("/skill/idea-manager/SKILL.md")]
+    public async Task Empty_skill_path_returns_404_not_distributed(string path)
+    {
+        using var factory = new TestAppFactory(skillPath: string.Empty);
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync(path);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("skill_not_distributed", ReadCode(await response.Content.ReadAsStringAsync()));
     }
 
     /// <summary>

@@ -3,6 +3,7 @@ using IdeaApp.Contracts;
 using IdeaApp.Infrastructure;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 
 namespace IdeaApp.Endpoints;
@@ -49,17 +50,23 @@ public static class SkillEndpoints
             .ProducesApiProblem(StatusCodes.Status404NotFound, "skill_not_distributed");
 
         // 取文件：路径解析与存在性由 SkillCatalog 把关（穿越一律 false）。
-        app.MapGet("/skill/idea-manager/{**path}", (string path, SkillCatalog catalog) =>
+        //
+        // 路径参数**显式**从路由取（[FromRoute]）：不写的话，catch-all 没取到值时
+        // 框架会退回从请求体绑定，而 GET 没有请求体 ——
+        // 结果是 400 + invalid_request_body「请求体不是合法的 JSON」，
+        // 对一个压根没有请求体的端点来说，这句话是误导（规格里也没有 400 这条）。
+        // 显式绑定之后，取不到值就是「副本里没有这个文件」→ 404。
+        app.MapGet("/skill/idea-manager/{**path}", ([FromRoute] string? path, SkillCatalog catalog) =>
             ApiResults.Run(() =>
             {
                 // 分发副本目录不在：这是「部署漏了」，不是「文件没有」——
                 // 两个错误码要分得开，装 skill 的人该知道该去查哪一头。
-                if (!Directory.Exists(catalog.Root))
+                if (!catalog.IsDistributed)
                 {
                     throw new ApiException(
                         404,
                         "skill_not_distributed",
-                        $"服务端没有分发 skill 内容：目录 {catalog.Root} 不存在。");
+                        catalog.NotDistributedDetail);
                 }
 
                 if (!catalog.TryResolveFile(path, out var fullPath))
@@ -67,7 +74,9 @@ public static class SkillEndpoints
                     throw new ApiException(
                         404,
                         "skill_file_not_found",
-                        $"分发副本里没有这个文件：{path}");
+                        string.IsNullOrEmpty(path)
+                            ? "分发副本里没有这个文件：路径是空的。"
+                            : $"分发副本里没有这个文件：{path}");
                 }
 
                 return Results.File(File.ReadAllBytes(fullPath), ContentTypeOf(fullPath));
@@ -87,11 +96,14 @@ public static class SkillEndpoints
 
         // /skill/** 下的兜底：没有对应端点就是 404 + ProblemDetails，
         // 绝不能落到 SPA 兜底变成 200 + HTML。
-        app.MapGet("/skill/{**rest}", () => ApiResults.Run(() =>
+        //
+        // 路由里的 catch-all 参数**要绑出来**：不绑的话契约里这条路径一个参数都没有，
+        // agent 看着这条路径不知道该往里填什么（契约是给 agent 当手册用的）。
+        app.MapGet("/skill/{**rest}", ([FromRoute] string? rest) => ApiResults.Run(() =>
             throw new ApiException(
                 404,
                 "skill_endpoint_not_found",
-                "/skill 下的路径没有对应端点。")))
+                $"/skill 下的路径没有对应端点：{(string.IsNullOrEmpty(rest) ? "(空路径)" : rest)}")))
             .ProducesApiProblem(StatusCodes.Status404NotFound, "skill_endpoint_not_found");
 
         return app;

@@ -53,14 +53,28 @@
 | `idea_not_found` | 想法不存在 | 重新拉列表，可能是别的设备删了 |
 | `project_not_found` | 项目不存在 | 同上 |
 | `skill_endpoint_not_found` | /skill 下的路径没有对应端点（拼错了 skill 名或路径） | 核对 skill 名与路径 |
-| `skill_file_not_found` | 分发副本里没有这个文件（路径穿越的尝试也走这里） | 核对路径 |
-| `skill_not_distributed` | 服务端没有分发 skill 内容（分发副本的目录不存在或缺少入口文件） | 部署漏了分发目录 |
+| `skill_file_not_found` | 分发副本里没有这个文件（编码形态的路径穿越也走这里） | 核对路径 |
+| `skill_not_distributed` | 服务端没有分发 skill 内容（分发副本的路径没配、目录不存在或缺少入口文件） | 部署漏了分发目录 |
 | `webhook_not_found` | webhook 不存在 | 重新拉列表 |
 | `unsupported_media_type` | 请求的 Content-Type 不是 application/json | 带上 `Content-Type: application/json` 再发 |
 | `delivery_queue_full` | 投递队列已满，请稍后重试 | 稍后重试；事件路径的队列满是静默丢弃 + 日志，不会返回 503 |
 
 另有 500 的 `internal_error`：服务端兜底码，含义是「未预期的异常，看服务端日志」，
 agent 侧只需当成「重试或报错」，不必分支处理。
+
+## 路径里带 `..` 会发生什么
+
+服务端**会**把路径里的点号段归一化掉（RFC 3986），所以同一个「穿越」请求有三种结果：
+
+| 请求 | 结果 |
+|---|---|
+| `/skill/idea-manager/../../etc/passwd` | 归一化成 `/etc/passwd` → 逃出 `/skill/` 前缀 → 落到**前端兜底** → **200 + HTML**（不是 404，也读不到任何文件） |
+| `/skill/idea-manager/..%2f..%2fetc%2fpasswd` | `%2f` 不是路径分隔符，归一化不认它 → 路径原样进端点 → **404 + `skill_file_not_found`** |
+| `/skill/idea-manager/a/../SKILL.md` | 归一化成 `/skill/idea-manager/SKILL.md` → **200 + 手册原文** |
+
+**读到 HTML 就说明路径写错了**：200 只表示「服务端有东西给」，不表示「给的是你要的那一份」。
+取件器在同步时会逐个文件校验 sha256 —— 服务端给回来的内容与清单对不上
+（多半是被前端兜底截了）时，它报 `skill_integrity_error` 而不是把 HTML 当手册用。
 
 ## 取件器的错误码
 
