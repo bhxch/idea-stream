@@ -538,9 +538,21 @@ actual_errors_sum="$(sha256sum "$WORK_DIR/fetched-errors.md" | cut -d' ' -f1)"
 [[ "$expected_errors_sum" == "$actual_errors_sum" ]] \
     || fail "取回来的子文档与内容源不是同一份内容"
 
-echo "==> 取件器取一个不存在的文件（跨栈：ProblemDetails 的 code 在顶层）"
-# 错误路径也要跨栈对过面：服务端的 code 在 ProblemDetails 的**顶层**，
-# 取件器按它分支（404 折叠成 not_found），退出码非 0。
+echo "==> 404 的错误响应体：ProblemDetails 的 code 必须在顶层"
+# 这条**直接打服务端**，不靠取件器 ——
+# 取件器把任何 404（除 skill_not_distributed）一律折叠成 not_found，
+# **根本不看**响应体里 code 在不在顶层：拿取件器的输出去断言 code 的位置，
+# 验的是「折叠」而不是「code 在顶层」（上一版就是这么写的，恒绿：
+# 服务端把 code 挪进 extensions、甚至干脆不返回，它照样绿）。
+#
+# 这里的断言用真的 JsonDocument 解析响应体：`root.TryGetProperty("code", ...)`
+# 只在 **code 是顶层属性** 时才成立 —— 挪进 extensions 里它就不成立。
+check_endpoint "/skill/idea-manager/nope.md" "404" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String && code.GetString() == "skill_file_not_found"'
+
+echo "==> 取件器取一个不存在的文件（跨栈：404 折叠成 not_found）"
+# 错误路径也要跨栈对过面：取件器按状态码分支（404 → not_found），退出码非 0。
+# 注意这条**只**验「折叠」这一件事；code 在不在顶层由上面那条守着。
 if IDEA_BASE_URL="$BASE_URL" IDEA_SKILL_CACHE_DIR="$WORK_DIR/skill-cache" \
     python3 skills/idea-manager-client/scripts/fetch.py /skill/idea-manager/nope.md \
     >"$WORK_DIR/fetch-nope.out" 2>"$WORK_DIR/fetch-nope.err"; then
@@ -550,14 +562,15 @@ fi
 if ! grep -q '^not_found: ' "$WORK_DIR/fetch-nope.err"; then
     echo "--- 取件器的 stderr ---" >&2
     cat "$WORK_DIR/fetch-nope.err" >&2
-    fail "取件器没有把服务端的 404 折叠成 not_found（ProblemDetails 的 code 没在顶层？）"
+    fail "取件器没有把服务端的 404 折叠成 not_found"
 fi
 
 echo
 echo "PASS: 跑过的检查 ——"
 echo "  * AOT 产物下每个被检查的端点都返回预期的状态码与响应体（含 skill 分发端点）"
+echo "  * 404 的 ProblemDetails：code 在**顶层**（服务端直连断言，不靠取件器）"
 echo "  * 跨栈：仓库里的真取件器收下了真产物的清单"
 echo "  * 跨栈：分发副本与内容源逐文件、逐字节（sha256）对上"
 echo "  * 跨栈：子文档（references/ 下的那一份）能取到，且与内容源是同一份"
-echo "  * 跨栈：不存在的文件回 not_found、退出码非 0（ProblemDetails 的 code 在顶层）"
+echo "  * 跨栈：不存在的文件回 not_found、退出码非 0"
 exit 0
