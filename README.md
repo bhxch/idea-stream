@@ -109,6 +109,18 @@ AOT 有自己的坑：JSON 一律走源生成上下文（`IdeaJsonContext`），
 bash server/scripts/aot-smoke.sh
 ```
 
+上面那几条命令**要自己记得挨个跑** —— 漏一条，某类 bug 就能全绿漏过去。
+仓库根有一条把它们串起来的闸门命令，**提交前跑它**：
+
+```bash
+bash verify.sh
+```
+
+它按四步跑：.NET 测试（服务端，含 skill 分发端点与文档漂移守卫）→
+取件器的 Python 单测 → AOT 冒烟（真 AOT 产物 + **跨栈**检查）→
+取件器自己的测试脚本（带一条真 HTTP 服务端的冒烟）。
+**任一步失败即失败**，退出码非 0。
+
 ## 运行
 
 ```bash
@@ -245,7 +257,12 @@ agent skill 的**权威内容在服务端**：应用把 `skills/idea-manager/`�
 | `skills/idea-manager-client/` | **薄壳**：`SKILL.md`（指针）+ `scripts/fetch.py`（取件器） | 装到 agent 的 skills 目录 |
 
 服务端这边有只读端点：`/skill/idea-manager/version` 给清单（版本 + 文件清单 + 逐个 sha256），
-`/skill/idea-manager/{path}` 给文件内容。路径拼错回 404，不会落到 SPA 兜底变成 200 + HTML。
+`/skill/idea-manager/{path}` 给文件内容。**路径拼错**回 404，不会落到 SPA 兜底变成 200 + HTML。
+
+但**带 `..` 逃出 `/skill/` 前缀**的形态是例外：服务端会按 RFC 3986 归一化路径，
+`/skill/idea-manager/../../etc/passwd` 被归一化成 `/etc/passwd` → 逃出 `/skill/` 前缀 →
+落到**前端兜底** → **200 + HTML**（读不到任何文件）。
+三种形态（拼错 / `..` 穿越 / 编码过的穿越）各是什么结果，见手册的 `references/errors.md`。
 
 ### 安装
 
@@ -261,7 +278,11 @@ bash skills/install-agent-skill.sh                       # 装到 ~/.zcode/skill
 bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager
 ```
 
-脚本是幂等的：目标目录里认得出的旧形状残留会被清掉，不认识的文件只警告、不删。
+脚本是幂等的：目标目录里**旧 skill 留下的那几个已知文件**会被清掉
+（`scripts/idea.py`、`scripts/run-tests.sh`、`references/openapi.json`、
+`tests/test_cli.py`、`__pycache__` 里的 `.pyc`），
+目录只在**空了之后**才删（`rmdir`）—— 里面还有你自己的文件就留着，
+不认识的条目只警告、不删。
 薄壳的约定是「那个目录里只有两个文件」—— 留着别的东西，agent 可能会直接去读它。
 
 装完之后 agent 需要**重新扫一遍本地 skill 目录**才会发现它；
@@ -310,10 +331,14 @@ python3 "$SKILL/scripts/fetch.py" /openapi/v1.json       # 完整接口契约
 
 取件器把清单里的每个文件都取下来、逐个校验 sha256，全部通过才切到新版本 ——
 中途失败就保留上一版，不会出现「手册是新的、别的是旧的」。
-服务端暂时连不上、但本地有完好缓存时，它在 stderr 上打一行 `warning:`，
-这时拿到的是**上一版**手册。
+服务端暂时连不上、但本地有**完好**缓存时，它在 stderr 上打一行 `degraded_cache:`，
+并以**退出码 3** 退出 —— 这时 stdout 上是**上一版**手册（不是服务端的当前版本）。
+**退出码 3 是专属的**：只表示「这次拿到的是上一版」，与其它失败区分得开。
+agent 看到它该**重试一次**，或提醒用户「服务端暂时不可达」——
+上一版手册会让 agent 按旧语义操作，那正是这套改造要消除的东西。
 
-取件**硬失败**时，它往 stderr 打**一行** `code: detail`、退出码非 0（不吐 traceback）。
+取件**硬失败**时（不是上面那种降级），它往 stderr 打**一行** `code: detail`、
+退出码非 0（不吐 traceback）。
 每个码是什么意思，见手册的 `references/errors.md`；
 薄壳 `SKILL.md` 里也有一份精简的排查提示（缺配置、鉴权不对、没分发、内容对不上……）。
 

@@ -464,7 +464,11 @@ Expected: 全部 PASS。
 - `skill_not_distributed`：服务端没有分发 skill 内容（部署漏了 `skill/` 目录）。
 - `not_found`：要取的文件不存在。
 - `skill_integrity_error`：取到的内容与服务端清单对不上（多半是传输中被改了），重试一次。
-- 服务端暂时连不上、但本地有缓存时：stderr 会有一行 `warning:`，这时拿到的是**上一版**手册。
+- `degraded_cache`：服务端暂时连不上、但本地有**完好**缓存时 —— stderr 打一行
+  `degraded_cache:`、**退出码 3**，stdout 上是**上一版**手册。
+  agent 该**重试一次**，或提醒用户「服务端暂时不可达」——
+  上一版手册会让 agent 按旧语义操作，那正是这套改造要消除的东西。
+  （**退出码 3 是专属的**：只看退出码、不看 stderr 的调用方靠它区分「拿到的是上一版」。）
 ```
 
 - [ ] **Step 5: 写安装脚本**
@@ -473,6 +477,11 @@ Expected: 全部 PASS。
 
 - 用法：`bash skills/install-agent-skill.sh [目标目录]`；默认目标 `~/.zcode/skills/idea-manager`。
 - 幂等：目标目录已存在就覆盖 `SKILL.md` 与 `scripts/fetch.py`。
+- 清理旧形状残留：**只删旧 skill 特有的那几个具体文件**
+  （`scripts/idea.py`、`scripts/run-tests.sh`、`references/openapi.json`、
+  `tests/test_cli.py`、`__pycache__` 里的 `.pyc`），
+  目录**只在空了之后**用 `rmdir` 删 —— `rm -rf` 整个 `references/`、`tests/`
+  会连用户自己的东西一起删（而且护栏会被脚本自己写的 `SKILL.md` 绕过去）。
 - 从 `skills/idea-manager-client/` 拷 `SKILL.md` 与 `scripts/fetch.py`（后者 `chmod +x`）。
 - 结束时打印：装到了哪里、下一步要设哪几个环境变量。
 - 脚本自身不读凭据、不写凭据。
