@@ -360,9 +360,13 @@
 
   在 `server/IdeaApp/Infrastructure/SearchIndexInitializer.cs` 里实现 `EnsureIndexed(SqliteDatabase db)`：
 
-  1. 开一个连接，读 `SELECT value FROM search_meta WHERE key = 'index.version'`。
+  1. 开一个连接，**在事务外**读 `SELECT value FROM search_meta WHERE key = 'index.version'`。
+     放在事务外是有意的：版本对得上时**不该占写锁** —— 每次启动都 `BEGIN IMMEDIATE` 会跟正在跑的实例抢锁。
   2. 值等于 `SearchIndex.CurrentVersion` → 直接返回（什么都不做）。
-  3. 否则在**一个事务**里：
+  3. 否则开一个事务（Microsoft.Data.Sqlite 的 `BeginTransaction()` 发的是 **BEGIN IMMEDIATE**，会拿写锁），**在事务内再读一次版本号**：
+     - 期间别的实例可能已经重建过了 → 版本已是当前值 → **直接 no-op**（回滚即可）。这样两个实例同时启动不会重复重建。
+     - 版本仍是旧值 → 继续重建。
+  4. 在**这个事务**里：
      - `DELETE FROM idea_fts; DELETE FROM project_fts; DELETE FROM tag_fts;`
      - 灌入全部数据：
        - 标签：`SELECT id, name FROM tag` → 逐条 `SearchIndex.UpsertTag`（用 `tag_fts` 的 rowid = `tag.id`）。
