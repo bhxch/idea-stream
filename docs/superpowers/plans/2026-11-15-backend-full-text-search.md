@@ -661,6 +661,9 @@
        ```
        （`all` 是升序，最老的在 `[0]`，最新的在 `[Count-1]`；`offset` 是「跳过最新的 N 条」）
     4. 每条转 DTO 时，若有关键词且命中，填 `Matches`（用 `TextTokenizer.FindMatches` 对 `title` / `content` / 标签名 / 项目名各算一遍，`Field` 分别是 `"title"` / `"content"` / `"tags"` / `"project"`）。
+       ⚠️ **项目名要从库里取，而且要缓存**：领域类型 `Idea` 里只有 `ProjectId`，没有项目名。
+       用一个**按项目 id 缓存的字典**取（同一页里通常只有 1–5 个不同项目），**不要逐条查库**。
+       ⚠️ **`IdeaService.ToDto` 不动** —— 它被创建/更新/合并等所有路径共用，`matches` 只在**列表这一条路径**上填。
 
 - [ ] **Step 6: 端点收参数**
 
