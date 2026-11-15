@@ -487,9 +487,12 @@
         ReadProjectName(connection, transaction, idea.ProjectId));
     ```
     `ReadProjectName` 是要**新增的私有静态方法**：`SELECT name FROM project WHERE id = $projectId`，查不到返回空串。
+    ⚠️ **标签名必须用 `ReadTagNames` / `GetTagNames` 读回来的那份（它按 `t.name COLLATE NOCASE ASC, t.name ASC` 排序），不要直接用调用方给的标签列表。** 回填路径是把标签名**按名称排序后**再拼的（`SearchIndexInitializer` 里 `group_concat` 子查询带 `ORDER BY`），增量路径必须逐字节一致 —— 否则同一条想法在两条路径下写出的 `tags` 列文本不同：普通匹配不受影响，但**跨两个标签的短语查询**会受影响（`"咖 啡"` 这种短语要相邻）。
   - `UpdateContent`：拿到 `nextTitle` / `nextContent` 之后调 `SearchIndex.UpsertIdea(...)`（标签与项目名沿用库里的现值：`GetTagNames(id)` 与 `ReadProjectName(...)`）。
   - `ReplaceTags`：`WriteTagLinks` 之后调 `SearchIndex.UpsertIdea(...)`；**新建的标签**要写 `tag_fts` —— 标签行是在 `EnsureTag` 里创建的，所以要在 `EnsureTag` 新建行之后调一次 `SearchIndex.UpsertTag(connection, transaction, name)`（复用了已有行就不必再写）。
+    ⚠️ 传给 `UpsertIdea` 的标签名同样要用 `ReadTagNames` / `GetTagNames` 读回来的**排序版**，不要用 `ReplaceTags` 的入参（那是用户给的顺序）。
   - `HardDelete`：**先** `SearchIndex.DeleteIdea(connection, transaction, id)`，**再** `DELETE FROM idea WHERE id = $id`（`DeleteIdea` 靠 idea 行取 rowid，顺序反了就取不到）。
+    ⚠️ **并且要把 `HardDelete` 从 `Execute` 改成 `Write`**：现在它走 `Execute`（单语句助手；没有外层事务时是**两次独立自动提交**）→ 索引行删了、业务行没删的话，那条想法就再也搜不到了（没有异常、没有日志）。`Write` 助手自带事务，两条语句要么都成、要么都不成。
   - `SoftDelete` / `Restore` / `SetDone` / `SoftDeleteByProject` / `RestoreWithProject`：**不动**。
 
 - [ ] **Step 4: 让 `ProjectRepository` 同步索引**
@@ -497,7 +500,7 @@
   在 `server/IdeaApp/Infrastructure/ProjectRepository.cs` 里：
 
   - `Insert`：插入 `project` 行之后调 `SearchIndex.UpsertProject(connection, transaction, id, name)`。
-  - `Rename`：更新 `project` 行之后调 `SearchIndex.UpsertProject(connection, transaction, id, name)`；**并重建该项目下所有想法的 `project` 列** —— 做法是查出该项目下所有想法的 id，然后逐条调 `SearchIndex.UpsertIdea`（标题/正文/标签从库里读，项目名用新名字）。
+  - `Rename`：更新 `project` 行之后调 `SearchIndex.UpsertProject(connection, transaction, id, name)`；**并重建该项目下所有想法的 `project` 列** —— 做法是查出该项目下所有想法的 id，然后逐条调 `SearchIndex.UpsertIdea`（标题/正文从库里读，**标签用 `ReadTagNames` 读回来的排序版**，项目名用新名字）。
     - 想法数量是几百到几千级，重建成本可忽略。
   - `SoftDelete` / `Restore` / `Reorder`：不动。
 
