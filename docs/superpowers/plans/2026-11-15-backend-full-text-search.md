@@ -577,10 +577,10 @@
   /// 把 HTTP 查询参数翻译成查询条件。
   /// keyword / limit / offset 是新增的：关键词走全文索引，limit+offset 是往回翻历史的分页。
   public static IdeaQuery ParseQuery(string? projectId, string? status, string? tags,
-                                     string? tagMode, string? q, int? limit, int? offset);
+                                     string? tagMode, string? q, string? limit, string? offset);
 
   /// 按查询条件列出想法。给了 limit 就只返回那一页（往回翻历史）。
-  public IReadOnlyList<IdeaDto> List(IdeaQuery query, string? keyword, int? limit, int? offset);
+  public IReadOnlyList<IdeaDto> List(IdeaQuery query, string? keyword, string? limit, string? offset);
   ```
   `IdeaQuery` **不变**（关键词不进 `IdeaQuery` —— `IdeaFilter.Matches` 不判关键词，两套语义打架会误杀）。
 
@@ -650,7 +650,7 @@
     - `offset` → null 视为 0；小于 0 → 400 `invalid_pagination`；大于 0 而 `limit` 为 null → 400 `invalid_pagination`。
     - 关键词、limit、offset **都不进 `IdeaQuery`**（`IdeaQuery` 只管项目/状态/标签/模式）。
   - `List(IdeaQuery query)` 保留原签名（内部按不过滤调用新的重载）。
-  - 新增 `List(IdeaQuery query, string? keyword, int? limit, int? offset)`：
+  - 新增 `List(IdeaQuery query, string? keyword, string? limit, string? offset)`：
     1. `var all = repo.List(query, keyword);` —— 已是 `updated_at ASC` 顺序。
     2. **不给 limit** → 检查 `all.Count > options.Value.Api.MaxIdeasPerResponse` → 抛 `too_many_ideas`（与今天一样）；返回全部。
     3. **给了 limit** → 不检查上限；切片：
@@ -760,6 +760,7 @@
   }
   ```
   `GET /api/search` 的查询参数：`q`（必填）、`limit`（默认 20，1..100）、`offset`（默认 0，≥0）、`includeTrash`（默认 true）。
+  ⚠️ **`limit` / `offset` 绑 `string?`（不是 `int?`）**，由服务层自己解析 —— 理由与 Task 4 相同：绑 `int?` 时非数字输入回的是**空 body、没有 code** 的 400（实测），agent 读到不知道错在哪。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -830,7 +831,7 @@
       ⚠️ **这里跟 `/api/ideas` 不同**：`/api/ideas` 的纯标点查询按「不过滤」处理（Review Focus 第 4 条），`/api/search` 同样处理 —— 全是标点的搜索词没有意义，返回空页更诚实。**两处口径必须一致**，按 `/api/ideas` 的口径来（不过滤 → 返回全部），规格 §11.3 的 `q` 只要求「trim 后为空」才 400。
     - 分别调三个仓储方法，组装成 `SearchPage<T>`（`HasMore = offset + items.Length < total`）。
   - `SearchEndpoints.cs`：
-    - `app.MapGet("/api/search", (string? q, int? limit, int? offset, bool? includeTrash, SearchService service) => ...)`
+    - `app.MapGet("/api/search", (string? q, string? limit, string? offset, bool? includeTrash, SearchService service) => ...)`
     - 参数默认值：`limit` → 20、`offset` → 0、`includeTrash` → true（**`includeTrash` 默认是 `true`**）。
     - 返回 `Results.Json(response, IdeaJsonContext.Default.SearchResponse)` —— **必须显式带 `JsonTypeInfo`**，这是 AOT 的硬要求（漏了 AOT 产物 500，普通测试测不出来）。
     - `.Produces<SearchResponse>(StatusCodes.Status200OK)` 与 `.ProducesApiProblem(StatusCodes.Status400BadRequest, "invalid_pagination", "invalid_search_query")`。
