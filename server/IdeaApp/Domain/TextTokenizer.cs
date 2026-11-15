@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace IdeaApp.Domain;
@@ -23,10 +24,20 @@ public sealed record TextMatch(int Start, int Length);
 /// 规则（规格 §7.1）：
 /// <list type="number">
 /// <item>连续的 ASCII 字母 / 数字合并成一个词元，并转小写。</item>
-/// <item>其余字符逐字成一个词元。</item>
-/// <item>空白是分隔符，不产生词元。</item>
-/// <item>标点与符号一律丢弃（半角与全角一视同仁）。</item>
+/// <item>其余词元字符逐字成一个词元。</item>
+/// <item>非词元字符一律丢弃，只当分隔符（半角与全角一视同仁）。</item>
 /// </list>
+///
+/// **词元字符 = Unicode 一般类别以 <c>L</c>（字母）或 <c>N</c>（数字）开头的字符**，
+/// 其余（标点、符号、<c>Cf</c> 零宽连接符与变体选择符、<c>Cc</c> 控制字符、
+/// <c>Mn</c> 组合记号……）全是分隔符。
+///
+/// 为什么这条边界要跟 FTS5 靠齐：FTS5 的 <c>unicode61</c> 划 token 字符的依据
+/// 正是「一般类别以 L 或 N 开头」，其余一律当分隔符。我们保留的字符集合是它的**子集** ——
+/// 我们保留下来的每个字符，unicode61 也会保留 → 「FTS 命中了却算不出高亮区间」
+/// 这一类偏差彻底不存在。若我们多留一个 <c>Cf</c>（零宽连接符），
+/// 正文 <c>a&lt;ZWJ&gt;b</c> 在索引里是 <c>[a, b]</c> 两个 token，
+/// 而服务端算出的却是 <c>[a, ZWJ, b]</c> 三个 —— 两边对不上。
 ///
 /// 为什么自己写而不用分词库：发布是 AOT 的，装不进原生扩展，也不接受运行期反射；
 /// 而规则本身并不复杂 —— 中文正文里「逐字成词 + 短语查询」的语义已经等价于子串匹配。
@@ -37,15 +48,14 @@ public sealed record TextMatch(int Start, int Length);
 ///
 /// 遍历单位是 Unicode 标量值（rune）而不是 UTF-16 code unit：
 /// emoji 是代理对，按 char 遍历会被切成两个半截词元。
-/// 判定用 <see cref="Rune.IsPunctuation"/> / <see cref="Rune.IsSymbol"/> /
-/// <see cref="Rune.IsWhiteSpace"/> —— 这些 API 在 <c>InvariantGlobalization=true</c> 下也可用，
-/// 不依赖 ICU。
+/// 判定用 <see cref="Rune.GetUnicodeCategory"/> / <see cref="Rune.IsWhiteSpace"/> ——
+/// 这些 API 在 <c>InvariantGlobalization=true</c> 下也可用，不依赖 ICU。
 /// </summary>
 public static class TextTokenizer
 {
     /// <summary>
-    /// 切词：ASCII 字母数字合并成词并转小写；其余字符逐字一个；
-    /// 标点与空白丢弃。索引侧与查询侧共用这一个实现。
+    /// 切词：ASCII 字母数字合并成词并转小写；其余词元字符逐字一个；
+    /// 非词元字符（标点、符号、格式符、控制符等）丢弃。索引侧与查询侧共用这一个实现。
     /// </summary>
     /// <param name="text">待切分的原文。</param>
     /// <returns>词元序列，按出现顺序；没有词元时返回空序列。</returns>
@@ -135,6 +145,10 @@ public static class TextTokenizer
     /// <param name="query">用户输入的查询串。</param>
     /// <returns>
     /// 命中区间列表，按「查询段的先后」排列，同一段内的多处命中按在原文里的先后排列。
+    ///
+    /// ⚠️ **同一查询可能产出重复或重叠的区间**：查询「咖啡 咖啡」会产出两处一模一样的区间；
+    /// 「哈哈哈哈」搜「哈哈」会产出两处自重叠的区间（滑动比较逐位推进）。
+    /// **调用方需自行合并**（去重 + 合并重叠），否则前端会渲染出嵌套的高亮。
     /// </returns>
     /// <remarks>
     /// 为什么不用 FTS5 的 offsets()：FTS5 压根没有这个函数（那是 FTS3/4 的），
@@ -216,8 +230,8 @@ public static class TextTokenizer
             // 词元与词元之间要靠分隔符断开，先把攒着的 ASCII 词结算掉。
             FlushWord();
 
-            // 空白、标点、符号一律丢弃（半角全角一样）—— 它们只当分隔符。
-            if (!Rune.IsWhiteSpace(rune) && !Rune.IsPunctuation(rune) && !Rune.IsSymbol(rune))
+            // 只有词元字符（L*/N*）才成词元，其余（标点、符号、Cf、Cc、Mn……）一律丢弃。
+            if (IsTokenChar(rune))
             {
                 tokens.Add(new TextToken(rune.ToString().ToLowerInvariant(), offset, length));
             }
@@ -243,6 +257,31 @@ public static class TextTokenizer
     }
 
     /// <summary>
+    /// 判断一个字符是不是「词元字符」。
+    /// </summary>
+    /// <param name="rune">待判断的字符。</param>
+    /// <returns>一般类别以 L（字母）或 N（数字）开头则返回 true。</returns>
+    /// <remarks>
+    /// 这条边界是**量出来的，不是猜的**：FTS5 的 <c>unicode61</c> 也是按
+    /// 「一般类别以 L 或 N 开头」划 token 字符，其余全是分隔符
+    /// （实测：<c>中</c>/<c>é</c>/<c>ʰ</c>/<c>0</c>/<c>①</c>/<c>〇</c> 是 token 字符；
+    /// <c>，</c>/<c>—</c>/<c>$</c>/<c>→</c>/<c>😀</c>/零宽连接符/变体选择符/C1 控制字符 都是分隔符）。
+    /// 我们保留的集合是它的**子集** → 我们保留下来的每个字符 unicode61 也会保留
+    /// → 「FTS 命中了却算不出高亮区间」这一类偏差彻底不存在。
+    /// </remarks>
+    private static bool IsTokenChar(Rune rune)
+    {
+        return Rune.GetUnicodeCategory(rune) is UnicodeCategory.UppercaseLetter
+            or UnicodeCategory.LowercaseLetter
+            or UnicodeCategory.TitlecaseLetter
+            or UnicodeCategory.ModifierLetter
+            or UnicodeCategory.OtherLetter
+            or UnicodeCategory.DecimalDigitNumber
+            or UnicodeCategory.LetterNumber
+            or UnicodeCategory.OtherNumber;
+    }
+
+    /// <summary>
     /// 判断一个码位是不是 ASCII 字母或数字。
     /// </summary>
     /// <param name="rune">待判断的字符。</param>
@@ -265,10 +304,37 @@ public static class TextTokenizer
     /// </summary>
     /// <param name="query">用户输入的查询串。</param>
     /// <returns>各段文本，不含空白、不含空段。</returns>
-    private static string[] SplitSegments(string query)
+    /// <remarks>
+    /// 用的就是切词那一套空白判定（<see cref="Rune.IsWhiteSpace"/>）——
+    /// 另用一套 <c>char.IsWhiteSpace</c> 看着等价，实际是两套规则，迟早漂移。
+    /// </remarks>
+    private static List<string> SplitSegments(string query)
     {
-        // separator 传 null = 按空白切（char.IsWhiteSpace 与 Rune.IsWhiteSpace 是同一套码位）。
-        return query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var segments = new List<string>();
+        var current = new StringBuilder();
+
+        foreach (var rune in query.EnumerateRunes())
+        {
+            if (Rune.IsWhiteSpace(rune))
+            {
+                if (current.Length > 0)
+                {
+                    segments.Add(current.ToString());
+                    current.Clear();
+                }
+
+                continue;
+            }
+
+            current.Append(rune);
+        }
+
+        if (current.Length > 0)
+        {
+            segments.Add(current.ToString());
+        }
+
+        return segments;
     }
 
     /// <summary>

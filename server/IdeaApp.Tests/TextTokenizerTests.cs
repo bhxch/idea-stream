@@ -45,6 +45,35 @@ public sealed class TextTokenizerTests
     }
 
     [Fact]
+    public void Tokenize_uses_punctuation_as_a_separator()
+    {
+        // 连字符是分隔符：a-b 切成两个词元，而不是一个。
+        Assert.Equal(new[] { "a", "b" }, TextTokenizer.Tokenize("a-b"));
+    }
+
+    [Fact]
+    public void Tokenize_treats_whitespace_as_a_separator()
+    {
+        // 空白是分隔符：两个词元，但仍然相邻（短语查询照样命中）。
+        Assert.Equal(new[] { "咖", "啡" }, TextTokenizer.Tokenize("咖 啡"));
+    }
+
+    [Fact]
+    public void Tokenize_drops_combining_marks()
+    {
+        // U+0301 是 Mn（组合记号）—— 不是 L*/N*，丢弃。
+        // 留着它会切出一个看不见的词元，与 FTS5 的 unicode61 对不上。
+        Assert.Equal(new[] { "a", "b" }, TextTokenizer.Tokenize("a\u0301b"));
+    }
+
+    [Fact]
+    public void Tokenize_drops_zero_width_joiners()
+    {
+        // U+200D 是 Cf（格式）—— 丢弃，否则 emoji 组合序列会切出隐形词元。
+        Assert.Equal(new[] { "a", "b" }, TextTokenizer.Tokenize("a\u200Db"));
+    }
+
+    [Fact]
     public void Tokenize_returns_nothing_for_punctuation_only_text()
     {
         Assert.Empty(TextTokenizer.Tokenize("..."));
@@ -142,6 +171,13 @@ public sealed class TextTokenizerTests
         // 英文是词级：搜 "hel" 命中不了 "Hello"。
         Assert.Equal(new[] { new TextMatch(0, 5) }, TextTokenizer.FindMatches("Hello world", "hello"));
         Assert.Empty(TextTokenizer.FindMatches("Hello world", "hel"));
+    }
+
+    [Fact]
+    public void FindMatches_does_not_match_a_prefix_of_a_merged_english_word()
+    {
+        // 英文数字合并成一个词元：搜 "hello" 命中不了 "Hello520"。
+        Assert.Empty(TextTokenizer.FindMatches("Hello520", "hello"));
     }
 
     [Fact]
