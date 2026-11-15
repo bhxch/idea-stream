@@ -1515,7 +1515,7 @@ describe('HomePage', () => {
     toastHost.unmount();
   });
 
-  it('改成不符合当前状态过滤的条目不会被从数据集里删掉（切回过滤条件还在）', async () => {
+  it('改成不符合当前状态过滤的条目会从当前视图里消失（切回「全部」还在）', async () => {
     vi.useFakeTimers();
     try {
       const wrapper = mount(HomePage);

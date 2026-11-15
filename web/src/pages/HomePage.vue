@@ -419,7 +419,7 @@ async function onSelectProject(id: string | null): Promise<void> {
     return;
   }
   if (isTooManyIdeas(result.error)) {
-    // 切「全部项目」会一次要全库，超了上限 —— 这不是普通的失败，
+    // 命中数超过单次返回上限 —— 这不是普通的失败，
     // 改切最近有活动的项目（补救在 recoverFromTooMany 里）。
     await recoverFromTooMany(result.error, id);
     return;
@@ -476,8 +476,9 @@ async function onChangeSortMode(mode: ProjectSortMode): Promise<void> {
 /**
  * 加载想法列表失败时的分派。
  *
- * 「全部项目」一次要拉回全库，会撞上服务端的单次返回上限（`too_many_ideas`）——
- * 这不是普通的失败，得给一条能照着做的提示。
+ * `too_many_ideas`（命中数超过单次返回上限）**只在没给 `limit` 时**才会出现 ——
+ * 前端现在每次都带 `limit`，所以这条路径基本走不到；留着是兜底
+ * （万一哪个入口漏发了 `limit`），别把它当成常事。
  */
 async function handleIdeasError(error: unknown, failedProjectId: string | null): Promise<void> {
   if (isTooManyIdeas(error)) {
