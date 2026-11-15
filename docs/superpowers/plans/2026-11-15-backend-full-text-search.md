@@ -1264,7 +1264,7 @@
 
   | 测试 | 断言 |
   |---|---|
-  | `highlightLines_marks_the_matching_range` | 原文「咖啡机滤芯」，命中 `{field:'content',start:0,length:2}` → 第一行只有一个片段，文本是「咖啡机滤芯」，`marked` 为 true |
+  | `highlightLines_marks_the_matching_range` | 原文「咖啡机滤芯」，命中 `{field:'content',start:0,length:2}` → 第一行切成两个片段：`[{text:'咖啡',marked:true},{text:'机滤芯',marked:false}]`（**按命中区间切**，命中区间之外的字是未命中片段 —— 与服务端 `TextTokenizer.FindMatches` 给出的区间、以及设计文档 §13.7 一致） |
   | `highlightLines_splits_unmatched_text` | 原文「买咖啡机」，命中 start=1,length=2 → 片段是 `[{text:'买',marked:false},{text:'咖啡',marked:true},{text:'机',marked:false}]` |
   | `highlightLines_offsets_are_relative_to_the_whole_text` | 原文「第一行\n第二行咖啡」，命中 start=7,length=2 → 第二行的片段是「咖啡」且 `marked` 为 true（第一行的片段全未命中） |
   | `highlightLines_with_no_matches_returns_plain_lines` | 无命中 → 每行一个未命中片段 |
