@@ -149,10 +149,16 @@
 
 规则，对**索引侧文本**和**查询侧文本**完全一致：
 
-1. **连续的 ASCII 字母 / 数字**合并成**一个** token，并转小写。`Hello520` → `hello520`。
-2. **其余字符逐字成一个 token**。`世界` → `世`、`界`。
-3. **空白**是分隔符，不产生 token。
-4. **标点与符号一律丢弃**（当作分隔符）。**半角与全角一视同仁**。
+1. **token 字符 = Unicode 一般类别以 `L` 或 `N` 开头的字符**（字母与数字）。其余一律是**分隔符，丢弃** —— 标点、符号、`Cf`（零宽连接符、变体选择符）、`Cc`（控制字符）、`Mn`（组合记号）全都丢。
+2. **连续的 ASCII 字母 / 数字**合并成**一个** token，并转小写。`Hello520` → `hello520`。
+3. **其余的 token 字符逐字成一个 token**。`世界` → `世`、`界`。
+4. **空白**是分隔符，不产生 token。
+
+> **第 1 条的边界是量出来的，不是猜的。** FTS5 的 `unicode61` 也是按「`L*`/`N*` 是 token 字符、其余是分隔符」划分的 —— 实测：`中`(Lo)、`é`(Ll)、`ʰ`(Lm)、`0`(Nd)、`①`(No)、`〇`(Nl) 是 token 字符；`，`(Po)、`—`(Pd)、`$`(Sc)、`→`(Sm)、`😀`(So)、ZWJ(Cf)、变体选择符(Cf)、C1 控制字符(Cc) 都是分隔符。
+>
+> **我们保留的字符集合是 unicode61 的子集** → 我们保留下来的每个字符 unicode61 也会保留 → 「FTS 命中了、但算不出高亮区间」这一类偏差**彻底不存在**。规格 §12.2 的那句承诺靠这条成立。
+>
+> 反过来（unicode61 保留、我们丢弃的字符，比如 `Mn` 组合记号）不影响：我们把它从索引文本里丢掉了，unicode61 根本看不到它。
 
 **遍历单位是 Unicode 标量值（rune），不是 UTF-16 code unit** —— 否则 emoji（代理对）会被切成两个半截 token。
 
@@ -174,12 +180,14 @@
 | `👍 咖啡` | `咖` `啡`（emoji 是 Symbol，被丢弃） |
 | `咖 啡` | `咖` `啡`（空白是分隔符） |
 | `...` | 空（全是标点） |
+| `a` + U+0301（组合锐音符）+ `b` | `a` `b`（`Mn` 不是 `L*`/`N*`，丢弃） |
+| `a` + U+200D（零宽连接符）+ `b` | `a` `b`（`Cf` 丢弃） |
 
-> **第 4 条是我的定**。理由：标点进索引会让索引明显变大（中文正文里逗号句号极多），而收益只在「`ab` 不该命中 `a-b`」这种窄边界上 —— 而这个边界已经被规则 1 顺带解决了（`ab` 是一个英文词 token，`a-b` 索引出来是 `a`、`b` 两个 token，两者匹配不上）。
+> **第 1 条是我的定**（量出来的）。标点与符号进索引会让索引明显变大（中文正文里逗号句号极多），而收益只在「`ab` 不该命中 `a-b`」这种窄边界上 —— 而这个边界已经被规则 2 顺带解决了（`ab` 是一个英文词 token，`a-b` 索引出来是 `a`、`b` 两个 token，两者匹配不上）。
 >
 > **半角与全角必须一起丢**：若全角逗号保留成一个 token，正文 `咖啡，水温` 的 token 序列就是 `[咖,啡,，,水,温]`，搜「咖啡水温」的短语查询 `"咖 啡 水 温"` **不匹配** —— 中文正文里逗号句号遍地都是，这个坑会天天踩。
 >
-> 丢弃标点后，token 只可能是 `[a-z0-9]+` 或**单个非 ASCII 字符**。ASCII 的 FTS5 语法字符（`"`、`*`、`(`、`)`、`:`、`^`、`-` 等）都是标点或控制字符，**被丢弃后不可能出现在 token 里** → MATCH 串不需要转义。
+> 丢弃之后，token 只可能是 `[a-z0-9]+` 或**单个非 ASCII 的 L*/N* 字符**。ASCII 的 FTS5 语法字符（`"`、`*`、`(`、`)`、`:`、`^`、`-` 等）都是标点或控制字符，**被丢弃后不可能出现在 token 里** → MATCH 串不需要转义。
 
 **分词器放哪**：`Domain` 层，纯函数、无 IO、有单测。索引侧与查询侧共用同一个实现 —— 这是语义一致的唯一保证。
 
@@ -242,17 +250,17 @@
 -- （external content 表会用本表的 tokenize 去处理原文，中文会整段成一个 token）。
 CREATE VIRTUAL TABLE IF NOT EXISTS idea_fts USING fts5(
     title, content, tags, project,
-    tokenize = 'unicode61'
+    tokenize = 'unicode61 remove_diacritics 0'
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS project_fts USING fts5(
     name,
-    tokenize = 'unicode61'
+    tokenize = 'unicode61 remove_diacritics 0'
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS tag_fts USING fts5(
     name,
-    tokenize = 'unicode61'
+    tokenize = 'unicode61 remove_diacritics 0'
 );
 
 -- 索引元信息。key='index.version'，value='1'。
@@ -262,6 +270,8 @@ CREATE TABLE IF NOT EXISTS search_meta (
     value TEXT NOT NULL
 );
 ```
+
+**`remove_diacritics 0` 是必须的**：unicode61 **默认会折叠变音符**（实测：`MATCH 'arger'` 能命中索引里的 `ärger`）。而我们的分词器**保留**变音符 —— 不关掉的话，搜「arger」会命中「Ärger」那条，但服务端按自己的规则算不出高亮区间，又变成「搜得到却高亮不出来」。关掉之后 unicode61 与分词器的口径完全一致。
 
 **为什么不用 `content='idea'`（external content）**：external content 表的 tokenize 作用于**原表内容**，而我们要的是「先自己切分、再交给 unicode61」。unicode61 会把整段中文当成一个 token —— 正是 §6.2 实测出的致命问题。所以索引里必须存**自己切好的 token 串**。
 
