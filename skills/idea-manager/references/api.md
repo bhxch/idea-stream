@@ -63,6 +63,7 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 - **默认含回收站**：软删的条目照样搜得到，每条带 `trashed` 标记；
   `includeTrash=false` 才只要未删的。
   （`GET /api/ideas` 相反：它**只返回活着的**想法，从不带 `trashed`。）
+  `includeTrash` **只给 `true` / `false`**：给别的值是**空 body、没有 `code`** 的 400。
 - `limit` 默认 **20**（范围 1..100），`offset` 默认 0 →
   **只给 `offset` 不给 `limit` 在这里是合法的**（`GET /api/ideas` 不行：那边 `limit` 没有默认值）。
 - **`q` 是必填的**：缺失或只有空白 → 400 `invalid_search_query`。
@@ -227,9 +228,10 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
 - 列表一律是**裸数组**：`[{...}, {...}]`，没有信封对象。
   （`GET /api/search` 是例外：它是 `{ query, ideas, projects, tags }`，见上面。）
 - 想法列表的排序恒为 `updated_at` 升序、`id` 升序（**最老的在顶、最新的在底**）。
-- 带 `q` 时每条想法多一个 `matches` 数组（命中位置）：
+- 带**有效**关键词（`q` 非空、且不全是标点）时每条想法多一个 `matches` 数组（命中位置）：
   `{ field, start, length }`，`field` 是 `title` / `content` / `tags` / `project`，
   `start` 与 `length` 是那个字段里的 **UTF-16 偏移**。
-  **不带 `q` 时没有这个键** —— 键在不在，就是「这次是不是带关键词」的信号。
+  **没有有效关键词时没有这个键**（不给 `q`、只给空白、只给标点都没有）——
+  键在不在，就是「这次是不是带关键词」的信号。
 - 命中数超过单次返回上限时是 400 `too_many_ideas`（**不静默截断**）——
   加 `projectId` / `status` / `tags` 把范围收窄，或给 `limit` 分页。

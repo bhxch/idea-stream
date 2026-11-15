@@ -116,6 +116,7 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 7. **搜索的坑**：英文是**词级**（搜 `hel` 搜不到 `hello`）；多个词之间是 **AND**
    （`咖啡 水温` 要求两个都出现）；**`offset` 的含义不一样** ——
    `/api/ideas` 是「跳过最新的 N 条」（往回翻历史），`/api/search` 是「跳过最相关的 N 条」。
+   **`/api/search` 的 `q` 必填，契约里却标成可选** —— 少给就是 400 `invalid_search_query`。
    逐条见 `references/api.md`。
 
 ## 错误的最短约定
