@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue';
 import { apiGet, apiSend } from '../api/client';
 import type { Idea, Project, TrashEntry } from '../api/types';
 import PageNav from '../components/PageNav.vue';
+import { showToast } from '../components/ToastHost.vue';
 import { reportError } from '../lib/errors';
 import { formatRelativeTime } from '../lib/format';
 import { loadProjects, projects } from '../stores/projects';
@@ -72,6 +73,7 @@ async function restoreProject(projectId: string): Promise<void> {
   busyId.value = projectId;
   try {
     await apiSend<Project>('POST', `/projects/${projectId}/restore`);
+    showToast('项目已恢复', 'info');
     await load();
   } catch (error) {
     reportError(error, '恢复项目失败');
@@ -93,6 +95,7 @@ async function restoreIdea(ideaId: string): Promise<void> {
   busyId.value = ideaId;
   try {
     await apiSend<Idea>('POST', `/ideas/${ideaId}/restore`);
+    showToast('想法已恢复', 'info');
     await load();
   } catch (error) {
     reportError(error, '恢复想法失败');

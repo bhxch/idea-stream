@@ -214,6 +214,34 @@ describe('TrashPage', () => {
     wrapper.unmount();
   });
 
+  it('恢复项目成功给一句提示（info）', async () => {
+    const wrapper = mountPage();
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    await wrapper.get('.trash__entry--container .trash__restore').trigger('click');
+    await flushPromises();
+
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('项目已恢复');
+    expect(toastHost.findAll('.toast').at(-1)?.classes()).toContain('toast--info');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
+  it('恢复想法成功给一句提示（info）', async () => {
+    const wrapper = mountPage();
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    await wrapper.get('.trash__entry--idea .trash__restore').trigger('click');
+    await flushPromises();
+
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('想法已恢复');
+    expect(toastHost.findAll('.toast').at(-1)?.classes()).toContain('toast--info');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
   it('容器里的想法能单独恢复（项目还在回收站时也恢复得了）', async () => {
     const wrapper = mountPage();
     await flushPromises();

@@ -84,6 +84,7 @@ async function onCreate(): Promise<void> {
   try {
     await apiSend<Project>('POST', '/projects', { name });
     newName.value = '';
+    showToast('项目已创建', 'info');
     // 重新拉一次：后端给的顺序（尤其是手动排序下的 sort_order）才是真的。
     await loadProjects();
   } catch (error) {
@@ -114,6 +115,7 @@ async function onSaveRename(project: Project): Promise<void> {
     const updated = await apiSend<Project>('PATCH', `/projects/${project.id}`, { name });
     // 用后端返回的项目覆盖本地（名字是后端规范化过的）。
     projects.value = projects.value.map((item) => (item.id === updated.id ? updated : item));
+    showToast('项目已改名', 'info');
     cancelRename();
   } catch (error) {
     reportError(error, '改名失败');
@@ -140,6 +142,7 @@ async function onDelete(project: Project): Promise<void> {
   try {
     await apiSend<void>('DELETE', `/projects/${project.id}`);
     confirmingId.value = null;
+    showToast('项目已删除', 'info');
     await loadProjects();
   } catch (error) {
     reportError(error, '删除项目失败');

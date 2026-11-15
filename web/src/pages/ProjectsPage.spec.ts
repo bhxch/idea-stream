@@ -135,8 +135,29 @@ describe('ProjectsPage', () => {
     wrapper.unmount();
   });
 
-  it('新建失败时给提示（不静默吞掉）', async () => {
+  it('新建成功给一句提示（info）', async () => {
     apiSend.mockImplementation((method: string) => {
+      if (method === 'POST') {
+        return Promise.resolve({ ...projectList[0], id: 'project-new', name: '新项目' });
+      }
+      return Promise.resolve(projectList);
+    });
+
+    const wrapper = mountPage();
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    await wrapper.get('.projects__new-input').setValue('新项目');
+    await wrapper.get('form.projects__new').trigger('submit');
+    await flushPromises();
+
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('项目已创建');
+    expect(toastHost.findAll('.toast').at(-1)?.classes()).toContain('toast--info');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
+  it('新建失败时给提示（不静默吞掉）', async () => {    apiSend.mockImplementation((method: string) => {
       if (method === 'POST') {
         return Promise.reject(
           new ApiError({ title: '请求失败', status: 400, detail: '项目名称不能为空', code: 'invalid_project_name' }),
@@ -264,6 +285,44 @@ describe('ProjectsPage', () => {
 
     expect(apiSend).toHaveBeenCalledWith('PATCH', '/projects/project-1', { name: '改过的名字' });
     wrapper.unmount();
+  });
+
+  it('改名成功给一句提示（info）', async () => {
+    apiSend.mockImplementation((method: string) => {
+      if (method === 'PATCH') {
+        return Promise.resolve({ ...projectList[0], name: '改过的名字' });
+      }
+      return Promise.resolve(projectList);
+    });
+
+    const wrapper = mountPage();
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    await wrapper.get('[data-project-id="project-1"] .projects__edit').trigger('click');
+    await wrapper.get('.projects__rename').setValue('改过的名字');
+    await wrapper.get('.projects__save-rename').trigger('click');
+    await flushPromises();
+
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('项目已改名');
+    expect(toastHost.findAll('.toast').at(-1)?.classes()).toContain('toast--info');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
+  it('删除成功给一句提示（info）', async () => {
+    const wrapper = mountPage();
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    await wrapper.get('[data-project-id="project-2"] .projects__delete').trigger('click');
+    await wrapper.get('.projects__confirm-yes').trigger('click');
+    await flushPromises();
+
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('项目已删除');
+    expect(toastHost.findAll('.toast').at(-1)?.classes()).toContain('toast--info');
+    wrapper.unmount();
+    toastHost.unmount();
   });
 
   it('删除要二次确认：确认后才 DELETE', async () => {
