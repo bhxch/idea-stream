@@ -122,6 +122,20 @@ export async function fetchOlderIdeas(filter: IdeaFilter, offset: number): Promi
 }
 
 /**
+ * 把**丢掉**的那一页的深度还回去。
+ *
+ * 深度由 {@link fetchOlderIdeas} 记（那儿是唯一记它的地方），但调用方拿到
+ * 这一页之后可能决定不要它 —— 条件变了（这一页是按旧条件要的）、页面已经
+ * 卸载了。那时候必须把深度还回去：深度比列表多一页的话，下一次 SSE 重拉
+ * 会按 {@link loadedLimit} 多要一页用户根本没翻过的内容，列表凭空长一页。
+ *
+ * @param count 丢掉的那一页有多少条。
+ */
+export function releaseOlderIdeas(count: number): void {
+  scrolledItems.value = Math.max(0, scrolledItems.value - count);
+}
+
+/**
  * 插入或覆盖一条想法（本地乐观更新）。
  *
  * 已存在就整条替换 —— 后端返回的字段才是最新的，不要自己猜 `updatedAt`；

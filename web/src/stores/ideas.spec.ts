@@ -18,6 +18,7 @@ import {
   loadIdeas,
   loadingMore,
   PAGE_SIZE,
+  releaseOlderIdeas,
   scrolledItems,
 } from './ideas';
 
@@ -156,6 +157,22 @@ describe('fetchOlderIdeas', () => {
 
     // 只加载一页 = 整表替换成最新的一页：翻过的历史没了，深度也就没了。
     await loadIdeas(makeFilter());
+    expect(scrolledItems.value).toBe(0);
+  });
+
+  it('丢掉的一页要把深度还回去', async () => {
+    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
+    await fetchOlderIdeas(makeFilter(), 2);
+    expect(scrolledItems.value).toBe(PAGE_SIZE);
+
+    // 这一页最后没被留下（条件变了 / 页面卸载了）：深度也得还回去 ——
+    // 深度比列表多一页的话，下一次 SSE 重拉会多要一页用户没翻过的内容。
+    releaseOlderIdeas(PAGE_SIZE);
+    expect(scrolledItems.value).toBe(0);
+  });
+
+  it('还深度不会减成负数', () => {
+    releaseOlderIdeas(50);
     expect(scrolledItems.value).toBe(0);
   });
 });

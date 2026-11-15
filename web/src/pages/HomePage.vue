@@ -29,6 +29,7 @@ import {
   loadIdeas,
   loading,
   loadingMore,
+  releaseOlderIdeas,
   removeLocal,
   scrolledItems,
 } from '../stores/ideas';
@@ -917,6 +918,15 @@ const historySentinel = ref<HTMLElement | null>(null);
 let historyObserver: IntersectionObserver | undefined;
 
 /**
+ * 页面已经卸载了。
+ *
+ * 往回翻的请求在飞的时候用户可能直接离开页面 —— 那一页回来后没人看了，
+ * 也不能再写进 store（store 是模块级的，下一个页面还在用它）。所以在
+ * `await` 之后要重新看一眼这个标志。
+ */
+let unmounted = false;
+
+/**
  * 往回翻：取更旧的一页，拼到列表**前面**。
  *
  * 三件事：
@@ -950,10 +960,17 @@ async function loadOlder(): Promise<void> {
     hasMore.value = false;
     return;
   }
+  if (unmounted) {
+    // 页面已经没了：这一页没人看，也不该写进共享的 store。
+    // 深度也要还回去 —— 这一页没进列表，深度不能替它记着。
+    releaseOlderIdeas(older.length);
+    return;
+  }
   if (requestedFilter !== activeFilter.value) {
     // 等这一页的时候过滤条件变了：这一页是按**旧**条件要的，拼到新列表上
     // 就是把不匹配当前条件的条目塞给用户。重拉会按新条件重新要一份，
-    // 这一页直接丢掉。
+    // 这一页直接丢掉（深度也还回去：它没进列表）。
+    releaseOlderIdeas(older.length);
     return;
   }
   ideas.value = [...older, ...ideas.value];
@@ -1210,6 +1227,9 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  // 页面没了：在飞的往回翻请求回来之后就别再写 store 了（store 是模块级的，
+  // 下一个页面还在用它，那一页没人看）。
+  unmounted = true;
   // 离开页面就把连接关了：不然事件流会一直往一个没人看的页面上推。
   stream?.close();
   stream = null;
