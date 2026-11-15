@@ -440,6 +440,38 @@ function mockPagedIdeas(olderCount: number): void {
 }
 
 /**
+ * 让「往回翻」的那一页**卡住**（普通拉取照常返回最新的一页）。
+ *
+ * 好在它卡着的时候做点别的：连着触发两次哨兵、离开页面、加载提示……
+ *
+ * @returns 放行的函数：调用它这一页就回来了。
+ */
+function mockPendingOlderIdeas(older: Idea[] = makeOlderIdeas(PAGE_SIZE + 1)): () => void {
+  let release: ((value: Idea[]) => void) | undefined;
+  apiGet.mockImplementation((path: string, params?: { offset?: string }) => {
+    switch (path) {
+      case '/projects':
+        return Promise.resolve(projects);
+      case '/settings':
+        return Promise.resolve({});
+      case '/tags':
+        return Promise.resolve([]);
+      case '/ideas':
+        if (params?.offset !== undefined) {
+          // 往回翻的这一页卡住。
+          return new Promise<Idea[]>((resolve) => {
+            release = resolve;
+          });
+        }
+        return Promise.resolve(makeManyIdeas(PAGE_SIZE + 1));
+      default:
+        return Promise.resolve([]);
+    }
+  });
+  return () => release?.(older);
+}
+
+/**
  * 等防抖过去并让重拉落地。
  *
  * 过滤条件变了要走「防抖 250ms → 重拉」，所以断言列表变化前得把这段等出来。
@@ -2399,6 +2431,68 @@ describe('HomePage', () => {
     wrapper.unmount();
   });
 
+  it('往回翻的哨兵在消息流的最上面，观察的是那个滚动容器', async () => {
+    mockPagedIdeas(PAGE_SIZE + 1);
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+    const sentinel = wrapper.get('.home__history-sentinel').element as HTMLElement;
+
+    // 哨兵必须在列表**前面**：往回翻的方向是上（底部是当下，新内容靠 SSE
+    // 送过来）。放到底部的话，触发的是「快到最新」而不是「快到最旧」。
+    expect(scroller.firstElementChild).toBe(sentinel);
+    const list = scroller.querySelector('.list');
+    expect(list, '找不到消息流列表').not.toBeNull();
+    expect([...scroller.children].indexOf(sentinel)).toBeLessThan(
+      [...scroller.children].indexOf(list as Element),
+    );
+
+    // 观察的是消息流那个滚动容器（不是 window）：列表是在它里面滚的。
+    const observer = FakeIntersectionObserver.instances.at(-1);
+    expect(observer, '没有创建 IntersectionObserver（哨兵没被观察）').toBeTruthy();
+    expect(observer!.root).toBe(scroller);
+    // 提前量在**顶部**（'上 右 下 左'）：'快到顶时预加载'。
+    expect(observer!.rootMargin).toBe('400px 0px 0px 0px');
+    // 而且观察的正是哨兵本身。
+    expect(observer!.targets.has(sentinel)).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('更旧的一页拼到 store 数组的前面（不是后面）', async () => {
+    mockPagedIdeas(PAGE_SIZE + 1);
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    triggerHistorySentinel();
+    await flushPromises();
+
+    // store 里的数组是**没排序**的（排序是显示层做的）：更旧的一页要拼在
+    // 前面，第一条就是最旧的那条。拼到后面的话这条就跑到末尾去了 ——
+    // 显示层再排序也看不出差别，所以必须断言没排序的那一份。
+    expect(ideas.value).toHaveLength(PAGE_SIZE + 1 + PAGE_SIZE);
+    expect(ideas.value[0].id).toBe('idea-older-0');
+    expect(ideas.value.at(-1)?.id).toBe(`idea-many-${PAGE_SIZE}`);
+    wrapper.unmount();
+  });
+
+  it('往回翻只记一次深度（UI 层不再重复累加）', async () => {
+    mockPagedIdeas(PAGE_SIZE + 1);
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    triggerHistorySentinel();
+    await flushPromises();
+
+    // 深度是「用户往上翻过了多少条」：这一页 100 条。
+    // UI 层不能再加一次 —— 加了的话 SSE 重拉会按它多要一页用户没翻过的内容。
+    expect(scrolledItems.value).toBe(PAGE_SIZE);
+    wrapper.unmount();
+  });
+
   it('no_more_older_ideas_stops_the_requests', async () => {
     // 往回翻的这一页**不满**：服务端没给够，说明没有更旧的了。
     mockPagedIdeas(PAGE_SIZE);
@@ -2418,6 +2512,32 @@ describe('HomePage', () => {
     await flushPromises();
 
     expect(olderIdeasCalls()).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it('哨兵连续触发不会连发请求（请求在飞时就挡住）', async () => {
+    // 往回翻的这一页卡住：好在它卡着的时候再触发几次。
+    const releaseOlder = mockPendingOlderIdeas();
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    triggerHistorySentinel();
+    await flushPromises();
+    expect(olderIdeasCalls()).toHaveLength(1);
+
+    // 请求还在飞：再触发也不该再发一个 —— `loadingMore` 挡着。
+    // （这一页回来之前 `hasMore` 还是真的，所以只有 `loadingMore` 能挡。）
+    triggerHistorySentinel();
+    triggerHistorySentinel();
+    await flushPromises();
+    expect(olderIdeasCalls()).toHaveLength(1);
+
+    releaseOlder();
+    await flushPromises();
+
+    // 只拼进去了一页（没有重复的那几页）。
+    expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1 + PAGE_SIZE);
     wrapper.unmount();
   });
 
@@ -2497,9 +2617,59 @@ describe('HomePage', () => {
 
       expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1);
       expect(wrapper.get('.list').text()).not.toContain('更旧的第 0 条');
+      // 深度也要还回去：这一页没进列表，深度不能替它记着 ——
+      // 深度多一页的话，下一次 SSE 重拉会多要一页用户根本没翻过的内容。
+      expect(scrolledItems.value).toBe(0);
       wrapper.unmount();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('往回翻的时候给出「加载更早的…」提示', async () => {
+    // 往回翻的这一页卡住：好在它卡着的时候看一眼提示。
+    const releaseOlder = mockPendingOlderIdeas();
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    triggerHistorySentinel();
+    await flushPromises();
+
+    // 加载中要有提示：不然用户以为页面没反应（设计文档 §13.3）。
+    expect(wrapper.text()).toContain('加载更早的…');
+
+    releaseOlder();
+    await flushPromises();
+
+    // 加载完了提示就该没了。
+    expect(wrapper.text()).not.toContain('加载更早的…');
+    wrapper.unmount();
+  });
+
+  it('往回翻的请求在页面离开后作废（不写进 store）', async () => {
+    // 往回翻的这一页卡住：好在它卡着的时候离开页面。
+    const releaseOlder = mockPendingOlderIdeas();
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+    const before = ideas.value.length;
+
+    triggerHistorySentinel();
+    await flushPromises();
+    expect(olderIdeasCalls()).toHaveLength(1);
+
+    // 用户直接离开页面。
+    wrapper.unmount();
+
+    // 这一页这时候才回来。
+    releaseOlder();
+    await flushPromises();
+
+    // 它不该写进 store（store 是模块级的，下一个页面还在用它）。
+    expect(ideas.value).toHaveLength(before);
+    expect(ideas.value[0].id).not.toBe('idea-older-0');
+    // 深度也要还回去：这一页没进列表。
+    expect(scrolledItems.value).toBe(0);
   });
 });
