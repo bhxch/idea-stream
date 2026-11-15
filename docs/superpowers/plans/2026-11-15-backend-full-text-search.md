@@ -827,7 +827,7 @@
 
   - `SearchService.Search(query, limit, offset, includeTrash)`：
     - `query` trim 后为空 → 抛 `new ApiException(400, "invalid_search_query", ...)`。
-    - `TextTokenizer.BuildMatchExpression(query)` 得到 MATCH 表达式（不会是 null —— query 非空时至少有一个词元；若全是标点则**当作不过滤**：这时三组都返回空页，`total = 0`）。
+    - `TextTokenizer.BuildMatchExpression(query)` 得到 MATCH 表达式。**全是标点的查询词一律当作「没有关键词」→ 不过滤 → 三组都返回全部**（与 `/api/ideas` 的口径一致，也是规格 §9.2 与计划 Review Focus 第 4 条的要求）。
       ⚠️ **这里跟 `/api/ideas` 不同**：`/api/ideas` 的纯标点查询按「不过滤」处理（Review Focus 第 4 条），`/api/search` 同样处理 —— 全是标点的搜索词没有意义，返回空页更诚实。**两处口径必须一致**，按 `/api/ideas` 的口径来（不过滤 → 返回全部），规格 §11.3 的 `q` 只要求「trim 后为空」才 400。
     - 分别调三个仓储方法，组装成 `SearchPage<T>`（`HasMore = offset + items.Length < total`）。
   - `SearchEndpoints.cs`：

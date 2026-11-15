@@ -600,7 +600,7 @@ public sealed record IdeaDto(
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `q` | string | **必填** | 关键词。缺失或 trim 后为空 → 400 `invalid_search_query` |
+| `q` | string | **必填** | 关键词。缺失或 trim 后为空 → 400 `invalid_search_query`。**全是标点**的查询词按「没有关键词」处理 → 不过滤 → 三组返回全部（与 `/api/ideas` 同一口径） |
 | `limit` | string? | 20 | 每类结果最多几条。范围 1..100，越界 400 |
 | `offset` | string? | 0 | **跳过最相关的前 N 条**。三类统一应用同一个 offset |
 | `includeTrash` | bool | **true** | 是否包含回收站里的条目 |
