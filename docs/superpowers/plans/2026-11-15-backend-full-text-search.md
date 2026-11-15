@@ -669,9 +669,12 @@
 
   在 `server/IdeaApp/Endpoints/IdeaEndpoints.cs` 的 `GET /api/ideas` 上：
 
-  - 端点签名加 `string? q, int? limit, int? offset`（**绑成 `int?`，不要 `string?`** —— 绑 `int?` 时 OpenAPI 里是 `integer`；`limit=abc` 这种非数字值会在进端点之前就绑定失败，由框架统一回 `invalid_request_body`，不是 `invalid_pagination`）。
+  - 端点签名加 `string? q, string? limit, string? offset`。
+    ⚠️ **`limit` / `offset` 绑 `string?`（不是 `int?`）**：实测（跑真实应用）绑 `int?` 时，`?limit=abc` 在参数绑定阶段失败后**框架只设一个 400 状态码就返回** —— **空 body、没有 code**，进不了 `ApiExceptionHandler`。而这个应用里既有的查询参数（`status` / `tagMode`）都是 `string?` + 自己解析 + 自己的错误码。跟它们一致：所有非法情形（非数字、越界）一律回 `invalid_pagination` 并带说得清楚的 detail。
+    代价：OpenAPI 里这两个参数的 schema 是 `string` 而不是 `integer`。
   - 调 `IdeaService.ParseQuery(projectId, status, tags, tagMode, q, limit, offset)` 与 `service.List(query, keyword, limit, offset)`。
   - `.ProducesApiProblem(StatusCodes.Status400BadRequest, ...)` 里加上 `"invalid_pagination"`（`ApiErrorCodeTests.Endpoint_declared_codes_are_documented_with_the_right_status` 会核对）。
+    ⚠️ **不要**加 `"invalid_request_body"`：那是**请求体**绑定失败的码，而 `GET /api/ideas` 没有请求体、查询串绑定失败又拿不到它（见上）。声明一个真不会返回的码，契约就不准了。
 
 - [ ] **Step 7: 跑测试确认它们通过**
 

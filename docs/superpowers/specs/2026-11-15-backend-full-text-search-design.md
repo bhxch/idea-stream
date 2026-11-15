@@ -477,8 +477,10 @@ FTS5 每次写入产生一个 Segment，段多了查询会变慢。SQLite 提供
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `q` | string | 空 | 关键词。trim 后为空 = 不过滤 |
-| `limit` | int? | 不给 | 最多返回几条。范围 1..1000，越界 → 400 `invalid_pagination` |
-| `offset` | int? | 0 | **往回翻**时已经翻过多少条（从**最新**一端数）。`offset > 0` 而 `limit` 缺省 → 400 `invalid_pagination`（`offset` 单独给没有意义） |
+| `limit` | string? | 不给 | 最多返回几条。范围 1..1000，越界 → 400 `invalid_pagination` |
+| `offset` | string? | 0 | **往回翻**时已经翻过多少条（从**最新**一端数）。`offset > 0` 而 `limit` 缺省 → 400 `invalid_pagination`（`offset` 单独给没有意义） |
+
+> **`limit` / `offset` 绑成 `string?`（不是 `int?`）**，由服务层自己解析。原因见 §11.5 的实测。
 
 **响应形状不变：仍是裸数组 `IdeaDto[]`。** 不破坏现有契约、e2e 与 skill 文档。
 
@@ -599,8 +601,8 @@ public sealed record IdeaDto(
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `q` | string | **必填** | 关键词。缺失或 trim 后为空 → 400 `invalid_search_query` |
-| `limit` | int | 20 | 每类结果最多几条。范围 1..100，越界 400 |
-| `offset` | int | 0 | **跳过最相关的前 N 条**。三类统一应用同一个 offset |
+| `limit` | string? | 20 | 每类结果最多几条。范围 1..100，越界 400 |
+| `offset` | string? | 0 | **跳过最相关的前 N 条**。三类统一应用同一个 offset |
 | `includeTrash` | bool | **true** | 是否包含回收站里的条目 |
 
 > ⚠️ **`offset` 的含义与 `/api/ideas` 不同**：这里是「翻相关度页」（从最相关一端数），`/api/ideas` 是「往回翻历史」（从最新一端数）。见 §11.1 的说明。
@@ -660,12 +662,25 @@ public sealed record IdeaDto(
 | `invalid_pagination` | 400 | `limit` / `offset` **越界**（`limit` 不在 1..1000 / 100、`offset` 为负、`offset > 0` 而 `limit` 缺省） |
 | `invalid_search_query` | 400 | `/api/search` 的 `q` 缺失或 trim 后为空 |
 
-> **`limit` / `offset` 绑定成 `int?`**（不是 `string?`），这样 OpenAPI 里是 `integer` 类型。
+> **`limit` / `offset` 绑定成 `string?`，由服务层自己解析** —— 所有非法情形（不是数字、越界、`offset` 单独给）一律回 `invalid_pagination`。
 >
-> 代价：`limit=abc` 这种**非数字**值会在**进端点之前**就绑定失败 → `BadHttpRequestException` → `ApiExceptionHandler` 统一回 `invalid_request_body`（400），**不是** `invalid_pagination`。
-> 这是 Minimal API 的既有行为（现有的 `status` / `tagMode` 之所以能回 `invalid_status` / `invalid_tag_mode`，是因为它们绑成 `string?` 后在服务层自己解析）。
-> **本设计选择 `int?`**：这两个参数本质是数字，OpenAPI 契约写成 `integer` 更准确；「不是合法整数」与「不是合法枚举值」不同类，落到 `invalid_request_body` 上是可接受的。
-> ⚠️ 实现者若想统一成 `invalid_pagination`，就得改成 `string?` 自己解析 —— 那要在文档里同步改 OpenAPI 的 schema 类型。
+> **实测（跑真实应用，.NET 10）**：
+>
+> | 请求 | 响应 |
+> |---|---|
+> | `?limit=abc`（绑成 `int?` 时） | **400，空 body，没有 code** —— 框架在参数绑定阶段失败后**只设一个状态码就返回**，根本进不了 `ApiExceptionHandler` |
+> | `?limit=0`（自己解析） | 400，`code: invalid_pagination`，detail 说明「limit 必须在 1..1000 之间，收到：0」 |
+> | `?status=archived`（`string?` + 自己解析） | 400，`code: invalid_status` |
+> | 请求体是坏 JSON 的 POST | 400，`code: invalid_request_body` |
+>
+> 也就是说：绑 `int?` 时，**非数字输入得到的是一个没有 body、没有 code 的 400** —— agent 读到只知道自己错了，不知道错在哪。
+> 而这个应用里既有的查询参数（`status` / `tagMode`）**全都是 `string?` + 自己解析 + 自己的错误码**。
+> 跟它们保持一致，`limit` / `offset`（两个端点都是）也绑 `string?`：
+> - 非法输入一律 `invalid_pagination`，带说得清楚的 detail ✓
+> - 与既有查询参数的处理方式一致 ✓
+> - 代价：OpenAPI 里这两个参数的 schema 是 `string` 而不是 `integer`。
+>
+> ⚠️ 这是个**应用层面的既有缺口**，不只影响这几个参数（`?unmask=xyz` 这类 `bool?` 查询参数同样回空 body 的 400）。本设计只保证自己新增的参数走 `string?`；把「查询串绑定失败也带 code」这个缺口补上，是另一件事。
 
 > `ApiErrorCodeTests.cs:107` 会扫源码里的 `new ApiException(...)`，码没登记就会红。
 > **`skills/idea-manager/references/errors.md` 的「## 服务端错误码」表也必须同步加这两行** —— `SkillDocGuardTests.Manual_error_code_table_matches_the_registry`（`server/IdeaApp.Tests/SkillDocGuardTests.cs:288-321`）要求该表的 code 集合与 `ApiErrorCodes.All` **完全相等**，漏了必红。
