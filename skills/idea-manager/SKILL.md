@@ -7,7 +7,7 @@ description: 管理本地 idea 记事本（项目、想法、标签、完成状�
 
 ## 这是什么
 
-idea 记事本的 REST API：项目、想法、标签、完成状态、合并、回收站、webhook 通知。
+idea 记事本的 REST API：项目、想法、标签、完成状态、搜索、合并、回收站、webhook 通知。
 **直接用 curl 调** —— 本文件是索引页：有哪些能力、怎么调、细节去哪找、最容易错在哪。
 
 内容由服务端分发，与服务端**同一版本**：服务端改了 API，这里跟着改。
@@ -52,7 +52,8 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 | 能力 | 方法 + 路径 |
 |---|---|
 | 健康检查 | GET /api/health |
-| 想法列表（可按项目 / 状态 / 标签筛） | GET /api/ideas |
+| 想法列表（可按项目 / 状态 / 标签 / 关键词筛，可分页） | GET /api/ideas |
+| 全库搜索（想法 / 项目 / 标签三组，各带分页） | GET /api/search |
 | 记一条想法 | POST /api/ideas |
 | 改一条想法（只发要改的字段） | PATCH /api/ideas/{id} |
 | 删一条想法（进回收站） | DELETE /api/ideas/{id} |
@@ -112,6 +113,10 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
    要原值得显式加 `?unmask=true`，而**除非用户明确要看原始 url，否则不要加这个参数**。
 6. **`done` 必填**：`POST /api/ideas/{id}/complete` 与 `POST /api/ideas/bulk/complete`
    不给 `done` = `false` = **取消完成**，服务端**不报错**。要标完成就给 `{"done":true}`。
+7. **搜索的坑**：英文是**词级**（搜 `hel` 搜不到 `hello`）；多个词之间是 **AND**
+   （`咖啡 水温` 要求两个都出现）；**`offset` 的含义不一样** ——
+   `/api/ideas` 是「跳过最新的 N 条」（往回翻历史），`/api/search` 是「跳过最相关的 N 条」。
+   逐条见 `references/api.md`。
 
 ## 错误的最短约定
 
