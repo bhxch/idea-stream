@@ -1018,7 +1018,8 @@
     | 测试 | 断言 |
     |---|---|
     | `filter_change_triggers_a_reload_after_the_debounce` | 改关键词 → 250ms 内**不**发请求，过了才发（用 fake timers） |
-    | `sse_event_triggers_a_reload_that_keeps_the_loaded_depth` | 触发一条 SSE 事件 → 断言重拉请求的 `limit` ≥ 已加载条数 |
+    | `sse_event_triggers_a_reload_that_keeps_the_loaded_depth` | 触发一条 SSE 事件 → 断言重拉请求的 `limit` **等于** `PAGE_SIZE + 1 + 已往上翻的条数`（**不是** `列表当前长度 + 一页` —— 那会自我膨胀） |
+    | `loaded_limit_is_clamped_to_the_server_maximum` | 纯函数 `loadedLimit(n)`：n 很大时返回 1000（服务端 `limit` 上限；超了回 400 `invalid_pagination`，一个 400 会让 SSE 刷新彻底断掉） |
     | `visible_ideas_are_not_filtered_again_on_the_client` | 服务端返回 2 条（其中 1 条不匹配关键词）→ 列表显示 **2** 条（显示层不再过滤） |
 
 - [ ] **Step 2: 跑测试确认它们失败**
@@ -1089,11 +1090,15 @@
     - `watch(activeFilter, scheduleReload)`（`activeFilter` 是 computed，`filter.value` 整体替换 → 身份变了 → watch 会触发）。
     - `switchProject` 里原本调 `loadIdeas(next)` 的地方改成 `loadIdeas({ ...activeFilter.value, projectId: next })`。
     - `onResync` 里原本绕过 `loadIdeas` 直接 `apiGet` 的地方改成走 `loadIdeas`（它要带上全部过滤条件）。
-  - **SSE 触发的重拉保留已加载深度**：在 `applyEventToList` 里，SSE 事件处理完之后调 `scheduleReload()`；重拉时用
-    `loadIdeas(activeFilter.value, ideas.value.length + PAGE_SIZE + 1)`。
-    - `loadIdeas` 的 `limit` 参数要多传一个值 —— 所以 `scheduleReload` 要能区分「条件变了」（重置到一页）与「SSE」（保留深度）。**用两个入口**：
+  - **SSE 触发的重拉保留已加载深度**，但**不能用「列表当前长度」当基准**：
+    - 服务端的分页是「从最新一端数」（§11.1）：`offset=0&limit=N` 返回**最新的 N 条**。
+    - 基准必须是**用户往上翻出来的深度**（一个独立计数，`fetchOlderIdeas` 真正被调用时递增），而不是 `ideas.value.length`。
+    - ⚠️ **用 `ideas.value.length` 会自我膨胀**：重拉把整表替换成 limit 条 → 列表长度变成 limit → 下一个 SSE 事件又按新的更大长度再拉一页 → 4 个事件就能把整库 500 条全塞进 DOM（哪怕用户从没往上翻过），`hasMore` 也会跟着失真。
+    - 正确公式：`limit = min(PAGE_SIZE + 1 + 往上翻的条数, 1000)`。`+1` 留给刚新建的那条的位置；1000 是服务端上限（超了回 400 `invalid_pagination`，一个 400 会让 SSE 刷新彻底断掉）。
+    - `loadIdeas` 的 `limit` 参数要多传一个值 —— 所以重拉入口要能区分「条件变了」（重置到一页）与「SSE」（保留深度）。**用两个入口**：
       - `scheduleReload()`（条件变化）→ `loadIdeas(activeFilter.value)`；
-      - `scheduleResync()`（SSE）→ `loadIdeas(activeFilter.value, ideas.value.length + PAGE_SIZE + 1)`。
+      - `scheduleResync()`（SSE）→ `loadIdeas(activeFilter.value, loadedLimit(scrolledItems))`。
+    - **锚点修正保留**：它让「视口不跳」成立，与公式是两件事；公式改对之后它退化为兜底。
   - **过滤条件变化后滚到底部**：条件变了命中集合也变了，之前的浏览深度没有意义 → 重拉后 `await nextTick(); scrollToBottom();`。
 
 - [ ] **Step 6: 更新 `FilterBar.vue` 的注释**
