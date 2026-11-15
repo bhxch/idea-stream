@@ -75,7 +75,9 @@ export const loadingMore = ref(false);
  * 列表顺序由后端保证（`updated_at ASC, id ASC`，最老的在顶）。
  *
  * @param filter 当前过滤条件。
- * @param limit 请求多少条；不给就是 PAGE_SIZE + 1（多一条用来判断还有没有更旧的）。
+ * @param limit 请求多少条；不给就是 PAGE_SIZE + 1 —— 多要的那一条既在这一页里
+ *              （这一页**整页收下**，见 {@link fetchOlderIdeas}），
+ *              也用来判断还有没有更旧的。
  */
 export async function loadIdeas(filter: IdeaFilter, limit = PAGE_SIZE + 1): Promise<void> {
   // 只加载一页 = 列表被重置了：用户往上翻过的深度也就没了
@@ -88,6 +90,8 @@ export async function loadIdeas(filter: IdeaFilter, limit = PAGE_SIZE + 1): Prom
     const params = toQueryParams(filter);
     params.limit = String(limit);
     ideas.value = await apiGet<Idea[]>('/ideas', params);
+    // 整页收下（含多要的那一条）：列表长度 = 从最新一端数已经加载的条数，
+    // 往回翻时的 offset 就拿它当基准（见 {@link fetchOlderIdeas}）。
     hasMore.value = ideas.value.length >= limit;
   } finally {
     loading.value = false;
@@ -109,13 +113,28 @@ export async function fetchOlderIdeas(filter: IdeaFilter, offset: number): Promi
     params.limit = String(PAGE_SIZE + 1);
     params.offset = String(offset);
     const result = await apiGet<Idea[]>('/ideas', params);
-    // 多出来的那条只是用来判断「还有没有更旧的」，不进列表。
-    hasMore.value = result.length > PAGE_SIZE;
-    const older = result.slice(0, PAGE_SIZE);
+    // 这一页**整页收下**，一条都不丢。
+    //
+    // 服务端的切片是从**最新**一端数的（IdeaService.List）：
+    //   end = Count - offset;  start = max(0, end - limit)
+    // 返回的数组按 updated_at **升序**（最老的在顶、最新的在底），
+    // 所以「多要的那一条」落在这一页的**最老**那端 —— 不是最新那端。
+    //
+    // 早先这里按 slice(0, PAGE_SIZE) 截断（留最老的一百条、丢掉最新的一条），
+    // 丢掉的恰恰是**紧挨着已加载区域**的那一条：列表中间从此**缺一条**，
+    // 而下一次请求拿「列表长度」当 offset —— 长度里没有那个洞，
+    // 洞再也补不上（还会顺带多出一条重复的）。
+    //
+    // 整页收下就不会丢：列表长度 = 从最新一端数已经加载的条数，
+    // 下一次的 offset 正好接在这一页的下面（见 HomePage.loadOlder）。
+    //
+    // 「还有没有更旧的」只看**条数**：要了 PAGE_SIZE + 1 条，
+    // 服务端给满了就说明下面还有，没给满就是到底了。
+    hasMore.value = result.length >= PAGE_SIZE + 1;
     // 往上翻的深度记在这儿：翻出来多少条，SSE 重拉时就得保留多少条
     // （基准不能用「列表当前长度」—— 重拉是整表替换，那会自我膨胀）。
-    scrolledItems.value += older.length;
-    return older;
+    scrolledItems.value += result.length;
+    return result;
   } finally {
     loadingMore.value = false;
   }

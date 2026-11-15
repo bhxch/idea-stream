@@ -2070,7 +2070,8 @@ describe('HomePage', () => {
         { projectId: null, status: 'all', tags: [], tagMode: 'or', keyword: '' },
         ideas.value.length,
       );
-      expect(scrolledItems.value).toBe(PAGE_SIZE);
+      // 往回翻回来的那一页是**整页**（PAGE_SIZE + 1 条），深度就记这么多。
+      expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
 
       const created: Idea = {
         ...idea,
@@ -2086,7 +2087,7 @@ describe('HomePage', () => {
       // 重拉要带上「往上翻过的条数」：用户翻过的历史不能被这一拉抹掉
       // （否则视口会突然跳回最新那批）。
       const limit = Number(ideasCalls().at(-1)?.params?.limit);
-      expect(limit).toBe(PAGE_SIZE + 1 + PAGE_SIZE);
+      expect(limit).toBe(PAGE_SIZE + 1 + (PAGE_SIZE + 1));
       wrapper.unmount();
     } finally {
       vi.useRealTimers();
@@ -2407,7 +2408,9 @@ describe('HomePage', () => {
     expect(olderCalls[0].params?.offset).toBe(String(PAGE_SIZE + 1));
 
     // 更旧的条目拼到了列表**前面**。
-    expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1 + PAGE_SIZE);
+    // 服务端给的这一页是**整页**（PAGE_SIZE + 1 条）—— 一条都不丢：
+    // 丢的那一条正好是紧挨着已加载区域的那条（列表中间会留一个洞）。
+    expect(wrapper.findAll('.idea')).toHaveLength((PAGE_SIZE + 1) * 2);
     expect(wrapper.findAll('.idea')[0].attributes('data-idea-id')).toBe('idea-older-0');
     wrapper.unmount();
   });
@@ -2425,9 +2428,9 @@ describe('HomePage', () => {
     triggerHistorySentinel();
     await flushPromises();
 
-    // 更旧的一页插到了视口**上方**（100 条 × 300px）→ scrollTop 得补回去，
+    // 更旧的一页插到了视口**上方**（101 条 × 300px）→ scrollTop 得补回去，
     // 否则用户正在看的那条会被顶下去（预加载反而让视口跳了）。
-    expect(scroller.scrollTop).toBe(PAGE_SIZE * 300);
+    expect(scroller.scrollTop).toBe((PAGE_SIZE + 1) * 300);
     wrapper.unmount();
   });
 
@@ -2457,7 +2460,7 @@ describe('HomePage', () => {
 
     // 视口的修正只该算「插到上面去的那一页」：请求期间到达的内容本来就在
     // 下面，不该把视口推走 —— 算进去的话视口会偏一条的高度。
-    expect(scroller.scrollTop).toBe(PAGE_SIZE * 300);
+    expect(scroller.scrollTop).toBe((PAGE_SIZE + 1) * 300);
     wrapper.unmount();
   });
 
@@ -2504,7 +2507,7 @@ describe('HomePage', () => {
     // store 里的数组是**没排序**的（排序是显示层做的）：更旧的一页要拼在
     // 前面，第一条就是最旧的那条。拼到后面的话这条就跑到末尾去了 ——
     // 显示层再排序也看不出差别，所以必须断言没排序的那一份。
-    expect(ideas.value).toHaveLength(PAGE_SIZE + 1 + PAGE_SIZE);
+    expect(ideas.value).toHaveLength((PAGE_SIZE + 1) * 2);
     expect(ideas.value[0].id).toBe('idea-older-0');
     expect(ideas.value.at(-1)?.id).toBe(`idea-many-${PAGE_SIZE}`);
     wrapper.unmount();
@@ -2519,9 +2522,9 @@ describe('HomePage', () => {
     triggerHistorySentinel();
     await flushPromises();
 
-    // 深度是「用户往上翻过了多少条」：这一页 100 条。
+    // 深度是「用户往上翻过了多少条」：这一页 101 条（整页）。
     // UI 层不能再加一次 —— 加了的话 SSE 重拉会按它多要一页用户没翻过的内容。
-    expect(scrolledItems.value).toBe(PAGE_SIZE);
+    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
     wrapper.unmount();
   });
 
@@ -2569,7 +2572,7 @@ describe('HomePage', () => {
     await flushPromises();
 
     // 只拼进去了一页（没有重复的那几页）。
-    expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1 + PAGE_SIZE);
+    expect(wrapper.findAll('.idea')).toHaveLength((PAGE_SIZE + 1) * 2);
     wrapper.unmount();
   });
 
