@@ -6,7 +6,7 @@ import type { Idea, IdeaEvent, Project } from '../api/types';
 import MessageList from '../components/MessageList.vue';
 import ToastHost from '../components/ToastHost.vue';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
-import { focusIdeaId, ideas, PAGE_SIZE } from '../stores/ideas';
+import { fetchOlderIdeas, focusIdeaId, ideas, PAGE_SIZE, scrolledItems } from '../stores/ideas';
 import { currentProjectId } from '../stores/projects';
 
 /**
@@ -107,6 +107,15 @@ const projects: Project[] = [
 const ideaA: Idea = { ...idea, id: 'idea-a', projectId: 'project-2', content: '甲' };
 const ideaB: Idea = { ...idea, id: 'idea-b', projectId: 'project-2', content: '乙' };
 
+/** 造 n 条想法（内容各不相同）。 */
+function makeManyIdeas(count: number): Idea[] {
+  return Array.from({ length: count }, (_unused, index) => ({
+    ...idea,
+    id: `idea-many-${index}`,
+    content: `第 ${index} 条`,
+  }));
+}
+
 /** 关键词过滤用的两条想法：一条命中「点子」，一条不命中。 */
 const ideaPoint: Idea = { ...idea, id: 'idea-point', content: '今天想到一个点子' };
 const ideaMilk: Idea = { ...idea, id: 'idea-milk', content: '买牛奶' };
@@ -146,6 +155,9 @@ beforeEach(async () => {
   // 会让下一个用例一上来就渲染出条目 —— 深链定位那种「等 DOM 更新」的用例
   // 会被这个残留状态掩盖（元素一开始就在 DOM 里，定位自然「成功」）。
   ideas.value = [];
+  // 往上翻过的深度也是模块级单例（跨用例共享）：不清的话，上一个用例
+  // 留下的深度会让这一次的重拉要多要一批条目。
+  scrolledItems.value = 0;
   apiGet.mockImplementation((path: string) => {
     switch (path) {
       case '/projects':
@@ -1856,7 +1868,7 @@ describe('HomePage', () => {
   it('sse_event_triggers_a_reload_that_keeps_the_loaded_depth', async () => {
     vi.useFakeTimers();
     try {
-      apiGet.mockImplementation((path: string) => {
+      apiGet.mockImplementation((path: string, params?: { offset?: string }) => {
         switch (path) {
           case '/projects':
             return Promise.resolve(projects);
@@ -1865,7 +1877,10 @@ describe('HomePage', () => {
           case '/tags':
             return Promise.resolve([]);
           case '/ideas':
-            return Promise.resolve([ideaA, ideaB]);
+            // 往回翻（带 offset）→ 满满一页；正常拉取 → 两条。
+            return Promise.resolve(
+              params?.offset === undefined ? [ideaA, ideaB] : makeManyIdeas(PAGE_SIZE + 1),
+            );
           default:
             return Promise.resolve([]);
         }
@@ -1874,6 +1889,14 @@ describe('HomePage', () => {
       const wrapper = mount(HomePage);
       await flushPromises();
       expect(wrapper.findAll('.idea')).toHaveLength(2);
+
+      // 用户往上翻了一页（滚动接上是下一个任务的事，这里直接调 store 的接口
+      // 模拟「翻过了」这个动作）：深度会记在 store 里。
+      await fetchOlderIdeas(
+        { projectId: null, status: 'all', tags: [], tagMode: 'or', keyword: '' },
+        ideas.value.length,
+      );
+      expect(scrolledItems.value).toBe(PAGE_SIZE);
 
       const created: Idea = {
         ...idea,
@@ -1886,10 +1909,61 @@ describe('HomePage', () => {
 
       await waitForReload();
 
-      // 重拉要带上「已加载的条数 + 一页」：用户翻过的历史不能被这一拉抹掉
+      // 重拉要带上「往上翻过的条数」：用户翻过的历史不能被这一拉抹掉
       // （否则视口会突然跳回最新那批）。
       const limit = Number(ideasCalls().at(-1)?.params?.limit);
-      expect(limit).toBeGreaterThanOrEqual(2);
+      expect(limit).toBe(PAGE_SIZE + 1 + PAGE_SIZE);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('SSE 重拉的条数不会随着事件一个一个地膨胀', async () => {
+    vi.useFakeTimers();
+    try {
+      // 服务端给多少就返回多少（重拉是整表替换：列表长度会变成这次要到的条数）。
+      apiGet.mockImplementation((path: string, params?: { limit?: string }) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            return Promise.resolve(makeManyIdeas(Number(params?.limit ?? PAGE_SIZE + 1)));
+          default:
+            return Promise.resolve([]);
+        }
+      });
+
+      const wrapper = mount(HomePage);
+      await flushPromises();
+      const before = ideasCalls().length;
+
+      // 连着来四个事件（每来一个都要重拉一次）。
+      for (let index = 0; index < 4; index += 1) {
+        const created: Idea = {
+          ...idea,
+          id: `idea-new-${index}`,
+          content: '别处记的',
+          updatedAt: `2026-11-12T10:00:0${index}Z`,
+        };
+        FakeEventSource.instances[0].emit(
+          'idea.created',
+          makeEvent('idea.created', { idea: created }),
+          `e${index}`,
+        );
+        await flushPromises();
+        await waitForReload();
+      }
+
+      // 每次重拉的条数都一样：用户没往上翻过，就一直只要一页。
+      // （用「列表当前长度」当基准的话，这里会一次比一次多 —— 每来一个
+      // 事件就长一页，四个事件就能把整库塞进 DOM。）
+      const limits = ideasCalls().slice(before).map((call) => Number(call.params?.limit));
+      expect(limits).toEqual([PAGE_SIZE + 1, PAGE_SIZE + 1, PAGE_SIZE + 1, PAGE_SIZE + 1]);
       wrapper.unmount();
     } finally {
       vi.useRealTimers();
@@ -1983,7 +2057,7 @@ describe('HomePage', () => {
     try {
       const older: Idea = { ...idea, id: 'idea-older', content: '更旧的', updatedAt: '2026-10-01T10:00:00Z' };
       const newer: Idea = { ...idea, id: 'idea-newer', content: '更新的', updatedAt: '2026-11-20T10:00:00Z' };
-      apiGet.mockImplementation((path: string, params?: { limit?: string }) => {
+      apiGet.mockImplementation((path: string, params?: { limit?: string; offset?: string }) => {
         switch (path) {
           case '/projects':
             return Promise.resolve(projects);
@@ -1992,9 +2066,14 @@ describe('HomePage', () => {
           case '/tags':
             return Promise.resolve([]);
           case '/ideas':
-            // 重拉要的比已加载的多（limit 更大）→ 服务端多给了更旧的一条。
+            if (params?.offset !== undefined) {
+              // 往回翻：满满一页（翻出来的条目由下一个任务拼到列表前面）。
+              return Promise.resolve(makeManyIdeas(PAGE_SIZE + 1));
+            }
+            // 重拉要的比「一页」多（用户往上翻过）→ 服务端多给了更旧的一条，
+            // 列表顶部会长出来。
             return Promise.resolve(
-              params?.limit && Number(params.limit) > 101
+              params?.limit && Number(params.limit) > PAGE_SIZE + 1
                 ? [older, ideaA, ideaB, newer]
                 : [ideaA, ideaB],
             );
@@ -2005,6 +2084,12 @@ describe('HomePage', () => {
 
       const wrapper = mount(HomePage);
       await flushPromises();
+
+      // 用户往上翻过（深度记在 store 里；拼到列表前面是下一个任务的事）。
+      await fetchOlderIdeas(
+        { projectId: null, status: 'all', tags: [], tagMode: 'or', keyword: '' },
+        ideas.value.length,
+      );
 
       // 用户翻到了上面（不是贴着底部）。
       const scroller = wrapper.get('.home__scroll').element as HTMLElement;

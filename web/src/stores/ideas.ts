@@ -26,6 +26,40 @@ export const focusIdeaId = ref<string | null>(null);
 /** 一页多少条。 */
 export const PAGE_SIZE = 100;
 
+/**
+ * 服务端一次最多给多少条（`limit` 的上限）。
+ *
+ * 超了服务端回 400 `invalid_pagination` —— 一个 400 会让 SSE 的刷新彻底断掉，
+ * 所以请求多少条一定要夹在这个上限里。
+ */
+const MAX_LIMIT = 1000;
+
+/**
+ * 用户往上翻过了多少条（已经翻出来、拼进列表的那些更旧的条目）。
+ *
+ * 这是 SSE 重拉的基准（见 {@link loadedLimit}）：重拉要保留用户翻过的深度，
+ * 不然视口会突然跳回最新那批。
+ *
+ * ⚠️ **不能拿「列表当前长度」当基准**：重拉是**整表替换** —— 列表长度会变成
+ * 这次要到的条数，下一个事件又按更大的长度再要一页 → 每来一个事件列表就长
+ * 一页（4 个事件就能把 500 条全塞进 DOM，哪怕用户从没往上翻过），
+ * `hasMore` 也会跟着失真。
+ */
+export const scrolledItems = ref(0);
+
+/**
+ * SSE 重拉时要多少条：一页 + 一条（留给刚到的那条）+ 用户往上翻过的条数。
+ *
+ * 夹在服务端的上限（{@link MAX_LIMIT} = 1000）之内：`limit` 超了服务端回 400
+ * `invalid_pagination`，一个 400 会让 SSE 的刷新彻底断掉。翻得再深也只能
+ * 保留到 1000 条（更旧的那部分下次往回翻时重新取到）。
+ *
+ * @param scrolledItems 用户往上翻过的条数（**数字**，不是计数器本身）。
+ */
+export function loadedLimit(scrolledItems: number): number {
+  return Math.min(PAGE_SIZE + 1 + scrolledItems, MAX_LIMIT);
+}
+
 /** 还有没有更旧的（往上翻历史）。 */
 export const hasMore = ref(false);
 
@@ -44,6 +78,11 @@ export const loadingMore = ref(false);
  * @param limit 请求多少条；不给就是 PAGE_SIZE + 1（多一条用来判断还有没有更旧的）。
  */
 export async function loadIdeas(filter: IdeaFilter, limit = PAGE_SIZE + 1): Promise<void> {
+  // 只加载一页 = 列表被重置了：用户往上翻过的深度也就没了
+  // （下次重拉不该再要那么多条）。要得更深（`limit` 大于一页）时保留深度。
+  if (limit <= PAGE_SIZE + 1) {
+    scrolledItems.value = 0;
+  }
   loading.value = true;
   try {
     const params = toQueryParams(filter);
@@ -72,7 +111,11 @@ export async function fetchOlderIdeas(filter: IdeaFilter, offset: number): Promi
     const result = await apiGet<Idea[]>('/ideas', params);
     // 多出来的那条只是用来判断「还有没有更旧的」，不进列表。
     hasMore.value = result.length > PAGE_SIZE;
-    return result.slice(0, PAGE_SIZE);
+    const older = result.slice(0, PAGE_SIZE);
+    // 往上翻的深度记在这儿：翻出来多少条，SSE 重拉时就得保留多少条
+    // （基准不能用「列表当前长度」—— 重拉是整表替换，那会自我膨胀）。
+    scrolledItems.value += older.length;
+    return older;
   } finally {
     loadingMore.value = false;
   }

@@ -23,10 +23,11 @@ import {
   applyLocalUpsert,
   focusIdeaId,
   ideas,
+  loadedLimit,
   loadIdeas,
   loading,
-  PAGE_SIZE,
   removeLocal,
+  scrolledItems,
 } from '../stores/ideas';
 import {
   currentProjectId,
@@ -110,14 +111,6 @@ const activeFilter = computed<IdeaFilter>(() => ({ ...filter.value, tagMode: tag
  */
 const RELOAD_DEBOUNCE_MS = 250;
 
-/**
- * 服务端一次最多给多少条（超出回 400 `invalid_pagination`）。
- *
- * SSE 触发的重拉要带上「已加载的条数 + 一页」，加载得多了会超这个上限 ——
- * 一个 400 会让 SSE 的刷新彻底断掉，所以要夹住。
- */
-const MAX_LIMIT = 1000;
-
 /** 待执行的防抖重拉（两个入口共用一个：先排的那个被后排的顶掉）。 */
 let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -195,10 +188,11 @@ function scheduleResync(): void {
     reloadTimer = undefined;
     void reloadAndReport(async () => {
       // 重拉之前先记住视口在哪：重拉回来的列表顶部会多出更旧的条目
-      // （`limit` 比已加载的条数多一页），内容从上面长出来，视口会被推着走。
+      // （`limit` 按「往上翻过的深度」给，比已加载的条数多），
+      // 内容从上面长出来，视口会被推着走。
       const wasAtBottom = atBottom.value;
       const anchor = captureViewportAnchor();
-      await loadIdeas(activeFilter.value, loadedLimit());
+      await loadIdeas(activeFilter.value, loadedLimit(scrolledItems.value));
       await nextTick();
       if (wasAtBottom) {
         // 贴着底部：跟着滚到底（当下就在最下面）。
@@ -268,18 +262,6 @@ function cancelReload(): void {
     clearTimeout(reloadTimer);
     reloadTimer = undefined;
   }
-}
-
-/**
- * SSE 重拉时要多少条：已加载的条数 + 一页。
- *
- * 夹到 {@link MAX_LIMIT}：服务端 `limit` 的上限就是 1000，超了回 400
- * `invalid_pagination` —— 一个 400 会让 SSE 的刷新彻底断掉。
- * 加载超过约 900 条时「保留深度」不再完全成立（更旧的那部分会在下次
- * 往回翻时重新取到），但「视口不跳」这个初衷仍然满足。
- */
-function loadedLimit(): number {
-  return Math.min(ideas.value.length + PAGE_SIZE + 1, MAX_LIMIT);
 }
 
 /**
@@ -1085,7 +1067,7 @@ async function onResync(): Promise<void> {
   try {
     // 带上全部过滤条件（过滤在服务端做），并保留已加载的深度：
     // 重拉把翻过的历史抹掉的话，视口会突然跳回最新那批。
-    await reloadList(() => loadIdeas(activeFilter.value, loadedLimit()));
+    await reloadList(() => loadIdeas(activeFilter.value, loadedLimit(scrolledItems.value)));
     // 项目条数是按事件加减的，漏过事件就会漂：顺带拉一次项目列表校准。
     await loadProjects();
   } catch (error) {

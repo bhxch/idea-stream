@@ -10,7 +10,16 @@ vi.mock('../api/client', async (importOriginal) => {
   return { ...actual, apiGet };
 });
 
-import { fetchOlderIdeas, hasMore, ideas, loadIdeas, loadingMore, PAGE_SIZE } from './ideas';
+import {
+  fetchOlderIdeas,
+  hasMore,
+  ideas,
+  loadedLimit,
+  loadIdeas,
+  loadingMore,
+  PAGE_SIZE,
+  scrolledItems,
+} from './ideas';
 
 /** 造一条想法，只覆盖要测的字段。 */
 function makeIdea(index: number): Idea {
@@ -48,6 +57,7 @@ beforeEach(() => {
   ideas.value = [];
   hasMore.value = false;
   loadingMore.value = false;
+  scrolledItems.value = 0;
 });
 
 describe('loadIdeas', () => {
@@ -128,5 +138,39 @@ describe('fetchOlderIdeas', () => {
 
     expect(older).toHaveLength(3);
     expect(hasMore.value).toBe(false);
+  });
+
+  it('fetchOlderIdeas 记下往上翻过的深度', async () => {
+    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
+
+    await fetchOlderIdeas(makeFilter(), 2);
+
+    // 翻出来多少条就记多少条：SSE 重拉时按它保留深度。
+    expect(scrolledItems.value).toBe(PAGE_SIZE);
+  });
+
+  it('只加载一页会把深度清零（列表被重置了）', async () => {
+    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
+    await fetchOlderIdeas(makeFilter(), 2);
+    expect(scrolledItems.value).toBe(PAGE_SIZE);
+
+    // 只加载一页 = 整表替换成最新的一页：翻过的历史没了，深度也就没了。
+    await loadIdeas(makeFilter());
+    expect(scrolledItems.value).toBe(0);
+  });
+});
+
+describe('loadedLimit', () => {
+  it('loaded_limit_keeps_the_scrolled_depth', () => {
+    // 没往上翻过：一页 + 一条（多出来的那条用来判断还有没有更旧的）。
+    expect(loadedLimit(0)).toBe(PAGE_SIZE + 1);
+    // 往上翻过一页：那一页也得留在重拉回来的列表里。
+    expect(loadedLimit(PAGE_SIZE)).toBe(PAGE_SIZE + 1 + PAGE_SIZE);
+  });
+
+  it('loaded_limit_is_clamped_to_the_server_maximum', () => {
+    // 服务端 `limit` 的上限是 1000：超了回 400 `invalid_pagination`，
+    // 一个 400 会让 SSE 的刷新彻底断掉。
+    expect(loadedLimit(10_000)).toBe(1000);
   });
 });
