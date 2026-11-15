@@ -591,6 +591,139 @@ public sealed class SearchEndpointTests
     }
 
     /// <summary>
+    /// <c>offset</c> 的语义是「**跳过最相关的前 N 条**」。
+    /// </summary>
+    /// <remarks>
+    /// 这与 <c>GET /api/ideas</c> 的 <c>offset</c> **相反**（那边是往回翻历史、
+    /// 从最新一端数），是 agent 翻页的唯一依据 —— 只断言「返回了几条」的话，
+    /// 「永远返回第一页」的实现照样能过。
+    /// <para>
+    /// 期望顺序不写死：先取全量（那就是 bm25 的顺序：最相关 → 最不相关），
+    /// 再断言每一页正好是全量里对应位置的那条。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Search_offset_skips_the_most_relevant_ones()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        // 三条命中，相关度各不相同（标题 / 正文 / 正文）。
+        await CreateIdeaAsync(client, "完全不相关的正文", title: "咖啡清单");
+        await CreateIdeaAsync(client, "咖啡机滤芯");
+        await CreateIdeaAsync(client, "手冲咖啡的要点");
+
+        // 先取全量：bm25 的顺序就是「最相关 → 最不相关」。
+        var full = await ReadSearchAsync(await client.GetAsync("/api/search?q=咖啡&limit=10"));
+        var ordered = ReadGroupIds(full, "ideas");
+
+        Assert.Equal(3, ordered.Length);
+
+        // offset=N → 跳过最相关的前 N 条，返回第 N+1 条。
+        for (var offset = 0; offset < ordered.Length; offset++)
+        {
+            var page = await ReadSearchAsync(
+                await client.GetAsync($"/api/search?q=咖啡&limit=1&offset={offset}"));
+
+            var ids = ReadGroupIds(page, "ideas");
+
+            Assert.Single(ids);
+            Assert.Equal(ordered[offset], ids[0]);
+        }
+    }
+
+    /// <summary>
+    /// 项目组与想法组**同一个回收站口径**：默认含回收站（并标 <c>trashed</c>），
+    /// <c>includeTrash=false</c> 时不含。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §11.6：「<c>true</c> = 软删的**全部**都收（想法、项目都算）」。
+    /// 软删不动索引（项目名还在 <c>project_fts</c> 里），所以它默认就该出现在结果里。
+    /// </remarks>
+    [Fact]
+    public async Task Search_projects_follow_the_trash_rule()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "咖啡项目");
+
+        var deleted = await client.DeleteAsync($"/api/projects/{projectId}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        // 默认（含回收站）：软删的项目在 projects 组里，并标 trashed。
+        var root = await ReadSearchAsync(await client.GetAsync("/api/search?q=咖啡"));
+        var projects = root.GetProperty("projects").GetProperty("items").EnumerateArray().ToArray();
+
+        var item = Assert.Single(projects, project =>
+            project.GetProperty("id").GetString() == projectId);
+
+        Assert.True(item.GetProperty("trashed").GetBoolean());
+
+        // includeTrash=false：不在。
+        var excluded = await ReadSearchAsync(
+            await client.GetAsync("/api/search?q=咖啡&includeTrash=false"));
+
+        Assert.Empty(excluded.GetProperty("projects").GetProperty("items").EnumerateArray());
+    }
+
+    /// <summary>
+    /// 标签组的 <c>count</c> **只数活着的想法**，且不随 <c>includeTrash</c> 变化。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §11.3：「<c>tags.items[].count</c> 的口径与 <c>GET /api/tags</c> 保持一致
+    /// （只数**未删除**的想法），**不随 <c>includeTrash</c> 变化** ——
+    /// 它回答的是「这个标签现在被用着多少次」，不是「搜索结果里出现了多少次」。
+    /// </remarks>
+    [Fact]
+    public async Task Search_tags_count_only_live_ideas()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var live = await CreateIdeaAsync(client, "活着的想法", tags: new[] { "烘焙" });
+        var dead = await CreateIdeaAsync(client, "删掉的想法", tags: new[] { "烘焙" });
+
+        var deleted = await client.DeleteAsync($"/api/ideas/{dead}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        var root = await ReadSearchAsync(await client.GetAsync("/api/search?q=烘焙"));
+
+        var tag = Assert.Single(root.GetProperty("tags").GetProperty("items").EnumerateArray());
+
+        Assert.Equal("烘焙", tag.GetProperty("name").GetString());
+
+        // 只数活着的想法（两条里有一条被软删了）。
+        Assert.Equal(1, tag.GetProperty("count").GetInt32());
+
+        // 口径与 GET /api/tags 一致：那边报的是同一个数。
+        var tags = await client.GetAsync("/api/tags");
+        Assert.Equal(HttpStatusCode.OK, tags.StatusCode);
+
+        using var document = JsonDocument.Parse(await tags.Content.ReadAsStringAsync());
+        var listed = Assert.Single(document.RootElement.EnumerateArray(), item =>
+            item.GetProperty("name").GetString() == "烘焙");
+
+        Assert.Equal(1, listed.GetProperty("count").GetInt32());
+
+        // includeTrash=true 也不变：它是「这个标签现在被用着多少次」。
+        var withTrash = await ReadSearchAsync(
+            await client.GetAsync("/api/search?q=烘焙&includeTrash=true"));
+
+        Assert.Equal(1, withTrash.GetProperty("tags").GetProperty("items")[0]
+            .GetProperty("count").GetInt32());
+
+        // 想法组：活着的想法 trashed=false，软删的那条 trashed=true。
+        var ideas = root.GetProperty("ideas").GetProperty("items").EnumerateArray().ToArray();
+
+        var liveItem = Assert.Single(ideas, idea => idea.GetProperty("id").GetString() == live);
+        var deadItem = Assert.Single(ideas, idea => idea.GetProperty("id").GetString() == dead);
+
+        Assert.False(liveItem.GetProperty("trashed").GetBoolean());
+        Assert.True(deadItem.GetProperty("trashed").GetBoolean());
+    }
+
+    /// <summary>
     /// <c>q</c> 缺失、给空串、给纯空白 → 400 <c>invalid_search_query</c>。
     /// </summary>
     [Fact]
@@ -704,6 +837,18 @@ public sealed class SearchEndpointTests
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         return document.RootElement.GetProperty("ideas").GetProperty("items")
+            .EnumerateArray()
+            .Select(element => element.GetProperty("id").GetString()!)
+            .ToArray();
+    }
+
+    /// <summary>读全库搜索里某一组的 id（顺序即返回顺序）。</summary>
+    /// <param name="root">搜索响应的根对象。</param>
+    /// <param name="group">组名（<c>ideas</c> / <c>projects</c> —— 两组的条目都有 id；
+    /// 标签组只有 name 与 count）。</param>
+    private static string[] ReadGroupIds(JsonElement root, string group)
+    {
+        return root.GetProperty(group).GetProperty("items")
             .EnumerateArray()
             .Select(element => element.GetProperty("id").GetString()!)
             .ToArray();

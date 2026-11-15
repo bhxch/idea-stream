@@ -83,10 +83,7 @@ public sealed class SearchRepository(SqliteDatabase db)
         {
             command.CommandText = IdeasPageSql(matchExpression, includeTrash);
 
-            if (matchExpression is not null)
-            {
-                command.Parameters.AddWithValue("$match", matchExpression);
-            }
+            BindMatch(command, matchExpression);
 
             command.Parameters.AddWithValue("$limit", limit);
             command.Parameters.AddWithValue("$offset", offset);
@@ -142,10 +139,7 @@ public sealed class SearchRepository(SqliteDatabase db)
         {
             command.CommandText = ProjectsPageSql(matchExpression, includeTrash);
 
-            if (matchExpression is not null)
-            {
-                command.Parameters.AddWithValue("$match", matchExpression);
-            }
+            BindMatch(command, matchExpression);
 
             command.Parameters.AddWithValue("$limit", limit);
             command.Parameters.AddWithValue("$offset", offset);
@@ -187,10 +181,7 @@ public sealed class SearchRepository(SqliteDatabase db)
         {
             command.CommandText = TagsPageSql(matchExpression);
 
-            if (matchExpression is not null)
-            {
-                command.Parameters.AddWithValue("$match", matchExpression);
-            }
+            BindMatch(command, matchExpression);
 
             command.Parameters.AddWithValue("$limit", limit);
             command.Parameters.AddWithValue("$offset", offset);
@@ -378,16 +369,33 @@ public sealed class SearchRepository(SqliteDatabase db)
         return "SELECT COUNT(*) FROM tag_fts JOIN tag t ON t.id = tag_fts.rowid WHERE tag_fts MATCH $match;";
     }
 
+    /// <summary>
+    /// 把 MATCH 表达式绑上去。
+    /// </summary>
+    /// <param name="command">要执行的命令。</param>
+    /// <param name="matchExpression">MATCH 表达式；<c>null</c> = 没有关键词（不过滤）。</param>
+    /// <remarks>
+    /// 没有关键词时**不绑**：那条 SQL 里没有 <c>$match</c> 这个占位符
+    /// （走的是「不过滤」那套 FROM），绑一个用不上的参数没有意义。
+    /// <para>
+    /// 六个查询（页 + 计数 × 三组）都走这里：「有没有关键词」这件事只有一处判。
+    /// </para>
+    /// </remarks>
+    private static void BindMatch(SqliteCommand command, string? matchExpression)
+    {
+        if (matchExpression is not null)
+        {
+            command.Parameters.AddWithValue("$match", matchExpression);
+        }
+    }
+
     /// <summary>想法命中总数。</summary>
     private static int CountIdeas(SqliteConnection connection, string? matchExpression, bool includeTrash)
     {
         using var command = connection.CreateCommand();
         command.CommandText = IdeasCountSql(matchExpression, includeTrash);
 
-        if (matchExpression is not null)
-        {
-            command.Parameters.AddWithValue("$match", matchExpression);
-        }
+        BindMatch(command, matchExpression);
 
         return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
@@ -398,10 +406,7 @@ public sealed class SearchRepository(SqliteDatabase db)
         using var command = connection.CreateCommand();
         command.CommandText = ProjectsCountSql(matchExpression, includeTrash);
 
-        if (matchExpression is not null)
-        {
-            command.Parameters.AddWithValue("$match", matchExpression);
-        }
+        BindMatch(command, matchExpression);
 
         return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
@@ -412,10 +417,7 @@ public sealed class SearchRepository(SqliteDatabase db)
         using var command = connection.CreateCommand();
         command.CommandText = TagsCountSql(matchExpression);
 
-        if (matchExpression is not null)
-        {
-            command.Parameters.AddWithValue("$match", matchExpression);
-        }
+        BindMatch(command, matchExpression);
 
         return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
