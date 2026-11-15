@@ -310,10 +310,14 @@ public sealed class IdeaRepository(SqliteDatabase db)
     }
 
     /// <summary>
-    /// 插入一条想法，并写入它的标签链接。
+    /// 插入一条想法，并写入它的标签链接与全文索引行。
     /// 返回的想法带库里实际的标签名 —— 标签字典按大小写不敏感唯一，
     /// 复用的是字典里最早出现的那一行，写法以它为准。
     /// </summary>
+    /// <remarks>
+    /// 索引行与业务行在**同一个事务**里写（规格 §10.1）：索引落后就是搜不到，
+    /// 索引超前就是搜到不该搜到的，两种偏差都得靠同事务杜绝。
+    /// </remarks>
     public Idea Insert(Idea idea)
     {
         return Write((connection, transaction) =>
@@ -338,14 +342,35 @@ public sealed class IdeaRepository(SqliteDatabase db)
 
             WriteTagLinks(connection, transaction, idea.Id, idea.Tags);
 
-            return idea with { Tags = ReadTagNames(connection, transaction, idea.Id) };
+            // 标签名用**库里读回来的排序版**，不是调用方给的那份：
+            // 老库回填是把标签名按名称排序后拼的（见 SearchIndexInitializer），
+            // 增量写必须逐字节一致 —— 否则同一条想法在两条路径下写出的 tags 文本不同，
+            // 普通匹配不受影响，但跨两个标签的短语查询会时灵时不灵。
+            var tags = ReadTagNames(connection, transaction, idea.Id);
+
+            // 索引行与业务行在同一个事务里写（规格 §10.1）：索引落后就是搜不到，
+            // 索引超前就是搜到不该搜到的，两种偏差都得靠同事务杜绝。
+            SearchIndex.UpsertIdea(
+                connection,
+                transaction,
+                idea.Id,
+                idea.Title,
+                idea.Content,
+                tags,
+                ReadProjectName(connection, transaction, idea.ProjectId));
+
+            return idea with { Tags = tags };
         });
     }
 
     /// <summary>
-    /// 改正文与标题，并刷新 <c>updated_at</c>。
+    /// 改正文与标题，并刷新 <c>updated_at</c>；索引行跟着更新（标题与正文两列）。
     /// <paramref name="title"/> 为 null 表示把标题写成「无标题」（NULL）。
     /// </summary>
+    /// <remarks>
+    /// 索引写的是**刚落库的值**：正文改了，索引里就不能还留着旧 token
+    /// （旧的搜得到、新的搜不到，比整条搜不到更难查）。
+    /// </remarks>
     public Idea UpdateContent(string id, string? title, string content)
     {
         return Write((connection, transaction) =>
@@ -362,7 +387,19 @@ public sealed class IdeaRepository(SqliteDatabase db)
                 command.ExecuteNonQuery();
             }
 
-            return ReadIdea(connection, transaction, id);
+            // 回读一次：索引行要用刚落库的标题与正文，标签与项目名沿用库里的现值。
+            var idea = ReadIdea(connection, transaction, id);
+
+            SearchIndex.UpsertIdea(
+                connection,
+                transaction,
+                id,
+                idea.Title,
+                idea.Content,
+                idea.Tags,
+                ReadProjectName(connection, transaction, idea.ProjectId));
+
+            return idea;
         });
     }
 
@@ -413,11 +450,24 @@ public sealed class IdeaRepository(SqliteDatabase db)
         });
     }
 
-    /// <summary>彻底删除一行（idea_tag 靠外键 CASCADE 一起清掉）。</summary>
+    /// <summary>
+    /// 彻底删除一行（idea_tag 靠外键 CASCADE 一起清掉），索引行一起删。
+    /// </summary>
+    /// <remarks>
+    /// 索引行必须**一起删**（规格 §10.3）：<c>idea</c> 表没有显式整数主键，
+    /// rowid 会被复用 —— 留着孤儿索引行的话，下一条新想法可能顶到它的位置上，索引就串了。
+    /// <para>
+    /// 两条语句在**同一个事务**里：索引删了、业务行没删的话，那条想法就再也搜不到了
+    /// （没有异常、没有日志）。
+    /// </para>
+    /// </remarks>
     public void HardDelete(string id)
     {
-        Execute((connection, transaction) =>
+        Write((connection, transaction) =>
         {
+            // 顺序不能反：DeleteIdea 靠 idea 行取 rowid，idea 行没了就取不到。
+            SearchIndex.DeleteIdea(connection, transaction, id);
+
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = "DELETE FROM idea WHERE id = $id;";
@@ -434,8 +484,11 @@ public sealed class IdeaRepository(SqliteDatabase db)
 
     /// <summary>
     /// 覆盖式设置标签：清掉原有链接后写入新的一批，并刷新 <c>updated_at</c>
-    /// （换标签也是一次写操作，必须把条目挪到列表底部）。
+    /// （换标签也是一次写操作，必须把条目挪到列表底部）；索引行的标签列跟着更新。
     /// </summary>
+    /// <remarks>
+    /// 新建的标签还要进标签索引（<c>tag_fts</c>）—— 标签名是要能搜到的。
+    /// </remarks>
     public void ReplaceTags(string ideaId, IReadOnlyList<string> tags)
     {
         Write((connection, transaction) =>
@@ -449,6 +502,19 @@ public sealed class IdeaRepository(SqliteDatabase db)
             }
 
             WriteTagLinks(connection, transaction, ideaId, tags);
+
+            // 标签名用**库里读回来的排序版**，不是入参那份（那是用户给的顺序）：
+            // 回填路径按名称排序后拼，两条路径必须逐字节一致。
+            var idea = ReadIdea(connection, transaction, ideaId);
+
+            SearchIndex.UpsertIdea(
+                connection,
+                transaction,
+                ideaId,
+                idea.Title,
+                idea.Content,
+                idea.Tags,
+                ReadProjectName(connection, transaction, idea.ProjectId));
 
             using var touch = connection.CreateCommand();
             touch.Transaction = transaction;
@@ -504,6 +570,83 @@ public sealed class IdeaRepository(SqliteDatabase db)
         }
 
         return names;
+    }
+
+    /// <summary>
+    /// 读项目名；项目不存在时返回空串。
+    /// </summary>
+    /// <remarks>
+    /// 项目名进了想法的索引列（搜项目名要能搜到想法），
+    /// 查不到就写空串 —— 索引里不该出现字典外的项目名。
+    /// </remarks>
+    private static string ReadProjectName(
+        SqliteConnection connection, SqliteTransaction? transaction, string projectId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT name FROM project WHERE id = $projectId;";
+        command.Parameters.AddWithValue("$projectId", projectId);
+
+        return command.ExecuteScalar() as string ?? string.Empty;
+    }
+
+    /// <summary>
+    /// 重建某个项目下**全部**想法的索引行（项目改名时用）。
+    /// </summary>
+    /// <param name="connection">数据库连接。</param>
+    /// <param name="transaction">所在事务（可为 null = 不在事务里）。</param>
+    /// <param name="projectId">项目 id。</param>
+    /// <param name="projectName">项目名（写进索引的项目名列）。</param>
+    /// <remarks>
+    /// 项目名进了想法的索引列，所以项目改名必须把该项目下所有想法的索引行重建一遍：
+    /// 不重建的话，搜旧项目名还能搜到、搜新项目名搜不到。
+    /// <para>
+    /// 回收站里的想法也要重建：软删不动索引，它们照样在索引里。
+    /// </para>
+    /// <para>
+    /// 想法数量是几百到几千级，逐条重建的成本可忽略。
+    /// </para>
+    /// </remarks>
+    internal static void ReindexProjectIdeas(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string projectId,
+        string projectName)
+    {
+        foreach (var ideaId in ReadIdeaIdsByProject(connection, transaction, projectId))
+        {
+            // 标题与正文从库里读，标签用读回来的排序版（与回填路径一致）。
+            var idea = ReadIdea(connection, transaction, ideaId);
+
+            SearchIndex.UpsertIdea(
+                connection,
+                transaction,
+                ideaId,
+                idea.Title,
+                idea.Content,
+                idea.Tags,
+                projectName);
+        }
+    }
+
+    /// <summary>读某个项目下全部想法的 id（含回收站里的）。</summary>
+    private static IReadOnlyList<string> ReadIdeaIdsByProject(
+        SqliteConnection connection, SqliteTransaction? transaction, string projectId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            "SELECT id FROM idea WHERE project_id = $projectId ORDER BY rowid;";
+        command.Parameters.AddWithValue("$projectId", projectId);
+
+        var ids = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            ids.Add(reader.GetString(0));
+        }
+
+        return ids;
     }
 
     /// <summary>
@@ -621,6 +764,10 @@ public sealed class IdeaRepository(SqliteDatabase db)
     /// 取标签行的 id；没有就新建一行。
     /// 标签名按大小写不敏感唯一（字典约束），所以复用已有行 —— 写法以字典里最早那次为准。
     /// </summary>
+    /// <remarks>
+    /// 新建的标签要顺带写进标签索引（<c>tag_fts</c>）：标签名是要能搜到的。
+    /// 复用已有行就不必再写 —— 那一行的索引早就在了。
+    /// </remarks>
     private static long EnsureTag(SqliteConnection connection, SqliteTransaction? transaction, string name)
     {
         var existing = FindTagId(connection, transaction, name);
@@ -638,6 +785,11 @@ public sealed class IdeaRepository(SqliteDatabase db)
             insert.Parameters.AddWithValue("$name", name);
             insert.ExecuteNonQuery();
         }
+
+        // 标签索引行与字典行在同一个事务里写（规格 §10.2）。
+        // OR IGNORE 让并发插入（上面那句 INSERT 被忽略）的情况也无害：
+        // 同一行写两次是幂等的。
+        SearchIndex.UpsertTag(connection, transaction, name);
 
         return FindTagId(connection, transaction, name)
                ?? throw new InvalidOperationException($"标签写入后拿不到 id：{name}");

@@ -85,6 +85,9 @@ public sealed class ProjectRepository(SqliteDatabase db)
     }
 
     /// <summary>新建项目。id 用单调 UUIDv7（32 位无连字符小写 hex）。</summary>
+    /// <remarks>
+    /// 索引行与业务行在**同一个事务**里写（规格 §10.1）：项目名是要能搜到的。
+    /// </remarks>
     public Project Insert(string name, int sortOrder)
     {
         var id = MonotonicGuid.NewUuid7().ToString("N");
@@ -105,12 +108,18 @@ public sealed class ProjectRepository(SqliteDatabase db)
                 command.ExecuteNonQuery();
             }
 
+            SearchIndex.UpsertProject(connection, transaction, id, name);
+
             var timestamp = SqliteDatabase.ParseTimestamp(now);
             return new Project(id, name, sortOrder, timestamp, timestamp, null);
         });
     }
 
     /// <summary>改项目名，返回改完之后的项目。</summary>
+    /// <remarks>
+    /// 改名要重建该项目下所有想法的索引行：项目名进了想法的索引列
+    /// （搜项目名要能搜到想法），不重建的话搜旧项目名还能搜到、搜新项目名搜不到。
+    /// </remarks>
     public Project Rename(string id, string name)
     {
         return Write((connection, transaction) =>
@@ -126,6 +135,12 @@ public sealed class ProjectRepository(SqliteDatabase db)
                 command.Parameters.AddWithValue("$id", id);
                 command.ExecuteNonQuery();
             }
+
+            // 索引行：项目名换了，索引里得跟着换。
+            SearchIndex.UpsertProject(connection, transaction, id, name);
+
+            // 该项目下所有想法的索引行（项目名列变了）。
+            IdeaRepository.ReindexProjectIdeas(connection, transaction, id, name);
 
             using var read = connection.CreateCommand();
             read.Transaction = transaction;

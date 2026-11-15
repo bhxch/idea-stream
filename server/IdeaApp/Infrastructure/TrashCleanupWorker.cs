@@ -103,6 +103,11 @@ public sealed class TrashCleanupWorker(
     /// <c>idea.project_id</c> 没有 <c>ON DELETE CASCADE</c>，不先删想法项目行就删不掉；
     /// 项目行删掉后，该项目下的 webhook 靠外键的 <c>ON DELETE CASCADE</c> 一起带走。
     /// </para>
+    /// <para>
+    /// 三条业务 <c>DELETE</c> 之前各有一条删索引的 <c>DELETE</c>：清理是裸 SQL，
+    /// 绕过仓储层，不会触发仓储里的索引同步逻辑。索引行必须一起删 ——
+    /// 孤儿索引行占着 rowid，而 rowid 会被复用（规格 §10.3）。
+    /// </para>
     /// </remarks>
     public int Cleanup()
     {
@@ -115,6 +120,17 @@ public sealed class TrashCleanupWorker(
 
         // 1) 过期的顶层想法：已删，且它的项目没被删
         //    （项目被删时它下面的想法在容器里，随容器一起清理）。
+        //
+        //    索引行**先删**：它靠 idea 行取 rowid，idea 行没了就取不到。
+        //    清理是绕过仓储层的裸 SQL，不走仓储的索引同步逻辑，所以要单独补上。
+        //    留着孤儿索引行不只是脏数据 —— 它占着 rowid，而 idea 表没有显式整数主键、
+        //    rowid 会被复用，下一条新想法可能顶到它的位置上，索引就串了（规格 §10.3）。
+        Execute(connection, transaction,
+            "DELETE FROM idea_fts WHERE rowid IN (SELECT rowid FROM idea " +
+            "WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff " +
+            "AND project_id NOT IN (SELECT id FROM project WHERE deleted_at IS NOT NULL));",
+            cutoff);
+
         var topLevelIdeas = Execute(connection, transaction,
             "DELETE FROM idea WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff " +
             "AND project_id NOT IN (SELECT id FROM project WHERE deleted_at IS NOT NULL);",
@@ -122,12 +138,23 @@ public sealed class TrashCleanupWorker(
 
         // 2) 过期容器项目下的全部想法（想法的删除时刻可能比项目新：
         //    比如想法被单独恢复过又删掉，但项目已经过期 —— 容器没了，想法也不能留下）。
+        Execute(connection, transaction,
+            "DELETE FROM idea_fts WHERE rowid IN (SELECT rowid FROM idea " +
+            "WHERE project_id IN (SELECT id FROM project WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff));",
+            cutoff);
+
         var containerIdeas = Execute(connection, transaction,
             "DELETE FROM idea WHERE project_id IN " +
             "(SELECT id FROM project WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff);",
             cutoff);
 
         // 3) 过期的容器项目行（该项目下的 webhook 靠外键的 ON DELETE CASCADE 带走）。
+        //    索引行同样先删：它靠 project 行取 rowid。
+        Execute(connection, transaction,
+            "DELETE FROM project_fts WHERE rowid IN (SELECT rowid FROM project " +
+            "WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff);",
+            cutoff);
+
         var projects = Execute(connection, transaction,
             "DELETE FROM project WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff;",
             cutoff);
