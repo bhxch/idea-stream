@@ -84,6 +84,135 @@ describe('MessageItem', () => {
     expect(wrapper.get('.body').text()).toBe('第一行\n第二行');
   });
 
+  it('正文里命中的那几段被 <mark> 包住', () => {
+    const wrapper = mountItem({
+      idea: {
+        ...idea,
+        title: '标题',
+        content: '买咖啡机',
+        matches: [{ field: 'content', start: 1, length: 2 }],
+      },
+    });
+
+    const marks = wrapper.get('.body').findAll('mark');
+    expect(marks.map((mark) => mark.text())).toEqual(['咖啡']);
+    // 没命中的那部分照旧是普通文本。
+    expect(wrapper.get('.body').text()).toBe('买咖啡机');
+  });
+
+  it('重复或重叠的命中不会渲染出嵌套的 <mark>', () => {
+    // 服务端允许给出重复或重叠的区间（契约里写明由前端合并）：
+    // 不合并的话 <mark> 会嵌套起来。
+    const wrapper = mountItem({
+      idea: {
+        ...idea,
+        title: '标题',
+        content: '咖啡咖啡',
+        matches: [
+          { field: 'content', start: 0, length: 2 },
+          { field: 'content', start: 0, length: 2 },
+          { field: 'content', start: 1, length: 2 },
+        ],
+      },
+    });
+
+    const marks = wrapper.get('.body').findAll('mark');
+    expect(marks.map((mark) => mark.text())).toEqual(['咖啡咖']);
+    expect(wrapper.get('.body').find('mark mark').exists()).toBe(false);
+  });
+
+  it('标题为空时落在首行的命中跟着视觉标题走（不能错切到正文里）', () => {
+    const wrapper = mountItem({
+      idea: {
+        ...idea,
+        content: '咖啡机\n水温不错',
+        matches: [{ field: 'content', start: 0, length: 2 }],
+      },
+    });
+
+    expect(wrapper.get('.title').findAll('mark').map((mark) => mark.text())).toEqual(['咖啡']);
+    expect(wrapper.get('.body').findAll('mark')).toHaveLength(0);
+    expect(wrapper.get('.body').text()).toBe('水温不错');
+  });
+
+  it('标题为空时落在正文行的命中留在正文里', () => {
+    const wrapper = mountItem({
+      idea: {
+        ...idea,
+        content: '咖啡机\n水温不错',
+        matches: [{ field: 'content', start: 4, length: 2 }],
+      },
+    });
+
+    expect(wrapper.get('.title').findAll('mark')).toHaveLength(0);
+    expect(wrapper.get('.body').findAll('mark').map((mark) => mark.text())).toEqual(['水温']);
+  });
+
+  it('标题里的命中标在标题上', () => {
+    const wrapper = mountItem({
+      idea: {
+        ...idea,
+        title: '咖啡笔记',
+        content: '正文',
+        matches: [{ field: 'title', start: 0, length: 2 }],
+      },
+    });
+
+    expect(wrapper.get('.title').findAll('mark').map((mark) => mark.text())).toEqual(['咖啡']);
+    expect(wrapper.get('.body').findAll('mark')).toHaveLength(0);
+  });
+
+  it('高亮不改变文字本身（DOM 里的文本与原文逐字相同）', () => {
+    const wrapper = mountItem({
+      idea: {
+        ...idea,
+        title: '标题',
+        content: '第一行\n第二行\n\n第四行',
+        matches: [{ field: 'content', start: 4, length: 2 }],
+      },
+    });
+
+    // 正文是 pre-wrap 渲染的：多一个字符、少一个字符都看得见，
+    // 所以这里比 textContent（text() 会 trim，掩盖掉首尾的差异）。
+    expect(wrapper.get('.body').element.textContent).toBe('第一行\n第二行\n\n第四行');
+  });
+
+  it('标题为空时正文只剩后面的部分（逐字相同）', () => {
+    const wrapper = mountItem({
+      idea: { ...idea, content: '\n第一行\n\n第二行' },
+    });
+
+    expect(wrapper.get('.title').element.textContent).toBe('第一行');
+    expect(wrapper.get('.body').element.textContent).toBe('第二行');
+  });
+
+  it('没有命中位置时不渲染 <mark>，文字与原来一样', () => {
+    // 不带关键词的列表、SSE 推来的增量条目都没有命中位置：
+    // 这时候渲染结果必须跟加高亮之前一模一样。
+    const wrapper = mountItem({
+      idea: { ...idea, content: '第一行\n第二行' },
+    });
+
+    expect(wrapper.get('.title').text()).toBe('第一行');
+    expect(wrapper.get('.body').text()).toBe('第二行');
+    expect(wrapper.get('.body').findAll('mark')).toHaveLength(0);
+  });
+
+  it('正文里的特殊字符不会被当成 HTML 解析（有命中时也一样）', () => {
+    const wrapper = mountItem({
+      idea: {
+        ...idea,
+        title: '标题',
+        content: '一条 <b>想法</b> & 一点',
+        matches: [{ field: 'content', start: 0, length: 2 }],
+      },
+    });
+
+    const html = wrapper.get('.body').element.innerHTML;
+    expect(html).not.toContain('<b>');
+    expect(wrapper.get('.body').text()).toBe('一条 <b>想法</b> & 一点');
+  });
+
   it('点正文进入编辑态，Ctrl+Enter 保存', async () => {
     const onSaveContent = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ onSaveContent });
