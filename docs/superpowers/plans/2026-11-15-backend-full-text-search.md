@@ -633,9 +633,9 @@
 
   - `List(IdeaQuery query)` 改成 `List(IdeaQuery query, string? keyword)`：
     - `BuildFilter(query, keyword)` 多接一个参数；有关键词时在 where 末尾追加
-      `AND idea.rowid IN (SELECT rowid FROM idea_fts WHERE idea_fts MATCH $match)`
+      `AND i.rowid IN (SELECT rowid FROM idea_fts WHERE idea_fts MATCH $match)`
       并把参数 `$match` = `TextTokenizer.BuildMatchExpression(keyword)` 加进 `parameters`。
-    - ⚠️ **必须用表名 `idea.` 限定**：主查询的 FROM 是 `FROM idea`（没有别名），标签查询的 FROM 是 `FROM idea i`（有别名）—— 表名在有别名时依然可用，`idea.rowid` 两处都能解析。裸 `rowid` 会报 `ambiguous column name`（标签查询的 FROM 里有三张带 rowid 的表）。
+    - ⚠️ **两条查询都要起别名 `i`**：SQLite 在有别名时**会把表名藏起来**（实测：`FROM idea i` 之后写 `idea.rowid` 报 `no such column: idea.rowid`）。所以主查询也要改成 `FROM idea i`，共享的 WHERE 片段里写 **`i.rowid`** —— 两处 FROM 的别名一致，片段才能共用。裸 `rowid` 也会报 `ambiguous column name`（标签查询的 FROM 里有三张带 rowid 的表）。
     - 关键词为 null 或 `BuildMatchExpression` 返回 null（全是标点）时**不追加这个条件**（当作不过滤）。
     - SQL **不带** `LIMIT` / `OFFSET`：切片在内存做（见 Step 5）。
   - `BuildFilter` 产出的 where 片段仍然被主查询与 `ReadTagNamesOfCandidates` **共用** —— 两边口径一致，标签批量查询会跟着变窄。
