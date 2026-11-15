@@ -680,7 +680,7 @@ public sealed record IdeaDto(
 > - 与既有查询参数的处理方式一致 ✓
 > - 代价：OpenAPI 里这两个参数的 schema 是 `string` 而不是 `integer`。
 >
-> ⚠️ 这是个**应用层面的既有缺口**，不只影响这几个参数（`?unmask=xyz` 这类 `bool?` 查询参数同样回空 body 的 400）。本设计只保证自己新增的参数走 `string?`；把「查询串绑定失败也带 code」这个缺口补上，是另一件事。
+> ⚠️ 这是个**应用层面的既有缺口**，不只影响这几个参数（`?unmask=xyz` 这类 `bool?` 查询参数同样回空 body 的 400）。本设计只保证 `limit` / `offset` 走 `string?`；**`includeTrash` 仍是 `bool?`**（契约里 `boolean` 比 `string` 准确，agent 也只会传 true / false），所以 `?includeTrash=xyz` 这类非法布尔值仍然回**空 body、没有 code** 的 400 —— 那是本设计**没有**覆盖到的情形，不在「非法输入一律 `invalid_pagination`」这句承诺的范围里。把「查询串绑定失败也带 code」这个缺口补上，是另一件事。
 
 > `ApiErrorCodeTests.cs:107` 会扫源码里的 `new ApiException(...)`，码没登记就会红。
 > **`skills/idea-manager/references/errors.md` 的「## 服务端错误码」表也必须同步加这两行** —— `SkillDocGuardTests.Manual_error_code_table_matches_the_registry`（`server/IdeaApp.Tests/SkillDocGuardTests.cs:288-321`）要求该表的 code 集合与 `ApiErrorCodes.All` **完全相等**，漏了必红。
@@ -952,7 +952,7 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 
 | 位置 | 现状 | 改成 |
 |---|---|---|
-| §1.4 / §2.4 | 「关键词为客户端子串匹配，见 §10.2」 | 关键词走后端全文检索（本文档 §7、§11） |
+| §2「目标」的第 4 条 | 「关键词为客户端子串匹配，见 §10.2」 | 关键词走后端全文检索（本文档 §7、§11） |
 | §3 非目标 | 「**不做服务端**全文检索（关键词过滤在客户端做，见 §10.2）」 | 删掉这一句 |
 | §10.2 过滤 | 「过滤在客户端做……服务端不知道每条连接当前在搜什么」 | 状态/标签/关键词都走后端；服务端**知道**关键词（`q` 参数） |
 | §11.4 客户端行为 | 「客户端按当前的项目/状态/标签/关键词条件自行判定是否展示」 | 状态/标签/关键词由服务端过滤；SSE 增量条目仍由客户端**近似**判断 + 防抖重拉（本文档 §13.4–13.5） |
@@ -996,7 +996,7 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 | 分页切片位置 | **内存标签过滤之后**（SQL 不带 LIMIT，与今天的 `IdeaService.List` 一致 —— 它本来就把全部结果读进内存再检查上限） | 我的定 |
 | 分页方向 | **往回翻历史**：`offset` 从**最新**一端数（`/api/ideas`）；`/api/search` 的 `offset` 从**最相关**一端数 | 用户拍板（聊天软件模型）+ 我的定 |
 | `too_many_ideas` | 不传 `limit` 时照旧报；传了 `limit` 就不报 | 我的定 |
-| `limit` / `offset` 的类型 | `int?`（OpenAPI 里是 `integer`）；非数字由框架给 `invalid_request_body`，`invalid_pagination` 只管越界 | 我的定 |
+| `limit` / `offset` 的类型 | `string?`（OpenAPI 里是 `string`），由服务层自己解析：不是数字、越界、`offset` 单独给一律 `invalid_pagination`（绑 `int?` 时非数字输入回的是**空 body 没有 code** 的 400 —— 实测，见 §11.5） | 我的定（实测后改，见 §11.5） |
 | `trashed` 标志的位置 | `IdeaDto.trashed` / `ProjectDto.trashed` 两个可选字段，不新增 DTO 类型 | 我的定 |
 | 回收站口径 | `/api/search` 默认全收（含已删项目下的想法、已删项目），标 `trashed`；`tags[].count` 口径不变 | 我的定 |
 | 前端过滤判断的位置 | 只有**一层**，在数据层（`applyEvent` 用 `activeFilter`）；显示层只排序不过滤；`datasetFilter` 移除 | 我的定（评审指出「显示层再过滤会误杀服务端结果」） |
