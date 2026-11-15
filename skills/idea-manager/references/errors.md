@@ -49,7 +49,7 @@
 | `merge_cross_project` | 不能跨项目合并想法 | 先把它们移到同一项目 |
 | `not_in_trash` | 要恢复的东西不在回收站里 | 先拉 GET /api/trash 确认 |
 | `setting_key_not_writable` | 该设置项不可经 API 修改（只有 project.sort_mode 可以） | 只能改 project.sort_mode |
-| `too_many_ideas` | 命中数超过单次返回上限，请收窄过滤条件 | 收窄过滤条件（加 projectId / status / tags） |
+| `too_many_ideas` | 命中数超过单次返回上限，请收窄过滤条件 | 收窄过滤条件（加 projectId / status / tags）或给 `limit` 分页 |
 | `api_not_found` | 请求的接口不存在（路径打错或接口已下线） | 核对路径；完整契约见 `/openapi/v1.json` |
 | `delivery_not_found` | 投递记录不存在 | 重新拉该 webhook 的投递列表 |
 | `idea_not_found` | 想法不存在 | 重新拉列表，可能是别的设备删了 |

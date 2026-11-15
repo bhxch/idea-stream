@@ -26,13 +26,26 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 
 | 方法 + 路径 | 说明 | 入参 | 请求体字段 | 成功状态码 |
 |---|---|---|---|---|
-| GET /api/ideas | 列表（裸数组） | `projectId`、`status`、`tags`、`tagMode` | 无 | 200 |
+| GET /api/ideas | 列表（裸数组，可带关键词与往回翻的分页） | `projectId`、`status`、`tags`、`tagMode`、`q`、`limit`、`offset` | 无 | 200 |
 | POST /api/ideas | 新建一条想法 | 无 | `projectId`、`content`、`title`、`tags` | 201 |
 | PATCH /api/ideas/{id} | 改标题/正文 | 路径参数 `id` | `title`、`content` | 200 |
 | DELETE /api/ideas/{id} | 删（进回收站） | 路径参数 `id` | 无 | 204 |
 | PUT /api/ideas/{id}/tags | **覆盖式**设标签 | 路径参数 `id` | `tags`（数组） | 200 |
 | POST /api/ideas/{id}/complete | 标记完成 / 取消完成 | 路径参数 `id` | `done`（布尔，**必填**） | 200 |
 | POST /api/ideas/{id}/restore | 从回收站恢复 | 路径参数 `id` | 无 | 200 |
+
+`GET /api/ideas` 的三个搜索 / 分页参数：
+
+| 参数 | 说明 |
+|---|---|
+| `q` | 关键词。**省略、只有空白、只有标点 = 不过滤**（返回全部命中） |
+| `limit` | 这一页最多几条（1..1000）。**不给就没有分页**：命中数超过单次返回上限（默认 2000）时是 400 `too_many_ideas`；给了 `limit` 就只给那一页，不再报 `too_many_ideas` |
+| `offset` | **往回翻**已经翻过多少条（从**最新**一端数）。`offset > 0` 而 `limit` 缺省 → 400 `invalid_pagination`（翻历史必须知道翻多宽） |
+
+响应形状不变：仍是**裸数组** `IdeaDto[]`。
+
+`limit` 与 `offset` 在契约里是 **string**（不是 integer）：值由服务端自己解析，
+不是数字或越界一律 400 `invalid_pagination`，`detail` 里写明是哪个参数、收到了什么。
 
 ### 搜索
 
@@ -49,7 +62,35 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
   而 `GET /api/ideas` 的 `offset` 是「往回翻历史」（从最新一端数）—— **含义不一样**。
 - **默认含回收站**：软删的条目照样搜得到，每条带 `trashed` 标记；
   `includeTrash=false` 才只要未删的。
-- `limit` 默认 20（范围 1..100），`offset` 默认 0。
+  （`GET /api/ideas` 相反：它**只返回活着的**想法，从不带 `trashed`。）
+- `limit` 默认 **20**（范围 1..100），`offset` 默认 0 →
+  **只给 `offset` 不给 `limit` 在这里是合法的**（`GET /api/ideas` 不行：那边 `limit` 没有默认值）。
+- **`q` 是必填的**：缺失或只有空白 → 400 `invalid_search_query`。
+  ⚠️ **契约里 `q` 看着是可选的**（schema 里没有 `required`）——
+  那是**绑定方式**造成的：端点把查询参数绑成 `string?` 再自己解析，
+  所以「缺失 / 空白」由端点自己判，回的是**带 `code` 的 400**，
+  而不是框架在参数绑定阶段失败时的**空 body 400**。
+  **只读契约的 agent 记得自己补上 `q`。**
+- `limit` 与 `offset` 在契约里也是 **string**（不是 integer）：不是数字或越界一律
+  400 `invalid_pagination`，`detail` 里写明是哪个参数、收到了什么。
+
+### 关键词怎么匹配
+
+`GET /api/ideas?q=` 与 `GET /api/search?q=` **共用一套口径**：
+
+- **英文是词级**：搜 `hel` **搜不到** `hello` —— 要输整个词。
+  大小写不敏感（`Hello` 与 `hello` 是同一个词）。
+- **中文是逐字成词、相邻才算**：搜 `咖啡` 搜得到 `咖啡机滤芯`。
+- **标点不挡路**：标点与空白只是分隔符，一律丢掉。
+  搜 `咖啡水温` 搜得到 `咖啡，水温`。
+  但**别的字挡路**：搜 `咖啡水温` 搜不到 `咖啡的水温`
+  （「的」本身就是一个词，中间隔着它就不算相邻）。
+- **多段之间是 AND**：用空白分开的每一段**都要出现**，但不要求相邻、不要求顺序。
+  `咖啡 水温` = 有「咖啡」**且**有「水温」。
+- **只有标点的查询 = 没有关键词**：不过滤，全部返回。
+  `GET /api/ideas?q=...` 返回全部，`GET /api/search?q=...` 三组都返回全部。
+- **搜的不只是正文**：标题、正文、标签名、项目名都在索引里 ——
+  按标签名或项目名也能搜到想法。
 
 ### 批量与合并
 
@@ -184,6 +225,11 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
 ## 列表的返回形状
 
 - 列表一律是**裸数组**：`[{...}, {...}]`，没有信封对象。
+  （`GET /api/search` 是例外：它是 `{ query, ideas, projects, tags }`，见上面。）
 - 想法列表的排序恒为 `updated_at` 升序、`id` 升序（**最老的在顶、最新的在底**）。
+- 带 `q` 时每条想法多一个 `matches` 数组（命中位置）：
+  `{ field, start, length }`，`field` 是 `title` / `content` / `tags` / `project`，
+  `start` 与 `length` 是那个字段里的 **UTF-16 偏移**。
+  **不带 `q` 时没有这个键** —— 键在不在，就是「这次是不是带关键词」的信号。
 - 命中数超过单次返回上限时是 400 `too_many_ideas`（**不静默截断**）——
-  加 `projectId` / `status` / `tags` 把范围收窄。
+  加 `projectId` / `status` / `tags` 把范围收窄，或给 `limit` 分页。

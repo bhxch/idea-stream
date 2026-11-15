@@ -118,9 +118,49 @@ curl -sS --fail-with-body -G "$IDEA_BASE_URL/api/ideas" \
 `tags` 是**逗号分隔**的一串标签，`tagMode` 取 `or`（缺省）或 `and`；
 `status` 取 `all` / `open` / `done`。
 
+## 搜索
+
+两个搜索端点，**同一个 `q` 口径**（匹配规则见 `api.md` 的「关键词怎么匹配」）：
+
+```bash
+# GET /api/ideas?q=咖啡&limit=20 —— 想法列表里筛关键词（响应是裸数组）
+curl -sS --fail-with-body -G "$IDEA_BASE_URL/api/ideas" \
+  --data-urlencode "q=咖啡" \
+  --data-urlencode "limit=20" \
+  -u "$IDEA_USER:$IDEA_PASS"
+
+# GET /api/search?q=咖啡&limit=20 —— 全库搜索（想法 / 项目 / 标签三组）
+curl -sS --fail-with-body -G "$IDEA_BASE_URL/api/search" \
+  --data-urlencode "q=咖啡" \
+  --data-urlencode "limit=20" \
+  -u "$IDEA_USER:$IDEA_PASS"
+```
+
+`q` 里的中文一样要 **URL 编码** —— 用 `-G` + `--data-urlencode` 让 curl 代劳，
+别手写 `%E5%92%96` 那种百分号串。
+
+`GET /api/search` 的 `q` **必填**（缺失或只有空白 → 400 `invalid_search_query`）；
+`GET /api/ideas` 不给 `q` 就是不过滤。
+
+### 三件 agent 容易踩的事
+
+1. **英文是词级**：搜 `hel` **搜不到** `hello` —— 要输整个词（大小写不敏感）。
+2. **多段之间是 AND**：`咖啡 水温` 要求「咖啡」与「水温」**都出现**，
+   不要求相邻、不要求顺序（`咖啡水温` 才要求挨着）。
+3. **`offset` 的含义不一样**：
+   - `GET /api/ideas?offset=N` = **跳过最新的 N 条**（往回翻历史，从最新一端数）；
+   - `GET /api/search?offset=N` = **跳过最相关的 N 条**（翻相关度页，从最相关一端数）。
+
+   混用会翻到完全不同的结果：往回翻历史用 `/api/ideas`，按相关度找用 `/api/search`。
+   `GET /api/search` 的 `limit` 默认 20，所以那边**只给 `offset` 是合法的**；
+   `GET /api/ideas` 的 `limit` 没有默认值，那边 `offset > 0` 必须配 `limit`，
+   否则 400 `invalid_pagination`。
+
 ## 怎么读响应
 
 - **列表是裸数组**：`[{...}, {...}]`，没有 `{"items": [...]}` 那种信封。
+  （`GET /api/search` 是例外：它回 `{ query, ideas, projects, tags }`，
+  每组是 `{ items, total, offset, limit, hasMore }` —— 见 `api.md`。）
 - **单个资源是对象**：`{...}`。
 - **`DELETE` 返回 204，没有响应体**：curl 的 stdout 是空的（不是 `null`）。
 - **状态码**：`-w '%{http_code}\n'` 单独打出来，或 `-i` 连响应头一起看：
