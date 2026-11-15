@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import type { Idea } from '../api/types';
+import type { Idea, SearchMatch } from '../api/types';
 import { formatRelativeTime } from '../lib/format';
+import {
+  flattenLines,
+  highlightLines,
+  splitTitleAndBody,
+  trimSegments,
+  type HighlightSegment,
+} from '../lib/highlight';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
 import TagEditor from './TagEditor.vue';
 
@@ -163,38 +170,53 @@ watch(
 const confirmingDelete = ref(false);
 
 /**
- * 视觉标题。
+ * 某个字段的命中位置。
  *
- * 标题是可选的（可以只记正文），为空时拿正文首行顶上，
- * 否则列表里一排没有标题的条目会很难认。
+ * `matches` 只在**带关键词**的响应里有（不带关键词时后端整个省略这个键），
+ * SSE 推来的增量条目也没有 —— 没有命中位置就是不高亮，渲染结果跟以前一样。
  */
-const visualTitle = computed(() => {
-  const title = props.idea.title?.trim();
-  if (title) {
-    return title;
-  }
-  const firstLine = props.idea.content.split('\n').find((line) => line.trim().length > 0);
-  return firstLine?.trim() ?? '';
-});
+function matchesOf(field: SearchMatch['field']): SearchMatch[] {
+  return (props.idea.matches ?? []).filter((match) => match.field === field);
+}
 
 /**
- * 正文（渲染用）。
+ * 视觉标题与正文各自的片段。
  *
- * 标题为空时，首行已经当视觉标题了，正文里就不再显示一遍 ——
+ * 视觉标题：标题是可选的（可以只记正文），为空时拿正文首行顶上，
+ * 否则列表里一排没有标题的条目会很难认。
+ *
+ * 正文：标题为空时，首行已经当视觉标题了，正文里就不再显示一遍 ——
  * 否则同一句话会在一条条目里出现两次。
+ *
+ * 命中的位置由服务端给（相对**完整原文**的字符区间），所以先按整段原文切，
+ * 再按行分组 —— 落在视觉标题那行上的命中要跟着标题走，不能错切到正文里。
+ *
+ * 两边一次算好：正文那段的切分两边都要用。
  */
-const bodyContent = computed(() => {
-  if (props.idea.title?.trim()) {
-    return props.idea.content;
+const titleAndBody = computed<{ title: HighlightSegment[]; body: HighlightSegment[] }>(() => {
+  const title = props.idea.title;
+  if (title?.trim()) {
+    // 标题有值：标题就是它本身，正文就是整段内容。
+    return {
+      title: trimSegments(flattenLines(highlightLines(title, matchesOf('title')))),
+      body: flattenLines(highlightLines(props.idea.content, matchesOf('content'))),
+    };
   }
-  const lines = props.idea.content.split('\n');
-  const first = lines.findIndex((line) => line.trim().length > 0);
-  if (first < 0) {
-    return props.idea.content;
-  }
-  // 首行后面跟的空行是分隔用的，一并去掉：正文紧挨着视觉标题。
-  return lines.slice(first + 1).join('\n').replace(/^\n+/, '');
+  // 标题为空：视觉标题与正文都从正文里切出来。
+  const { title: head, body } = splitTitleAndBody(
+    highlightLines(props.idea.content, matchesOf('content')),
+  );
+  return { title: head, body };
 });
+
+/** 视觉标题的片段（命中的那几段渲染成 `<mark>`）。 */
+const titleSegments = computed(() => titleAndBody.value.title);
+
+/** 正文（渲染用）的片段。 */
+const bodySegments = computed(() => titleAndBody.value.body);
+
+/** 视觉标题（纯文本，给 aria-label 用）。 */
+const visualTitle = computed(() => titleSegments.value.map((segment) => segment.text).join(''));
 
 /** 进入编辑态。 */
 function startEdit(): void {
@@ -560,12 +582,18 @@ function confirmDelete(): void {
       >
         {{ idea.done ? '已完成' : '标记完成' }}
       </button>
-      <h2 v-if="!editing" class="title">{{ visualTitle }}</h2>
+      <h2 v-if="!editing" class="title">
+        <template v-for="(segment, index) in titleSegments" :key="index">
+          <mark v-if="segment.marked">{{ segment.text }}</mark>
+          <template v-else>{{ segment.text }}</template>
+        </template>
+      </h2>
       <time class="time">{{ formatRelativeTime(idea.updatedAt) }}</time>
     </div>
 
     <!-- 正文一律按纯文本渲染（插值），绝不用 v-html：内容是用户随手写的，
-         里面可能有 <b>、& 之类的字符，按 HTML 解析会被吞掉或变成注入。 -->
+         里面可能有 <b>、& 之类的字符，按 HTML 解析会被吞掉或变成注入。
+         搜索命中时按区间切成片段，命中的那几段包 <mark>。 -->
     <textarea
       v-if="editing"
       ref="editor"
@@ -576,7 +604,12 @@ function confirmDelete(): void {
       @blur="saveEdit"
       @keydown="onEditorKeydown"
     ></textarea>
-    <div v-else class="body" title="点击编辑" @click="startEdit">{{ bodyContent }}</div>
+    <div v-else class="body" title="点击编辑" @click="startEdit">
+      <template v-for="(segment, index) in bodySegments" :key="index">
+        <mark v-if="segment.marked">{{ segment.text }}</mark>
+        <template v-else>{{ segment.text }}</template>
+      </template>
+    </div>
 
     <TagEditor
       v-if="tagEditing"
@@ -705,6 +738,19 @@ function confirmDelete(): void {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   cursor: text;
+}
+
+/*
+ * 搜索命中的高亮。
+ *
+ * <mark> 的浏览器默认样式是黄底黑字，在暗色主题里很扎眼 ——
+ * 换成主题的强调色，亮暗两套主题下都看得清。
+ */
+.title mark,
+.body mark {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-radius: 3px;
 }
 
 .editor {
