@@ -82,6 +82,9 @@ builder.Services.AddSingleton<SettingRepository>();
 builder.Services.AddSingleton<ProjectService>();
 builder.Services.AddSingleton<IdeaRepository>();
 builder.Services.AddSingleton<IdeaService>();
+// 全库搜索：仓储管三组查询，服务层编排与校验。
+builder.Services.AddSingleton<SearchRepository>();
+builder.Services.AddSingleton<SearchService>();
 builder.Services.AddSingleton<TagRepository>();
 builder.Services.AddSingleton<TagService>();
 builder.Services.AddSingleton<TrashService>();
@@ -224,6 +227,7 @@ app.MapProjectEndpoints();
 app.MapSettingsEndpoints();
 app.MapIdeaEndpoints();
 app.MapBulkIdeaEndpoints();
+app.MapSearchEndpoints();
 app.MapTagEndpoints();
 app.MapEventEndpoints();
 app.MapTrashEndpoints();

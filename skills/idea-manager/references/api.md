@@ -34,6 +34,23 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 | POST /api/ideas/{id}/complete | 标记完成 / 取消完成 | 路径参数 `id` | `done`（布尔，**必填**） | 200 |
 | POST /api/ideas/{id}/restore | 从回收站恢复 | 路径参数 `id` | 无 | 200 |
 
+### 搜索
+
+| 方法 + 路径 | 说明 | 入参 | 请求体字段 | 成功状态码 |
+|---|---|---|---|---|
+| GET /api/search | 全库搜索（想法 / 项目 / 标签三组，各带分页） | `q`（**必填**）、`limit`、`offset`、`includeTrash` | 无 | 200 |
+
+`GET /api/search` 与 `GET /api/ideas?q=` 的差别：
+
+- **返回三组**：响应是 `{ query, ideas, projects, tags }`，
+  每组都是 `{ items, total, offset, limit, hasMore }`（不是裸数组）。
+- **按相关度排**：标题命中比正文命中更相关。
+  这里的 `offset` 是「跳过最相关的前 N 条」，
+  而 `GET /api/ideas` 的 `offset` 是「往回翻历史」（从最新一端数）—— **含义不一样**。
+- **默认含回收站**：软删的条目照样搜得到，每条带 `trashed` 标记；
+  `includeTrash=false` 才只要未删的。
+- `limit` 默认 20（范围 1..100），`offset` 默认 0。
+
 ### 批量与合并
 
 | 方法 + 路径 | 说明 | 请求体字段 | 成功状态码 |

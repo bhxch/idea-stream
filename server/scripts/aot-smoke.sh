@@ -201,6 +201,18 @@ echo "==> GET /api/ideas?q=咖啡&limit=2"
 check_endpoint "/api/ideas?q=%E5%92%96%E5%95%A1&limit=2" "200" \
     'root.ValueKind == JsonValueKind.Array'
 
+echo "==> GET /api/search?q=咖啡&limit=2"
+# 全库搜索：返回静态类型 SearchResponse（**对象**，里面三组 SearchPage<T>）。
+# 白名单里少登记 SearchResponse 或三个 SearchPage<T> 中的任何一个，
+# 这个端点在 AOT 产物下就是 500 —— 普通 dotnet test 有反射兜底，测不出来。
+check_endpoint "/api/search?q=%E5%92%96%E5%95%A1&limit=2" "200" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("query", out var query) && query.GetString() != null && root.TryGetProperty("ideas", out var ideas) && ideas.TryGetProperty("items", out var ideaItems) && ideaItems.ValueKind == JsonValueKind.Array && root.TryGetProperty("projects", out var projects) && projects.TryGetProperty("items", out var projectItems) && projectItems.ValueKind == JsonValueKind.Array && root.TryGetProperty("tags", out var tags) && tags.TryGetProperty("items", out var tagItems) && tagItems.ValueKind == JsonValueKind.Array'
+
+echo "==> GET /api/search?q=（关键词为空）"
+# 错误路径：400 + code=invalid_search_query（业务错误码在 AOT 下同样要送得到）。
+check_endpoint "/api/search?q=" "400" \
+    'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("code", out var code) && code.GetString() == "invalid_search_query"'
+
 echo "==> GET /api/tags"
 # 返回静态类型 List<TagDto>（裸数组）。
 check_endpoint "/api/tags" "200" \

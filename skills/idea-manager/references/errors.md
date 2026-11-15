@@ -34,10 +34,11 @@
 | `invalid_content` | 想法正文为空或全是空白 | 补上正文再提交 |
 | `invalid_event_type` | 订阅的事件名不在已知事件类型里 | 用 `webhooks.md` 里那组事件名 |
 | `invalid_merge_selection` | 合并至少需要两条想法 | 至少选两条 |
-| `invalid_pagination` | limit / offset 不是整数，或超出允许范围 | limit 传 1..1000 的整数；offset 传非负整数，且必须配 limit 一起给 |
+| `invalid_pagination` | limit / offset 不是整数，或超出允许范围 | limit 传范围内的整数（想法列表 1..1000，全库搜索 1..100）；offset 传非负整数（想法列表里它必须配 limit 一起给） |
 | `invalid_project_name` | 项目名称为空或全是空白 | 补上名字 |
 | `invalid_reorder_ids` | 重排请求没有给出任何项目 id | 别发空的 reorder |
 | `invalid_request_body` | 请求体不是合法的 JSON（模型绑定阶段的失败） | 检查发出去的 body 是不是一个 JSON 文档 |
+| `invalid_search_query` | 全库搜索的 `q` 缺失或全是空白 | 给出非空的搜索词 |
 | `invalid_sort_mode` | 排序方式只能是 recent 或 manual | 用这两个值之一 |
 | `invalid_status` | status 参数只支持 all / open / done | 用这三个值之一 |
 | `invalid_tag_mode` | tagMode 参数只支持 or / and | 用这两个值之一 |

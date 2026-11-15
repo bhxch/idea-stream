@@ -5,17 +5,20 @@ using System.Text.Json;
 namespace IdeaApp.Tests;
 
 /// <summary>
-/// <c>GET /api/ideas</c> 的关键词搜索（<c>q</c>）与往回翻历史的分页
-/// （<c>limit</c> / <c>offset</c>）的 HTTP 层测试。
+/// 搜索端点的 HTTP 层测试：<c>GET /api/ideas</c> 的关键词搜索（<c>q</c>）
+/// 与往回翻历史的分页（<c>limit</c> / <c>offset</c>），
+/// 以及 <c>GET /api/search</c> 的全库搜索（想法 / 项目 / 标签三组）。
 ///
 /// <para>
-/// 语义（规格 §7.1、§11.1）：
+/// 语义（规格 §7.1、§11.1、§11.3）：
 /// <list type="bullet">
 /// <item>关键词走全文索引，语义是「词元相邻」：中文等价于子串
 /// （标点与空白不挡路），英文是词级（搜 <c>hel</c> 搜不到 <c>hello</c>）。</item>
 /// <item>多段之间是 AND：<c>咖啡 水温</c> 要求两个都出现，不要求相邻。</item>
-/// <item>分页是往回翻历史：<c>offset</c> 从最新一端数，
+/// <item><c>/api/ideas</c> 的分页是往回翻历史：<c>offset</c> 从最新一端数，
 /// 返回的数组仍是 <c>updated_at</c> 升序。</item>
+/// <item><c>/api/search</c> 的分页是翻相关度页：<c>offset</c> 从**最相关**一端数，
+/// 想法组按 <c>bm25()</c> 排（标题命中比正文命中更相关）。</item>
 /// </list>
 /// </para>
 ///
@@ -429,6 +432,232 @@ public sealed class SearchEndpointTests
         Assert.Contains("offset", problem.GetProperty("detail").GetString()!);
     }
 
+    /// <summary>
+    /// 全库搜索：一次请求拿到想法、项目、标签三组命中，<c>query</c> 原样回显。
+    /// </summary>
+    [Fact]
+    public async Task Search_returns_three_groups()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "工作");
+        var ideaId = await CreateIdeaAsync(
+            client, "咖啡机滤芯", projectId: projectId, tags: new[] { "烘焙" });
+
+        var response = await client.GetAsync("/api/search?q=咖啡");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+
+        // query 回显：agent 拿到的响应里能看见自己搜的是什么。
+        Assert.Equal("咖啡", root.GetProperty("query").GetString());
+
+        // 三组都在（每组都是 { items, total, offset, limit, hasMore }）。
+        var ideas = root.GetProperty("ideas");
+        var projects = root.GetProperty("projects");
+        var tags = root.GetProperty("tags");
+
+        Assert.Equal(JsonValueKind.Array, ideas.GetProperty("items").ValueKind);
+        Assert.Equal(JsonValueKind.Array, projects.GetProperty("items").ValueKind);
+        Assert.Equal(JsonValueKind.Array, tags.GetProperty("items").ValueKind);
+
+        // 想法组里就是那条想法（正文命中）。
+        Assert.Equal(ideaId, ideas.GetProperty("items")[0].GetProperty("id").GetString());
+    }
+
+    /// <summary>
+    /// 想法组按**相关度**排：标题命中的那条排在正文命中的前面。
+    /// </summary>
+    /// <remarks>
+    /// 两条的创建顺序是「正文命中在前」：相关度打平时按 id 升序兜底，
+    /// 那时正文命中的那条会排在前面 —— 这条用例要守的正是「相关度说了算」。
+    /// </remarks>
+    [Fact]
+    public async Task Search_ideas_group_is_sorted_by_relevance()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var inContent = await CreateIdeaAsync(client, "咖啡机滤芯");
+        var inTitle = await CreateIdeaAsync(client, "完全不相关的正文", title: "咖啡清单");
+
+        var ids = await ReadIdeaIdsAsync(await client.GetAsync("/api/search?q=咖啡"));
+
+        Assert.Equal(new[] { inTitle, inContent }, ids);
+    }
+
+    /// <summary>
+    /// 项目与标签各自成组：搜项目名得到项目，搜标签名得到标签。
+    /// </summary>
+    [Fact]
+    public async Task Search_finds_projects_and_tags()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "工作");
+        await CreateIdeaAsync(client, "一条想法", projectId: projectId, tags: new[] { "烘焙" });
+
+        var byProject = await ReadSearchAsync(await client.GetAsync("/api/search?q=工作"));
+        var projectNames = byProject.GetProperty("projects").GetProperty("items")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("name").GetString())
+            .ToArray();
+
+        Assert.Contains("工作", projectNames);
+
+        var byTag = await ReadSearchAsync(await client.GetAsync("/api/search?q=烘焙"));
+        var tagNames = byTag.GetProperty("tags").GetProperty("items")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("name").GetString())
+            .ToArray();
+
+        Assert.Contains("烘焙", tagNames);
+    }
+
+    /// <summary>
+    /// 默认**含**回收站：软删的想法照样搜得到，并且标上 <c>trashed</c>。
+    /// </summary>
+    [Fact]
+    public async Task Search_includes_trash_by_default()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var id = await CreateIdeaAsync(client, "咖啡机滤芯");
+
+        var deleted = await client.DeleteAsync($"/api/ideas/{id}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        var root = await ReadSearchAsync(await client.GetAsync("/api/search?q=咖啡"));
+        var item = root.GetProperty("ideas").GetProperty("items")[0];
+
+        Assert.Equal(id, item.GetProperty("id").GetString());
+        Assert.True(item.GetProperty("trashed").GetBoolean());
+    }
+
+    /// <summary>
+    /// <c>includeTrash=false</c>：回收站里的不收。
+    /// </summary>
+    [Fact]
+    public async Task Search_excludes_trash_when_asked()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var id = await CreateIdeaAsync(client, "咖啡机滤芯");
+
+        var deleted = await client.DeleteAsync($"/api/ideas/{id}");
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        var root = await ReadSearchAsync(await client.GetAsync("/api/search?q=咖啡&includeTrash=false"));
+
+        Assert.Empty(root.GetProperty("ideas").GetProperty("items").EnumerateArray());
+    }
+
+    /// <summary>
+    /// 三组各自分页：<c>limit</c> / <c>offset</c> 各自生效，
+    /// <c>total</c> 是命中总数（不受分页影响），<c>hasMore</c> 说明还有没有。
+    /// </summary>
+    [Fact]
+    public async Task Search_paginates_each_group()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        // 每组造两个命中。想法带的标签名里也有「咖啡」——
+        // 那只影响它**命中在哪个字段**，不影响命中了几条（一条想法就是一条）。
+        await CreateIdeaAsync(client, "咖啡第一条", tags: new[] { "咖啡豆" });
+        await CreateIdeaAsync(client, "咖啡第二条", tags: new[] { "咖啡粉" });
+        await CreateProjectAsync(client, "咖啡甲");
+        await CreateProjectAsync(client, "咖啡乙");
+
+        var root = await ReadSearchAsync(await client.GetAsync("/api/search?q=咖啡&limit=1&offset=1"));
+
+        foreach (var group in new[] { "ideas", "projects", "tags" })
+        {
+            var page = root.GetProperty(group);
+
+            Assert.Single(page.GetProperty("items").EnumerateArray());
+            Assert.Equal(2, page.GetProperty("total").GetInt32());
+            Assert.Equal(1, page.GetProperty("offset").GetInt32());
+            Assert.Equal(1, page.GetProperty("limit").GetInt32());
+
+            // offset + items.Length < total → 1 + 1 < 2 不成立 → 没有更多了。
+            Assert.False(page.GetProperty("hasMore").GetBoolean());
+        }
+    }
+
+    /// <summary>
+    /// <c>q</c> 缺失、给空串、给纯空白 → 400 <c>invalid_search_query</c>。
+    /// </summary>
+    [Fact]
+    public async Task Search_with_empty_query_returns_400()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        foreach (var url in new[] { "/api/search", "/api/search?q=", "/api/search?q=%20%20" })
+        {
+            var response = await client.GetAsync(url);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("invalid_search_query",
+                (await ReadProblemAsync(response)).GetProperty("code").GetString());
+        }
+    }
+
+    /// <summary>
+    /// <c>limit</c> 越界 → 400 <c>invalid_pagination</c>（范围 1..100）。
+    /// </summary>
+    [Fact]
+    public async Task Search_with_out_of_range_limit_returns_400()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        foreach (var query in new[] { "limit=0", "limit=101" })
+        {
+            var response = await client.GetAsync($"/api/search?q=咖啡&{query}");
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("invalid_pagination",
+                (await ReadProblemAsync(response)).GetProperty("code").GetString());
+        }
+    }
+
+    /// <summary>
+    /// 全是标点的查询 = 没有关键词 = **不过滤**（与 <c>/api/ideas</c> 同一口径）。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §9.2：「所有段都空 → 等价于「没有关键词」→ 不过滤，返回全部」；
+    /// 计划里也写明「两处口径必须一致」。所以这里返回全部，
+    /// 而且响应里**没有** matches 键（没有关键词就没有命中位置）。
+    /// </remarks>
+    [Fact]
+    public async Task Search_with_punctuation_only_query_returns_everything()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var first = await CreateIdeaAsync(client, "第一条");
+        var second = await CreateIdeaAsync(client, "第二条");
+
+        var root = await ReadSearchAsync(await client.GetAsync("/api/search?q=..."));
+
+        var ids = root.GetProperty("ideas").GetProperty("items")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("id").GetString()!)
+            .ToArray();
+
+        Assert.Equal(new[] { first, second }, ids);
+
+        // 没有关键词 = 没有命中位置：响应里不该多出一个空的 matches。
+        Assert.False(root.GetProperty("ideas").GetProperty("items")[0].TryGetProperty("matches", out _));
+    }
+
     /// <summary>建一条想法并返回它的 id。</summary>
     private static async Task<string> CreateIdeaAsync(
         HttpClient client,
@@ -466,6 +695,29 @@ public sealed class SearchEndpointTests
         return document.RootElement.EnumerateArray()
             .Select(element => element.GetProperty("id").GetString()!)
             .ToArray();
+    }
+
+    /// <summary>读想法 id 列表（顺序即返回顺序）。</summary>
+    private static async Task<string[]> ReadIdeaIdsAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.GetProperty("ideas").GetProperty("items")
+            .EnumerateArray()
+            .Select(element => element.GetProperty("id").GetString()!)
+            .ToArray();
+    }
+
+    /// <summary>读全库搜索的响应体（根对象）。</summary>
+    private static async Task<JsonElement> ReadSearchAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        // JsonElement 在文档释放后失效，复制一份出去。
+        return document.RootElement.Clone();
     }
 
     /// <summary>读 ProblemDetails 响应体。</summary>

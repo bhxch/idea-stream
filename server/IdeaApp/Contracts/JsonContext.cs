@@ -23,6 +23,12 @@ namespace IdeaApp.Contracts;
 // 少登记一个，AOT 产物下列表端点直接 500。
 [JsonSerializable(typeof(SearchMatch))]
 [JsonSerializable(typeof(SearchMatch[]))]
+// 全库搜索的响应：三个分组类型与响应本身都要登记 ——
+// 少登记一个，AOT 产物下 /api/search 直接 500（普通测试测不出来）。
+[JsonSerializable(typeof(SearchPage<IdeaDto>))]
+[JsonSerializable(typeof(SearchPage<ProjectDto>))]
+[JsonSerializable(typeof(SearchPage<TagDto>))]
+[JsonSerializable(typeof(SearchResponse))]
 [JsonSerializable(typeof(ProjectDto))]
 [JsonSerializable(typeof(TagDto))]
 [JsonSerializable(typeof(WebhookDto))]

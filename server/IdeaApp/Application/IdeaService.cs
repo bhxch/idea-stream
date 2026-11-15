@@ -1006,13 +1006,10 @@ public sealed class IdeaService(
     /// <param name="page">这一页的想法（已经过滤过、切片过）。</param>
     /// <param name="keyword">归一化后的关键词。</param>
     /// <remarks>
-    /// 四个字段各算一遍：标题、正文、标签名、项目名 ——
-    /// 它们都是索引里的列，命中了任何一列都算命中。
-    /// <para>
-    /// ⚠️ <b>同一个查询可能产出重复或重叠的区间</b>
-    /// （见 <see cref="TextTokenizer.FindMatches"/>）：前端渲染高亮时自己合并，
-    /// 服务端原样给出 —— 合并口径放在渲染那一侧只有一份。
-    /// </para>
+    /// 四个字段各算一遍（标题、正文、标签名、项目名 —— 它们都是索引里的列，
+    /// 命中了任何一列都算命中）。这段逻辑**只有一份**：
+    /// <see cref="Infrastructure.IdeaMatches"/> —— <c>/api/search</c> 的想法组也用它，
+    /// 两处各写一份的话，改了字段名或偏移口径只有一处会跟着改。
     /// </remarks>
     private Dictionary<string, SearchMatch[]> BuildMatches(IReadOnlyList<Idea> page, string keyword)
     {
@@ -1024,16 +1021,7 @@ public sealed class IdeaService(
 
         foreach (var idea in page)
         {
-            var matches = new List<SearchMatch>();
-
-            AddMatches(matches, "title", idea.Title, keyword);
-            AddMatches(matches, "content", idea.Content, keyword);
-
-            // 标签列的「完整字符串」是**用空格连起来的标签名** ——
-            // 与索引里那一列的文本一样，偏移才对得上。
-            AddMatches(matches, "tags", string.Join(" ", idea.Tags), keyword);
-
-            AddMatches(matches, "project", ProjectNameOf(idea.ProjectId, projectNames), keyword);
+            var matches = IdeaMatches.For(idea, ProjectNameOf(idea.ProjectId, projectNames), keyword);
 
             result[idea.Id] = matches.ToArray();
         }
@@ -1056,20 +1044,6 @@ public sealed class IdeaService(
         cache[projectId] = name;
 
         return name;
-    }
-
-    /// <summary>把某个字段里的命中位置收进结果里。</summary>
-    private static void AddMatches(List<SearchMatch> matches, string field, string? text, string keyword)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return;
-        }
-
-        foreach (var match in TextTokenizer.FindMatches(text, keyword))
-        {
-            matches.Add(new SearchMatch(field, match.Start, match.Length));
-        }
     }
 
     /// <summary>

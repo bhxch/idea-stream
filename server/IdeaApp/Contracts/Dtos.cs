@@ -46,9 +46,29 @@ public sealed record IdeaDto(string Id, string ProjectId, string? Title, string 
                              bool? Trashed = null);
 
 /// <summary>一个项目的对外表示，含想法计数与最近活动时间。</summary>
+/// <param name="Id">项目 id。</param>
+/// <param name="Name">项目名。</param>
+/// <param name="SortOrder">手动排序用的序号。</param>
+/// <param name="IdeaCount">项目下**未删**想法的数量。</param>
+/// <param name="LastActivityAt">最近活动时间。</param>
+/// <param name="CreatedAt">创建时间。</param>
+/// <param name="UpdatedAt">最近一次变化的时间。</param>
+/// <param name="Trashed">
+/// 这个项目是不是在回收站里。仅在 <c>/api/search</c> 的响应里出现；
+/// <c>/api/projects</c> 只返回未删的项目，不填这个字段。
+/// </param>
+/// <remarks>
+/// <paramref name="Trashed"/> 带**属性级**的 <c>[JsonIgnore(WhenWritingNull)]</c>：
+/// <see cref="IdeaJsonContext"/> 没有设全局 <c>DefaultIgnoreCondition</c>，
+/// 不加这个特性的话 null 字段会恒定写出，
+/// 每一条项目的响应都会多出一个 <c>"trashed": null</c> 键 ——
+/// 不带回收站标记的响应必须与今天逐字节一样。
+/// </remarks>
 public sealed record ProjectDto(string Id, string Name, int SortOrder, int IdeaCount,
                                  DateTimeOffset? LastActivityAt,
-                                 DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+                                 DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
+                                 [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                 bool? Trashed = null);
 
 /// <summary>一个标签及其关联的想法数量。</summary>
 public sealed record TagDto(string Name, int Count);
