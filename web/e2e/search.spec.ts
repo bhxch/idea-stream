@@ -243,3 +243,45 @@ test('往回翻：接近顶部自动加载更旧的一页', async ({ page, api }
     expect(secondBox.y).toBeLessThanOrEqual(containerBox.y + 5);
   }
 });
+
+test('往回翻到顶：一条不漏、一条不重（超过两页才看得出来）', async ({ page, api }) => {
+  // 造 250 条 = 三页（首屏 101 + 往回翻 101 + 最后 48）。
+  //
+  // **超过两页**才看得出来：服务端这一页的**最老**那一条是「多要的那条」，
+  // 客户端要是把它丢了，丢的正好是紧挨着已加载区域的那一条 ——
+  // 两页以内时它落在列表的边界上（看不出来），三页时它就夹在列表中间，
+  // 列表从此**缺一条**，而下一轮请求拿列表长度当 offset，那个洞补不上。
+  const ids: string[] = [];
+  for (let index = 1; index <= 250; index += 1) {
+    const idea = await api.createIdea({ content: `第 ${index} 条想法` });
+    ids.push(idea.id);
+  }
+
+  await page.goto('/');
+  // 首屏：一页 + 一条（多要的那条用来判断还有没有更旧的）。
+  await expect(page.locator('article')).toHaveCount(101);
+
+  // 往回翻到顶：每一轮滚到顶部触发一次预加载，等这一页拼进列表。
+  // 最多 5 轮 —— 250 条最多翻两轮（101 + 101 + 48）。
+  for (let round = 0; round < 5; round += 1) {
+    const before = await page.locator('article').count();
+    if (before >= ids.length) {
+      break;
+    }
+    await scrollContainer(page).evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    await expect
+      .poll(async () => page.locator('article').count(), { timeout: 15_000 })
+      .toBeGreaterThan(before);
+  }
+
+  // 一条不漏：列表里的 id 集合 = 库里的 id 集合。
+  const shown = await page.locator('article[data-idea-id]').evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('data-idea-id') ?? ''),
+  );
+  expect(shown).toHaveLength(ids.length);
+  expect([...shown].sort()).toEqual([...ids].sort());
+  // 一条不重。
+  expect(new Set(shown).size).toBe(ids.length);
+});
