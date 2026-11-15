@@ -143,8 +143,14 @@ const initialLoading = ref(true);
  *
  * 加载中不渲染空状态：数据没到就先闪一句「这里还没有想法。」，
  * 等于凭空告诉用户「你什么都没记过」。
+ *
+ * 但**列表已经有内容**时不闪「加载中…」：现在列表会在过滤条件变化、
+ * SSE 事件到达时重拉（那是后台刷新，不是「首次加载」）—— 每来一个事件
+ * 就闪一下「加载中…」是噪声。
  */
-const listLoading = computed(() => initialLoading.value || loading.value);
+const listLoading = computed(
+  () => initialLoading.value || (loading.value && ideas.value.length === 0),
+);
 
 /**
  * 列表内容。

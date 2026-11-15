@@ -1930,6 +1930,53 @@ describe('HomePage', () => {
     }
   });
 
+  it('后台重拉时不闪「加载中…」（列表已经有内容）', async () => {
+    vi.useFakeTimers();
+    try {
+      // 第一次拉取正常返回，之后的重拉卡住 —— 好在它卡着的时候看一眼提示。
+      let release: ((value: Idea[]) => void) | undefined;
+      let calls = 0;
+      apiGet.mockImplementation((path: string) => {
+        if (path === '/ideas') {
+          calls += 1;
+          if (calls === 1) {
+            return Promise.resolve([idea]);
+          }
+          return new Promise<Idea[]>((resolve) => {
+            release = resolve;
+          });
+        }
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          default:
+            return Promise.resolve([]);
+        }
+      });
+
+      const wrapper = mount(HomePage);
+      await flushPromises();
+      expect(wrapper.findAll('.idea')).toHaveLength(1);
+
+      // 改关键词 → 防抖后重拉，重拉卡着。
+      await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+      await vi.advanceTimersByTimeAsync(300);
+      await flushPromises();
+
+      // 列表里已经有内容了：这是后台刷新，不是「首次加载」，不该闪提示。
+      expect(wrapper.find('.hint').exists()).toBe(false);
+      expect(wrapper.findAll('.idea')).toHaveLength(1);
+
+      release?.([idea]);
+      await flushPromises();
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('SSE 重拉之后视口不跳（用户在看的那条还在原处）', async () => {
     vi.useFakeTimers();
     const restoreRects = stubItemRects();
