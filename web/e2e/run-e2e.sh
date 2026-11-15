@@ -6,9 +6,16 @@
 #
 #   --fresh    先停掉旧服务、删掉数据库、重建后启动（干净的库）。
 #   --rebuild  强制重建（前端 + 后端）并重启服务，保留数据库。
-#   --keep     跑完**不**停服务（下一轮跑可以接着用，省一次重建）。
+#   --keep     跑完**不**停服务（留着给下一轮/手工排查用）。
 #
 # 其余参数原样交给 playwright test（例如 --grep、--headed、e2e/foo.spec.ts）。
+#
+# 端口与库：**一轮 = 一个端口 + 一个库**。
+#   端口从 5300 起找空闲的（E2E_PORT 可以指定），库落在
+#   web/e2e/.tmp/run-<端口>/e2e.db。端口同时传给 playwright（baseURL 与
+#   webServer.url 都用它），所以两轮并发跑时两边端口不同、库不同、
+#   产物目录（test-results/run-<端口>、playwright-report/run-<端口>）也不同 ——
+#   一轮的复位不会踩到另一轮。
 #
 # 退出码：playwright test 的退出码原样透传。
 
@@ -30,6 +37,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ── 定本轮的端口 ────────────────────────────────────────────────────────
+# E2E_PORT 指定了就用它；没指定就挑一个空闲的并预约（占用者是本脚本）。
+# 挑端口的逻辑在 lib/common.sh 里 —— playwright.config.ts 走的是同一份，
+# 两边不会挑出不一样的端口。
+e2e_resolve_port || exit 1
+export E2E_PORT
+echo "run-e2e.sh: 本轮端口 ${E2E_PORT}（${E2E_BASE_URL}），库 ${E2E_DB_FILE}。" >&2
+
 # ── 保证服务在跑 ────────────────────────────────────────────────────────
 start_args=()
 if (( FRESH == 1 )); then
@@ -48,14 +63,20 @@ if (( start_rc != 0 )); then
 fi
 
 # ── 跑用例 ──────────────────────────────────────────────────────────────
+# E2E_PORT 已经导出：playwright.config.ts 读到它就用同一个端口
+# （baseURL 与 webServer.url 都指向它）。
+#
+# E2E_NO_AUTOSTOP=1：告诉配置「服务归本脚本管」——
+# 否则配置会在 playwright 退出时把服务停掉，--keep 就白给了。
+export E2E_NO_AUTOSTOP=1
 cd "${WEB_DIR}" || exit 1
 npx playwright test "${PLAYWRIGHT_ARGS[@]+"${PLAYWRIGHT_ARGS[@]}"}"
 status=$?
 
 # ── 收尾 ────────────────────────────────────────────────────────────────
 if (( KEEP == 0 )); then
-  # 默认把 E2E 服务停掉：它是这个脚本自己起的（端口 5299，专用）。
-  # 加 --keep 可以留着给下一轮用（下一轮就不用重建了）。
+  # 默认把 E2E 服务停掉：它是这个脚本自己起的（本轮专用的端口）。
+  # 加 --keep 可以留着给下一轮/手工排查用。
   e2e_stop_server
   echo "run-e2e.sh: 服务已停（加 --keep 可以留着）。" >&2
 fi
