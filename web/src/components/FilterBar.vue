@@ -34,9 +34,10 @@ function setStatus(status: StatusFilter): void {
 }
 
 /**
- * 关键词变了：输入即过滤。
+ * 关键词变了：输入即报上去。
  *
- * 过滤在客户端做（设计文档 §10.2），对已加载的正文做子串匹配。
+ * 过滤在**服务端**做（设计文档 §11.1）：这里只负责把输入报上去，
+ * 防抖在「重拉」的入口（HomePage）—— 放在这里的话输入框的手感会变迟钝。
  */
 function onKeywordInput(event: Event): void {
   const target = event.target;
@@ -75,8 +76,8 @@ function clearFilters(): void {
     </div>
 
     <!--
-      关键词过滤：对正文做子串匹配，忽略大小写（设计文档 §10.2）。
-      输入即过滤；空串 = 不过滤。
+      关键词过滤：过滤在服务端做（设计文档 §11.1），这里只负责把输入报上去
+      （防抖在「重拉」的入口）。空串 = 不过滤。
     -->
     <input
       class="filter-bar__search"

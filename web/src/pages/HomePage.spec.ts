@@ -6,7 +6,7 @@ import type { Idea, IdeaEvent, Project } from '../api/types';
 import MessageList from '../components/MessageList.vue';
 import ToastHost from '../components/ToastHost.vue';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
-import { focusIdeaId, ideas } from '../stores/ideas';
+import { focusIdeaId, ideas, PAGE_SIZE } from '../stores/ideas';
 import { currentProjectId } from '../stores/projects';
 
 /**
@@ -278,6 +278,65 @@ async function clickStatus(wrapper: VueWrapper, label: string): Promise<void> {
   await button!.trigger('click');
 }
 
+/** 发过的 `/ideas` 请求（路径在第一位，查询参数在第二位）。 */
+function ideasCalls(): { path: string; params?: Record<string, string | undefined> }[] {
+  return apiGet.mock.calls
+    .filter((call) => call[0] === '/ideas')
+    .map((call) => ({ path: call[0], params: call[1] }));
+}
+
+/**
+ * 等防抖过去并让重拉落地。
+ *
+ * 过滤条件变了要走「防抖 250ms → 重拉」，所以断言列表变化前得把这段等出来。
+ * 只能在**假定时器**下用（真定时器就得干等 250ms）。
+ */
+async function waitForReload(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(300);
+  await flushPromises();
+}
+
+/** 造一个矩形（jsdom 里没有真的布局，只能自己拼）。 */
+function rectOf(top: number, bottom: number): DOMRect {
+  return {
+    top,
+    bottom,
+    left: 0,
+    right: 0,
+    width: 0,
+    height: bottom - top,
+    x: 0,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+/**
+ * 给 jsdom 补上「位置」：`getBoundingClientRect` 恒返回全 0，
+ * 视口相关的断言就没法做。
+ *
+ * 条目按列表里的次序从上往下排（每条 300px，与 {@link makeScrollable} 一致），
+ * 滚动容器本身占 400px。
+ *
+ * @returns 还原函数。
+ */
+function stubItemRects(): () => void {
+  const original = Element.prototype.getBoundingClientRect;
+  Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+    const id = (this as HTMLElement).dataset?.ideaId;
+    if (!id) {
+      return rectOf(0, 400);
+    }
+    const container = this.closest('.home__scroll');
+    const items = container ? [...container.querySelectorAll('[data-idea-id]')] : [];
+    const top = items.indexOf(this) * 300 - (container?.scrollTop ?? 0);
+    return rectOf(top, top + 300);
+  };
+  return () => {
+    Element.prototype.getBoundingClientRect = original;
+  };
+}
+
 describe('HomePage', () => {
   it('同一份项目数据渲染两次：宽屏侧栏与窄屏 Tab 都在（互斥显示靠 CSS 媒体查询）', async () => {
     const wrapper = mount(HomePage);
@@ -355,7 +414,13 @@ describe('HomePage', () => {
     expect(currentProjectId.value).toBe('project-2');
     // 侧栏里标着的也是那个项目（列表与导航必须对得上）。
     expect(activeProject(wrapper)).toBe('project-2');
-    expect(apiGet).toHaveBeenCalledWith('/ideas', { projectId: 'project-2' });
+    // 过滤条件全部作为查询参数发过去（过滤在服务端做）。
+    expect(apiGet).toHaveBeenCalledWith('/ideas', {
+      projectId: 'project-2',
+      status: 'all',
+      tagMode: 'or',
+      limit: String(PAGE_SIZE + 1),
+    });
 
     wrapper.unmount();
     toastHost.unmount();
@@ -1439,25 +1504,30 @@ describe('HomePage', () => {
   });
 
   it('改成不符合当前状态过滤的条目不会被从数据集里删掉（切回过滤条件还在）', async () => {
-    const wrapper = mount(HomePage);
-    await flushPromises();
+    vi.useFakeTimers();
+    try {
+      const wrapper = mount(HomePage);
+      await flushPromises();
 
-    // 切到「未完成」视图。
-    await clickStatus(wrapper, '未完成');
-    await flushPromises();
-    expect(wrapper.findAll('.idea')).toHaveLength(1);
+      // 切到「未完成」视图。
+      await clickStatus(wrapper, '未完成');
+      await waitForReload();
+      expect(wrapper.findAll('.idea')).toHaveLength(1);
 
-    // 别处把它标记完成了：它不该再出现在「未完成」视图里。
-    const done: Idea = { ...idea, done: true, updatedAt: '2026-11-12T10:00:00Z' };
-    FakeEventSource.instances[0].emit('idea.updated', makeEvent('idea.updated', { idea: done }), 'e1');
-    await flushPromises();
-    expect(wrapper.findAll('.idea')).toHaveLength(0);
+      // 别处把它标记完成了：它不该再出现在「未完成」视图里。
+      const done: Idea = { ...idea, done: true, updatedAt: '2026-11-12T10:00:00Z' };
+      FakeEventSource.instances[0].emit('idea.updated', makeEvent('idea.updated', { idea: done }), 'e1');
+      await flushPromises();
+      expect(wrapper.findAll('.idea')).toHaveLength(0);
 
-    // 切回「全部」：那条还在（不能因为中途的过滤被从数据集里删掉）。
-    await clickStatus(wrapper, '全部');
-    await flushPromises();
-    expect(wrapper.findAll('.idea')).toHaveLength(1);
-    wrapper.unmount();
+      // 切回「全部」：重拉之后那条还在（过滤在服务端做，条目由服务端带回来）。
+      await clickStatus(wrapper, '全部');
+      await waitForReload();
+      expect(wrapper.findAll('.idea')).toHaveLength(1);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('URL 带 ?idea= 时，合并出来的新条目仍被定位（滚动 + 高亮）', async () => {
@@ -1598,103 +1668,125 @@ describe('HomePage', () => {
   });
 
   it('输入关键词后只显示正文命中的条目', async () => {
-    apiGet.mockImplementation((path: string) => {
-      switch (path) {
-        case '/projects':
-          return Promise.resolve(projects);
-        case '/settings':
-          return Promise.resolve({});
-        case '/tags':
-          return Promise.resolve([]);
-        case '/ideas':
-          return Promise.resolve([ideaPoint, ideaMilk]);
-        default:
-          return Promise.resolve([]);
-      }
-    });
+    vi.useFakeTimers();
+    try {
+      apiGet.mockImplementation((path: string, params?: { q?: string }) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            // 服务端按关键词过滤（前端不再自己筛一遍）。
+            return Promise.resolve(params?.q ? [ideaPoint] : [ideaPoint, ideaMilk]);
+          default:
+            return Promise.resolve([]);
+        }
+      });
 
-    const wrapper = mount(HomePage);
-    await flushPromises();
-    expect(wrapper.findAll('.idea')).toHaveLength(2);
+      const wrapper = mount(HomePage);
+      await flushPromises();
+      expect(wrapper.findAll('.idea')).toHaveLength(2);
 
-    await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
-    await flushPromises();
+      await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+      await waitForReload();
 
-    expect(wrapper.findAll('.idea')).toHaveLength(1);
-    expect(wrapper.get('.list').text()).toContain('点子');
-    expect(wrapper.get('.list').text()).not.toContain('买牛奶');
-    wrapper.unmount();
+      expect(wrapper.findAll('.idea')).toHaveLength(1);
+      expect(wrapper.get('.list').text()).toContain('点子');
+      expect(wrapper.get('.list').text()).not.toContain('买牛奶');
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('关键词忽略大小写', async () => {
-    apiGet.mockImplementation((path: string) => {
-      switch (path) {
-        case '/projects':
-          return Promise.resolve(projects);
-        case '/settings':
-          return Promise.resolve({});
-        case '/tags':
-          return Promise.resolve([]);
-        case '/ideas':
-          return Promise.resolve([ideaKafka]);
-        default:
-          return Promise.resolve([]);
-      }
-    });
+    vi.useFakeTimers();
+    try {
+      apiGet.mockImplementation((path: string, params?: { q?: string }) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            // 服务端按关键词过滤（大小写不敏感）。
+            return Promise.resolve(
+              params?.q && ideaKafka.content.toLowerCase().includes(params.q.toLowerCase())
+                ? [ideaKafka]
+                : [],
+            );
+          default:
+            return Promise.resolve([]);
+        }
+      });
 
-    const wrapper = mount(HomePage);
-    await flushPromises();
+      const wrapper = mount(HomePage);
+      await flushPromises();
 
-    await wrapper.get('input[aria-label="搜索想法"]').setValue('kafka');
-    await flushPromises();
+      await wrapper.get('input[aria-label="搜索想法"]').setValue('kafka');
+      await waitForReload();
 
-    expect(wrapper.findAll('.idea')).toHaveLength(1);
-    wrapper.unmount();
+      expect(wrapper.findAll('.idea')).toHaveLength(1);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('SSE 推来的新条目不匹配关键词时不显示（清掉关键词后它还在）', async () => {
-    apiGet.mockImplementation((path: string) => {
-      switch (path) {
-        case '/projects':
-          return Promise.resolve(projects);
-        case '/settings':
-          return Promise.resolve({});
-        case '/tags':
-          return Promise.resolve([]);
-        case '/ideas':
-          return Promise.resolve([ideaPoint]);
-        default:
-          return Promise.resolve([]);
-      }
-    });
+    vi.useFakeTimers();
+    try {
+      const created: Idea = {
+        ...idea,
+        id: 'idea-new',
+        content: '别处记的',
+        updatedAt: '2026-11-12T10:00:00Z',
+      };
+      apiGet.mockImplementation((path: string, params?: { q?: string }) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            // 服务端按关键词过滤：带关键词时只有命中的那条，清掉关键词后两条都在。
+            return Promise.resolve(params?.q ? [ideaPoint] : [ideaPoint, created]);
+          default:
+            return Promise.resolve([]);
+        }
+      });
 
-    const wrapper = mount(HomePage);
-    await flushPromises();
+      const wrapper = mount(HomePage);
+      await flushPromises();
 
-    await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
-    await flushPromises();
-    expect(wrapper.findAll('.idea')).toHaveLength(1);
+      await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+      await waitForReload();
+      expect(wrapper.findAll('.idea')).toHaveLength(1);
 
-    // 别的设备记了一条，正文不含关键词：不该出现在列表里。
-    const created: Idea = {
-      ...idea,
-      id: 'idea-new',
-      content: '别处记的',
-      updatedAt: '2026-11-12T10:00:00Z',
-    };
-    FakeEventSource.instances[0].emit('idea.created', makeEvent('idea.created', { idea: created }), 'e1');
-    await flushPromises();
+      // 别的设备记了一条，正文不含关键词：不该出现在列表里。
+      FakeEventSource.instances[0].emit('idea.created', makeEvent('idea.created', { idea: created }), 'e1');
+      await flushPromises();
 
-    expect(wrapper.findAll('.idea')).toHaveLength(1);
-    expect(wrapper.get('.list').text()).not.toContain('别处记的');
+      expect(wrapper.findAll('.idea')).toHaveLength(1);
+      expect(wrapper.get('.list').text()).not.toContain('别处记的');
 
-    // 清掉关键词：它还在（不能因为中途的过滤被从数据集里删掉）。
-    await wrapper.get('.filter-bar__clear').trigger('click');
-    await flushPromises();
+      // 清掉关键词：重拉之后它还在（过滤在服务端做，条目由服务端带回来）。
+      await wrapper.get('.filter-bar__clear').trigger('click');
+      await waitForReload();
 
-    expect(wrapper.findAll('.idea')).toHaveLength(2);
-    expect(wrapper.get('.list').text()).toContain('别处记的');
-    wrapper.unmount();
+      expect(wrapper.findAll('.idea')).toHaveLength(2);
+      expect(wrapper.get('.list').text()).toContain('别处记的');
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('「清除」按钮把状态、标签、关键词一起清掉', async () => {
@@ -1735,5 +1827,164 @@ describe('HomePage', () => {
     expect(wrapper.get('.filter-bar__status-button.is-active').text()).toBe('全部');
     expect(wrapper.find('.filter-bar__clear').exists()).toBe(false);
     wrapper.unmount();
+  });
+
+  it('filter_change_triggers_a_reload_after_the_debounce', async () => {
+    vi.useFakeTimers();
+    try {
+      const wrapper = mount(HomePage);
+      await flushPromises();
+      const before = ideasCalls().length;
+
+      await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+
+      // 250ms 内不发请求：每敲一个键就打一次后端是打不起的。
+      await vi.advanceTimersByTimeAsync(200);
+      expect(ideasCalls().length).toBe(before);
+
+      // 过了防抖才发，而且关键词要作为 `q` 送过去（过滤在服务端做）。
+      await vi.advanceTimersByTimeAsync(100);
+      await flushPromises();
+      expect(ideasCalls().length).toBe(before + 1);
+      expect(ideasCalls().at(-1)?.params?.q).toBe('点子');
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sse_event_triggers_a_reload_that_keeps_the_loaded_depth', async () => {
+    vi.useFakeTimers();
+    try {
+      apiGet.mockImplementation((path: string) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            return Promise.resolve([ideaA, ideaB]);
+          default:
+            return Promise.resolve([]);
+        }
+      });
+
+      const wrapper = mount(HomePage);
+      await flushPromises();
+      expect(wrapper.findAll('.idea')).toHaveLength(2);
+
+      const created: Idea = {
+        ...idea,
+        id: 'idea-new',
+        content: '别处记的',
+        updatedAt: '2026-11-12T10:00:00Z',
+      };
+      FakeEventSource.instances[0].emit('idea.created', makeEvent('idea.created', { idea: created }), 'e1');
+      await flushPromises();
+
+      await waitForReload();
+
+      // 重拉要带上「已加载的条数 + 一页」：用户翻过的历史不能被这一拉抹掉
+      // （否则视口会突然跳回最新那批）。
+      const limit = Number(ideasCalls().at(-1)?.params?.limit);
+      expect(limit).toBeGreaterThanOrEqual(2);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('visible_ideas_are_not_filtered_again_on_the_client', async () => {
+    vi.useFakeTimers();
+    try {
+      // 服务端判定两条都命中（正文「咖 啡」那种：服务端的词元相邻比前端子串宽松）。
+      apiGet.mockImplementation((path: string) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            return Promise.resolve([ideaPoint, ideaMilk]);
+          default:
+            return Promise.resolve([]);
+        }
+      });
+
+      const wrapper = mount(HomePage);
+      await flushPromises();
+
+      await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+      await waitForReload();
+
+      // 服务端返回 2 条 → 显示 2 条：显示层不再按关键词过滤一遍
+      // （前端子串判断比服务端词元相邻更严格，再过滤一遍会误杀）。
+      expect(wrapper.findAll('.idea')).toHaveLength(2);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('SSE 重拉之后视口不跳（用户在看的那条还在原处）', async () => {
+    vi.useFakeTimers();
+    const restoreRects = stubItemRects();
+    try {
+      const older: Idea = { ...idea, id: 'idea-older', content: '更旧的', updatedAt: '2026-10-01T10:00:00Z' };
+      const newer: Idea = { ...idea, id: 'idea-newer', content: '更新的', updatedAt: '2026-11-20T10:00:00Z' };
+      apiGet.mockImplementation((path: string, params?: { limit?: string }) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            // 重拉要的比已加载的多（limit 更大）→ 服务端多给了更旧的一条。
+            return Promise.resolve(
+              params?.limit && Number(params.limit) > 101
+                ? [older, ideaA, ideaB, newer]
+                : [ideaA, ideaB],
+            );
+          default:
+            return Promise.resolve([]);
+        }
+      });
+
+      const wrapper = mount(HomePage);
+      await flushPromises();
+
+      // 用户翻到了上面（不是贴着底部）。
+      const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+      makeScrollable(scroller, 150);
+      scroller.dispatchEvent(new Event('scroll'));
+
+      const anchorTop = (): number =>
+        scroller.querySelector('[data-idea-id="idea-a"]')!.getBoundingClientRect().top;
+      const before = anchorTop();
+
+      // 别处来了一条：触发一次 SSE 重拉（列表顶部会多出更旧的条目）。
+      const created: Idea = {
+        ...idea,
+        id: 'idea-created',
+        content: '别处记的',
+        updatedAt: '2026-11-21T10:00:00Z',
+      };
+      FakeEventSource.instances[0].emit('idea.created', makeEvent('idea.created', { idea: created }), 'e1');
+      await flushPromises();
+      await waitForReload();
+
+      // 用户没滚动 → 看到的内容不该变（重拉多要了一页，内容从上面长出来了）。
+      expect(anchorTop()).toBe(before);
+      wrapper.unmount();
+    } finally {
+      restoreRects();
+      vi.useRealTimers();
+    }
   });
 });

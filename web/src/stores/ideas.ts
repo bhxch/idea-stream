@@ -1,12 +1,14 @@
 import { ref } from 'vue';
 import { apiGet } from '../api/client';
 import type { Idea } from '../api/types';
+import { toQueryParams, type IdeaFilter } from '../lib/filter';
 
 /**
  * 当前作用域下的想法列表。
  *
- * 只装**当前项目**（或全部项目）的未删除想法；删除的项目下的想法不在列表里
- * —— 后端已经过滤掉了。
+ * 装的是**服务端过滤后**的结果（项目 / 状态 / 标签 / AND-OR / 关键词
+ * 都在服务端过滤，见设计文档 §13.1），所以这份列表可以直接显示 ——
+ * 显示层不再按条件筛一遍。
  */
 export const ideas = ref<Idea[]>([]);
 
@@ -21,24 +23,58 @@ export const loading = ref(false);
  */
 export const focusIdeaId = ref<string | null>(null);
 
+/** 一页多少条。 */
+export const PAGE_SIZE = 100;
+
+/** 还有没有更旧的（往上翻历史）。 */
+export const hasMore = ref(false);
+
+/** 正在加载更旧的。 */
+export const loadingMore = ref(false);
+
 /**
- * 拉取想法列表。
+ * 拉取想法列表并**整表替换**。
  *
- * 只把项目范围交给后端过滤，**状态与标签过滤在客户端做**：
- * AND/OR 偏好存在每台设备自己的 localStorage 里，服务端无从得知每条连接
- * 当前用哪种模式（设计文档 §10.2）。所以这里把范围内的想法全要回来，
- * 由 `lib/filter.ts` 的 `matchesFilter` 在内存里筛。
+ * 过滤条件（项目 / 状态 / 标签 / AND-OR / 关键词）全部交给后端：
+ * 一次请求拿最终结果，前端不再把范围内的全部想法拉回来在内存里筛。
  *
  * 列表顺序由后端保证（`updated_at ASC, id ASC`，最老的在顶）。
  *
- * @param projectId 当前项目；`null` 表示全部项目
+ * @param filter 当前过滤条件。
+ * @param limit 请求多少条；不给就是 PAGE_SIZE + 1（多一条用来判断还有没有更旧的）。
  */
-export async function loadIdeas(projectId: string | null): Promise<void> {
+export async function loadIdeas(filter: IdeaFilter, limit = PAGE_SIZE + 1): Promise<void> {
   loading.value = true;
   try {
-    ideas.value = await apiGet<Idea[]>('/ideas', { projectId: projectId ?? undefined });
+    const params = toQueryParams(filter);
+    params.limit = String(limit);
+    ideas.value = await apiGet<Idea[]>('/ideas', params);
+    hasMore.value = ideas.value.length >= limit;
   } finally {
     loading.value = false;
+  }
+}
+
+/**
+ * 往回翻：取**更旧**的一页，返回新取到的那些（**不改动列表**）。
+ *
+ * 调用方负责把它们拼到列表前面，并在 DOM 更新后修正滚动位置。
+ *
+ * @param filter 当前过滤条件（服务端按它过滤）。
+ * @param offset 已经翻过多少条（从**最新**一端数：`offset=0` 是最新那页）。
+ */
+export async function fetchOlderIdeas(filter: IdeaFilter, offset: number): Promise<Idea[]> {
+  loadingMore.value = true;
+  try {
+    const params = toQueryParams(filter);
+    params.limit = String(PAGE_SIZE + 1);
+    params.offset = String(offset);
+    const result = await apiGet<Idea[]>('/ideas', params);
+    // 多出来的那条只是用来判断「还有没有更旧的」，不进列表。
+    hasMore.value = result.length > PAGE_SIZE;
+    return result.slice(0, PAGE_SIZE);
+  } finally {
+    loadingMore.value = false;
   }
 }
 

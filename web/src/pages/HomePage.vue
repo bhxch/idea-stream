@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ApiError, apiGet, apiSend } from '../api/client';
 import { connectEvents, type EventStream } from '../api/events';
@@ -15,9 +15,9 @@ import { showToast } from '../components/ToastHost.vue';
 import { useDeepLink } from '../composables/useDeepLink';
 import { useScrollFollow } from '../composables/useScrollFollow';
 import { useTagMode } from '../composables/useTagMode';
-import { matchesFilter, sortIdeas, type IdeaFilter } from '../lib/filter';
+import { sortIdeas, type IdeaFilter } from '../lib/filter';
 import { reportError } from '../lib/errors';
-import { applyEvent, applyResync, findAnchorIndex } from '../lib/merge';
+import { applyEvent, findAnchorIndex } from '../lib/merge';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
 import {
   applyLocalUpsert,
@@ -25,6 +25,7 @@ import {
   ideas,
   loadIdeas,
   loading,
+  PAGE_SIZE,
   removeLocal,
 } from '../stores/ideas';
 import {
@@ -103,6 +104,32 @@ const { atBottom, onNewContent, scrollToBottom, pendingCount } = useScrollFollow
 const activeFilter = computed<IdeaFilter>(() => ({ ...filter.value, tagMode: tagMode.value }));
 
 /**
+ * 防抖重拉的时长（毫秒）。
+ *
+ * 搜索框每敲一个键都会改过滤条件，不防抖就是每敲一下打一次后端。
+ */
+const RELOAD_DEBOUNCE_MS = 250;
+
+/**
+ * 服务端一次最多给多少条（超出回 400 `invalid_pagination`）。
+ *
+ * SSE 触发的重拉要带上「已加载的条数 + 一页」，加载得多了会超这个上限 ——
+ * 一个 400 会让 SSE 的刷新彻底断掉，所以要夹住。
+ */
+const MAX_LIMIT = 1000;
+
+/** 待执行的防抖重拉（两个入口共用一个：先排的那个被后排的顶掉）。 */
+let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * 换项目时自己已经拉过一遍了，别让 watch 再拉一次。
+ *
+ * `switchProject` 要**同步**改 `filter.value`（失败时要能回滚）并立刻拉一次；
+ * watch 看到条件变了也会排一次防抖重拉 —— 那是同一次拉取，白白发一个请求。
+ */
+let skipNextReload = false;
+
+/**
  * 首屏还在准备（项目/标签/排序方式都还没到，列表还没开始拉）。
  *
  * store 里的 `loading` 只覆盖「列表请求在飞」那一段；首屏还有一段
@@ -122,31 +149,148 @@ const listLoading = computed(() => initialLoading.value || loading.value);
 /**
  * 列表内容。
  *
- * 过滤与排序都在客户端做（`matchesFilter` / `sortIdeas`）：
- * AND/OR 偏好存在各设备自己的 localStorage 里，服务端无从得知每条连接用哪种模式。
- * 关键词也一样（设计文档 §10.2）：对已加载的正文做子串匹配。
+ * 只排序，**不再过滤**：服务端返回的数组已经是过滤过的（项目 / 状态 / 标签 /
+ * AND-OR / 关键词都在服务端过滤，见设计文档 §13.1）。
+ *
+ * 为什么显示层不再按关键词过滤一遍：前端的子串判断比服务端的「词元相邻」
+ * 更**严格** —— 正文「咖 啡」服务端判定命中（空格只是分隔符），前端
+ * `includes("咖啡")` 不命中 → 再过滤一遍就把服务端判定命中的条目**误杀**了。
  */
-const visibleIdeas = computed(() =>
-  sortIdeas(ideas.value.filter((idea) => matchesFilter(idea, activeFilter.value))),
-);
+const visibleIdeas = computed(() => sortIdeas(ideas.value));
 
 /**
- * **数据集**维度的过滤条件：只有项目维度。
+ * 过滤条件变了 → 防抖后重拉（一次请求拿最终结果）。
  *
- * 状态、标签与关键词的过滤都交给显示层（`visibleIdeas`）做。
- *
- * 为什么不能把显示层的过滤条件直接交给事件合并（`applyEvent`）：
- * 合并是作用在**数据集**（`ideas.value`）上的 —— 用显示层的条件合并，
- * 会把「改成不符合当前过滤」的条目从数据集里**彻底删掉**，
- * 用户切回别的过滤条件时那条就找不回来了（得整表重拉才回来）。
- * 这与「过滤在客户端做」的前提冲突。
+ * 过滤在服务端做，所以条件一变就得重新要一份**过滤后的**列表
+ * （设计文档 §13.5）。
  */
-const datasetFilter = computed<IdeaFilter>(() => ({
-  ...activeFilter.value,
-  status: 'all',
-  tags: [],
-  keyword: '',
-}));
+function scheduleReload(): void {
+  cancelReload();
+  reloadTimer = setTimeout(() => {
+    reloadTimer = undefined;
+    void reloadAndReport(async () => {
+      await loadIdeas(activeFilter.value);
+      // 条件变了 → 命中集合也变了，之前的浏览深度没有意义 → 滚到底部。
+      await nextTick();
+      scrollToBottom();
+    }, '加载想法失败');
+  }, RELOAD_DEBOUNCE_MS);
+}
+
+/**
+ * SSE 事件到了 → 防抖后重拉（保留已加载的深度）。
+ *
+ * 深度必须保留：用户往上翻了三页历史，重拉后历史没了的话视口会突然跳回
+ * 最新那批（设计文档 §13.5）。
+ */
+function scheduleResync(): void {
+  cancelReload();
+  reloadTimer = setTimeout(() => {
+    reloadTimer = undefined;
+    void reloadAndReport(async () => {
+      // 重拉之前先记住视口在哪：重拉回来的列表顶部会多出更旧的条目
+      // （`limit` 比已加载的条数多一页），内容从上面长出来，视口会被推着走。
+      const wasAtBottom = atBottom.value;
+      const anchor = captureViewportAnchor();
+      await loadIdeas(activeFilter.value, loadedLimit());
+      await nextTick();
+      if (wasAtBottom) {
+        // 贴着底部：跟着滚到底（当下就在最下面）。
+        scrollToBottom();
+        return;
+      }
+      // 在上翻：把视口钉回原来那条（用户没滚动，看到的内容不该变）。
+      restoreViewportAnchor(anchor);
+    }, '刷新列表失败');
+  }, RELOAD_DEBOUNCE_MS);
+}
+
+/**
+ * 视口的锚点：重拉前后用它把视口钉回原处。
+ */
+interface ViewportAnchor {
+  /** 锚点条目的 id。 */
+  id: string;
+  /** 它相对视口上沿的位置（视口坐标）。 */
+  top: number;
+}
+
+/**
+ * 记下视口顶部那条（第一个露出来的条目）。
+ *
+ * @returns 锚点；列表是空的（或没有条目）时返回 null。
+ */
+function captureViewportAnchor(): ViewportAnchor | null {
+  const container = scrollContainer.value;
+  if (!container) {
+    return null;
+  }
+  const containerTop = container.getBoundingClientRect().top;
+  for (const element of container.querySelectorAll<HTMLElement>('[data-idea-id]')) {
+    const rect = element.getBoundingClientRect();
+    if (rect.bottom > containerTop) {
+      const id = element.dataset.ideaId;
+      if (id) {
+        return { id, top: rect.top };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 把视口钉回锚点那条。
+ *
+ * 钉不回去也没关系（那条已经被过滤掉了 / 不在列表里了）：那种情况下内容
+ * 真的变了，不该硬钉。
+ */
+function restoreViewportAnchor(anchor: ViewportAnchor | null): void {
+  const container = scrollContainer.value;
+  if (!container || !anchor) {
+    return;
+  }
+  const element = container.querySelector<HTMLElement>(`[data-idea-id="${anchor.id}"]`);
+  if (!element) {
+    return;
+  }
+  container.scrollTop += element.getBoundingClientRect().top - anchor.top;
+}
+
+/** 撤掉待执行的重拉。 */
+function cancelReload(): void {
+  if (reloadTimer !== undefined) {
+    clearTimeout(reloadTimer);
+    reloadTimer = undefined;
+  }
+}
+
+/**
+ * SSE 重拉时要多少条：已加载的条数 + 一页。
+ *
+ * 夹到 {@link MAX_LIMIT}：服务端 `limit` 的上限就是 1000，超了回 400
+ * `invalid_pagination` —— 一个 400 会让 SSE 的刷新彻底断掉。
+ * 加载超过约 900 条时「保留深度」不再完全成立（更旧的那部分会在下次
+ * 往回翻时重新取到），但「视口不跳」这个初衷仍然满足。
+ */
+function loadedLimit(): number {
+  return Math.min(ideas.value.length + PAGE_SIZE + 1, MAX_LIMIT);
+}
+
+/**
+ * 过滤条件变了 → 防抖后重拉。
+ *
+ * `activeFilter` 是 computed，每次求值都返回**新对象**：条件一变它的身份
+ * 就变，watch 会触发。AND/OR 模式也在里面（它存在本机 localStorage 里，
+ * 但过滤在服务端做，模式也得告诉服务端）。
+ */
+watch(activeFilter, () => {
+  // 换项目时自己已经拉过了（见 {@link switchProject}），别再拉一次。
+  if (skipNextReload) {
+    skipNextReload = false;
+    return;
+  }
+  scheduleReload();
+});
 
 /**
  * 深链定位：`?idea=<id>` 打开后滚到那条并高亮。
@@ -223,9 +367,13 @@ type SwitchResult = { ok: true } | { ok: false; error: unknown };
 async function switchProject(next: string | null): Promise<SwitchResult> {
   const previous = currentProjectId.value;
   setCurrentProject(next);
+  // 下面自己就要拉一次：告诉 watch 别再排一次（见 skipNextReload）。
+  skipNextReload = true;
   filter.value = { ...filter.value, projectId: next };
   try {
-    await reloadList(() => loadIdeas(next));
+    // 过滤条件全部带上（过滤在服务端做）：换项目只是范围变了，
+    // 状态 / 标签 / 关键词得跟着走。
+    await reloadList(() => loadIdeas({ ...activeFilter.value, projectId: next }));
     // 拉到新范围的数据了，之前勾的条目不再属于当前范围，这时才清空。
     selectedIds.value = new Set();
     // 标签补全是按项目给的：换了项目，缓存里的候选就不作数了。
@@ -755,8 +903,9 @@ const queuedEvents: IdeaEvent[] = [];
 /**
  * 把一条事件合并进列表。
  *
- * 想法事件走 {@link applyEvent}（按**数据集**的过滤条件决定显不显示 ——
- * 只有项目维度，状态/标签留给显示层）；项目事件归项目列表管（这里只更新项目，不动想法）。
+ * 想法事件走 {@link applyEvent}（按**当前**过滤条件决定显不显示 ——
+ * 项目 / 状态 / 标签 / AND-OR / 关键词都算）；项目事件归项目列表管
+ * （这里只更新项目，不动想法）。
  */
 function applyEventToList(event: IdeaEvent): void {
   if (event.type.startsWith('project.')) {
@@ -766,12 +915,15 @@ function applyEventToList(event: IdeaEvent): void {
   // 想法变了，它所属项目的条数也跟着变：事件快照里没有条数，只能自己加减。
   adjustProjectCount(event.project?.id, countDelta(event));
   const before = visibleIdeas.value.length;
-  ideas.value = applyEvent(ideas.value, event, datasetFilter.value);
+  ideas.value = applyEvent(ideas.value, event, activeFilter.value);
   if (visibleIdeas.value.length > before) {
     // 有新条目进来了：贴底就跟着滚，没贴底就只记一笔（「↓ 有 N 条新内容」）。
     // 滚动在 DOM 更新之后才做（`onNewContent` 内部会等）。
     void onNewContent();
   }
+  // 增量条目是用**近似**判断决定显不显示的（前端子串 vs 服务端词元相邻）——
+  // 防抖后重拉一次，用服务端的权威结果覆盖本地（设计文档 §13.5）。
+  scheduleResync();
 }
 
 /**
@@ -845,6 +997,23 @@ async function reloadList(load: () => Promise<void>): Promise<void> {
 }
 
 /**
+ * 整表重拉 + 失败提示。
+ *
+ * 失败必须给一条提示：不然就是一次没人管的 Promise rejection —— 页面上什么
+ * 也看不到，用户以为列表是最新的，其实停在了旧数据上。
+ *
+ * @param load 真正去拉列表的活。
+ * @param message 失败时给用户的说明。
+ */
+async function reloadAndReport(load: () => Promise<void>, message: string): Promise<void> {
+  try {
+    await reloadList(load);
+  } catch (error) {
+    reportError(error, message);
+  }
+}
+
+/**
  * 项目事件：改名、重排、新建、删除。
  *
  * 快照里只有 id、名字与排序位置（没有想法计数与最近活动时间），
@@ -904,14 +1073,13 @@ async function applyProjectEvent(event: IdeaEvent): Promise<void> {
 /**
  * 服务端说「你可能漏了事件」：整表重拉一次。
  *
- * 重拉之后**不动滚动位置** —— 用户翻到哪儿还是哪儿。
+ * 重拉之后**不动滚动位置** —— 用户翻到哪儿还是哪儿（所以要保留已加载的深度）。
  */
 async function onResync(): Promise<void> {
   try {
-    await reloadList(async () => {
-      const fresh = await apiGet<Idea[]>('/ideas', { projectId: currentProjectId.value ?? undefined });
-      ideas.value = applyResync(ideas.value, fresh);
-    });
+    // 带上全部过滤条件（过滤在服务端做），并保留已加载的深度：
+    // 重拉把翻过的历史抹掉的话，视口会突然跳回最新那批。
+    await reloadList(() => loadIdeas(activeFilter.value, loadedLimit()));
     // 项目条数是按事件加减的，漏过事件就会漂：顺带拉一次项目列表校准。
     await loadProjects();
   } catch (error) {
@@ -938,6 +1106,8 @@ onBeforeUnmount(() => {
   // 离开页面就把连接关了：不然事件流会一直往一个没人看的页面上推。
   stream?.close();
   stream = null;
+  // 待执行的重拉也别做了：页面都没了，重拉回来的数据没人看。
+  cancelReload();
 });
 </script>
 

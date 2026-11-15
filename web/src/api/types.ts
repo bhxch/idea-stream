@@ -6,6 +6,17 @@
  * 字段名对不上时 TS 不会报错，但运行时数据会静默变成 undefined。
  */
 
+/**
+ * 一处命中：某个字段里的字符区间（UTF-16 code unit，与 JS 的 slice 对齐）。
+ *
+ * 只在**带关键词**的响应里出现（后端不带关键词时把这个键整个省略）。
+ */
+export interface SearchMatch {
+  field: 'title' | 'content' | 'tags' | 'project';
+  start: number;
+  length: number;
+}
+
 /** 一条想法。`title` 可以为 null —— 只记正文不记标题的想法是允许的。 */
 export interface Idea {
   id: string;
@@ -16,6 +27,13 @@ export interface Idea {
   done: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * 命中位置（关键词搜索的结果里才有这个键）。
+   *
+   * 后端在**不带关键词**时把这个键整个省略，所以它是可选的；
+   * SSE 推来的增量条目也没有（事件里不带命中位置）。
+   */
+  matches?: SearchMatch[];
 }
 
 /** 一个项目，含想法计数与最近活动时间。 */

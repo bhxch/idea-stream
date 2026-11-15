@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Idea } from '../api/types';
-import { hasActiveFilter, matchesFilter, matchesKeyword, sortIdeas, type IdeaFilter } from './filter';
+import {
+  hasActiveFilter,
+  matchesFilter,
+  matchesKeyword,
+  sortIdeas,
+  toQueryParams,
+  type IdeaFilter,
+} from './filter';
 
 /** 造一条想法，只覆盖要测的字段。 */
 function makeIdea(overrides: Partial<Idea> = {}): Idea {
@@ -132,6 +139,48 @@ describe('hasActiveFilter', () => {
 
   it('hasActiveFilter 只有空白的关键词不算有过滤', () => {
     expect(hasActiveFilter(makeFilter({ keyword: '   ' }))).toBe(false);
+  });
+});
+
+describe('toQueryParams', () => {
+  it('toQueryParams_maps_all_four_filters', () => {
+    const params = toQueryParams(
+      makeFilter({
+        projectId: 'p',
+        status: 'open',
+        tags: ['a', 'b'],
+        tagMode: 'and',
+        keyword: '咖啡',
+      }),
+    );
+
+    expect(params).toEqual({
+      projectId: 'p',
+      status: 'open',
+      tags: 'a,b',
+      tagMode: 'and',
+      q: '咖啡',
+    });
+  });
+
+  it('toQueryParams_omits_empty_values', () => {
+    const params = toQueryParams(makeFilter());
+
+    // 没有关键词 → 没有 q 这个键（不是空串：空串会被当成「有一个空关键词」）。
+    expect(Object.keys(params)).not.toContain('q');
+    expect(params.q).toBeUndefined();
+    // 没有项目、没有标签 → 同样不给（空串会被后端当成「按空项目/空标签过滤」）。
+    expect(Object.keys(params)).not.toContain('projectId');
+    expect(Object.keys(params)).not.toContain('tags');
+    // 状态与模式照给：后端认 'all'，模式也要告诉服务端（AND/OR 在服务端判）。
+    expect(params.status).toBe('all');
+    expect(params.tagMode).toBe('or');
+  });
+
+  it('toQueryParams 关键词两侧的空白先 trim 掉', () => {
+    const params = toQueryParams(makeFilter({ keyword: '  咖啡  ' }));
+
+    expect(params.q).toBe('咖啡');
   });
 });
 
