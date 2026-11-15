@@ -943,8 +943,7 @@
   }
 
   // Idea 上追加：matches?: SearchMatch[] | undefined;
-  // Project 上追加：trashed?: boolean | undefined;
-  //   （后端在不带关键词 / 不是全库搜索时会把这两个键整个省略，所以是可选字段。）
+  //   （后端在不带关键词时把这个键整个省略，所以是可选字段。）
   ```
   ```ts
   // web/src/lib/filter.ts
