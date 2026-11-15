@@ -935,11 +935,11 @@ async function loadOlder(): Promise<void> {
   const container = scrollContainer.value;
   const before = container?.scrollHeight ?? 0;
   // 过滤条件先记下来：等这一页的时候条件可能变（见下面）。
-  const filter = activeFilter.value;
+  const requestedFilter = activeFilter.value;
   let older: Idea[];
   try {
     // offset = 已经加载的条数：服务端从**最新**一端数（设计文档 §11.1）。
-    older = await fetchOlderIdeas(filter, ideas.value.length);
+    older = await fetchOlderIdeas(requestedFilter, ideas.value.length);
   } catch (error) {
     // 失败必须给一条提示：不然就是一次没人管的 Promise rejection ——
     // 用户只看到「往上翻没反应」，不知道是翻完了还是请求挂了。
@@ -950,7 +950,7 @@ async function loadOlder(): Promise<void> {
     hasMore.value = false;
     return;
   }
-  if (filter !== activeFilter.value) {
+  if (requestedFilter !== activeFilter.value) {
     // 等这一页的时候过滤条件变了：这一页是按**旧**条件要的，拼到新列表上
     // 就是把不匹配当前条件的条目塞给用户。重拉会按新条件重新要一份，
     // 这一页直接丢掉。
