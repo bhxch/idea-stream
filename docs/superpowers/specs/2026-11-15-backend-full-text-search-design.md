@@ -659,10 +659,12 @@ public sealed record IdeaDto(
 
 | 码 | HTTP | 何时 |
 |---|---|---|
-| `invalid_pagination` | 400 | `limit` / `offset` **越界**（`limit` 不在 1..1000 / 100、`offset` 为负、`offset > 0` 而 `limit` 缺省） |
+| `invalid_pagination` | 400 | `limit` / `offset` **不是数字或越界**（`limit` 不在 1..1000（想法列表）/ 1..100（全库搜索）、`offset` 为负）；**只有 `/api/ideas`** 才是「`offset > 0` 而 `limit` 缺省」—— `/api/search` 的 `limit` 有默认值 20，单独给 `offset` 是合法请求 |
 | `invalid_search_query` | 400 | `/api/search` 的 `q` 缺失或 trim 后为空 |
 
-> **`limit` / `offset` 绑定成 `string?`，由服务层自己解析** —— 所有非法情形（不是数字、越界、`offset` 单独给）一律回 `invalid_pagination`。
+> **`limit` / `offset` 绑定成 `string?`，由服务层自己解析** —— 所有非法情形（不是数字、越界）一律回 `invalid_pagination`。
+> **`offset` 单独给只有 `/api/ideas` 算非法**：那里 `limit` 没有默认值，`offset > 0` 而 `limit` 缺省 → 400 `invalid_pagination`；
+> 而 `/api/search` 的 `limit` 缺省回落成 `DefaultLimit = 20`，所以单独给 `offset` 是**合法请求**。
 >
 > **实测（跑真实应用，.NET 10）**：
 >
@@ -707,7 +709,7 @@ public sealed record IdeaDto(
 | `skills/idea-manager/references/api.md` | 端点速查表加 `GET /api/search`；`GET /api/ideas` 的入参列加 `q`/`limit`/`offset` |
 | `skills/idea-manager/references/errors.md` | 「## 服务端错误码」表加 `invalid_pagination` / `invalid_search_query` 两行（`SkillDocGuardTests` 要求该表与 `ApiErrorCodes.All` **完全相等**） |
 | `skills/idea-manager/references/calling.md` | 加 `curl` 示例 |
-| `docs/superpowers/specs/2026-11-11-idea-manager-design.md` | §3 非目标、§10.2、§11.4、§20 的「不做服务端全文检索」四条要改写 —— 见 §17 |
+| `docs/superpowers/specs/2026-11-11-idea-manager-design.md` | 五处要改写 —— §2「目标」的第 4 条、§3 非目标、§10.2、§11.4、§20 的「不做服务端全文检索」—— 见 §17 |
 | `web/e2e/COVERAGE.md` | 用例计数与概览表 |
 
 ## 12. 命中位置
@@ -996,7 +998,7 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 | 分页切片位置 | **内存标签过滤之后**（SQL 不带 LIMIT，与今天的 `IdeaService.List` 一致 —— 它本来就把全部结果读进内存再检查上限） | 我的定 |
 | 分页方向 | **往回翻历史**：`offset` 从**最新**一端数（`/api/ideas`）；`/api/search` 的 `offset` 从**最相关**一端数 | 用户拍板（聊天软件模型）+ 我的定 |
 | `too_many_ideas` | 不传 `limit` 时照旧报；传了 `limit` 就不报 | 我的定 |
-| `limit` / `offset` 的类型 | `string?`（OpenAPI 里是 `string`），由服务层自己解析：不是数字、越界、`offset` 单独给一律 `invalid_pagination`（绑 `int?` 时非数字输入回的是**空 body 没有 code** 的 400 —— 实测，见 §11.5） | 我的定（实测后改，见 §11.5） |
+| `limit` / `offset` 的类型 | `string?`（OpenAPI 里是 `string`），由服务层自己解析：不是数字、越界一律 `invalid_pagination`；**`offset` 单独给只有 `/api/ideas` 算非法**（`/api/search` 的 `limit` 有默认值 20，单独给 `offset` 合法）—— 绑 `int?` 时非数字输入回的是**空 body 没有 code** 的 400（实测，见 §11.5） | 我的定（实测后改，见 §11.5） |
 | `trashed` 标志的位置 | `IdeaDto.trashed` / `ProjectDto.trashed` 两个可选字段，不新增 DTO 类型 | 我的定 |
 | 回收站口径 | `/api/search` 默认全收（含已删项目下的想法、已删项目），标 `trashed`；`tags[].count` 口径不变 | 我的定 |
 | 前端过滤判断的位置 | 只有**一层**，在数据层（`applyEvent` 用 `activeFilter`）；显示层只排序不过滤；`datasetFilter` 移除 | 我的定（评审指出「显示层再过滤会误杀服务端结果」） |
