@@ -355,8 +355,8 @@ AND idea.rowid IN (SELECT rowid FROM idea_fts WHERE idea_fts MATCH $q)
 主查询与标签批量查询**共用这一份 WHERE**，所以两边口径天然一致：
 
 ```sql
--- 主查询（IdeaRepository.List）
-SELECT <cols> FROM idea WHERE {where} ORDER BY updated_at ASC, id ASC;
+-- 主查询（IdeaRepository.List）—— 注意：也要起别名 i
+SELECT <cols> FROM idea i WHERE {where} ORDER BY i.updated_at ASC, i.id ASC;
 
 -- 标签批量查询（ReadTagNamesOfCandidates）
 SELECT i.id, t.name FROM idea i
@@ -366,9 +366,9 @@ WHERE {where}
 ORDER BY t.name COLLATE NOCASE ASC, t.name ASC;
 ```
 
-> ⚠️ **必须用表名 `idea.` 限定，不能用别名 `i.`** —— 主查询的 FROM 是 `FROM idea`（没有别名），标签查询的 FROM 是 `FROM idea i`（有别名）。**表名在有别名时依然可用**，所以 `idea.rowid` 在两处都能解析；写成 `i.rowid` 则主查询直接报错。
+> ⚠️ **两条查询要用同一个别名** —— SQLite 在有别名时**会把表名藏起来**（实测：`FROM idea i` 之后写 `idea.rowid` 报 `no such column: idea.rowid`）。所以主查询也要起别名 `FROM idea i`，共享的 WHERE 片段里写 **`i.rowid`** —— 两处 FROM 的别名一致，片段才能共用。
 >
-> ⚠️ **`rowid` 裸写会歧义**：标签查询的 FROM 里有 `idea` / `idea_tag` / `tag` 三张表，三张都有 rowid（`tag` 的 rowid 就是它的 `id`），裸 `rowid` 会报 `ambiguous column name: rowid`。必须限定成 `idea.rowid`。
+> ⚠️ **`rowid` 裸写会歧义**：标签查询的 FROM 里有 `idea` / `idea_tag` / `tag` 三张表，三张都有 rowid（`tag` 的 rowid 就是它的 `id`），裸 `rowid` 会报 `ambiguous column name: rowid`。必须限定成 `i.rowid`。
 
 > **为什么不用 JOIN 形式**（`FROM idea_fts JOIN idea i ON i.rowid = idea_fts.rowid WHERE idea_fts MATCH ?`）：JOIN 形式效率更高（FTS5 直接产出 rowid 序列，再按 rowid 查 `idea`），但它**没法塞进 WHERE 片段** —— JOIN 形式要求 WHERE 里所有列都带表前缀（`i.deleted_at IS NULL`），而现有 `BuildFilter` 产出的片段是无前缀的（`deleted_at IS NULL`），标签查询的 FROM 又是另一套别名。两套 FROM 要共用一份 WHERE，就只能保持无前缀，于是关键词条件只能写成不依赖 FROM 别名的子查询形式。
 >
@@ -530,11 +530,13 @@ SQL：WHERE deleted_at IS NULL AND project_id = ? AND (done = ?)
 **切片算法**（候选集已经是 ASC，最老的在数组头部）：
 
 ```csharp
-var items = allMatched;            // ASC：最老在 [0]，最新在 [Count-1]
-var end   = items.Count - offset;  // 排除「最新的 offset 条」
+var items = allMatched;                      // ASC：最老在 [0]，最新在 [Count-1]
+var end   = items.Count - offset;            // 排除「最新的 offset 条」
 var start = Math.Max(0, end - limit);
-var page  = items.Skip(start).Take(end - start).ToList();   // 仍是 ASC
+var page  = items.Skip(start).Take(Math.Max(0, end - start)).ToList();   // 仍是 ASC
 ```
+
+⚠️ **`Take` 的长度必须再夹一次 0**：`offset` 大于命中总数时 `end` 是负数，`end - start` 也是负数，而 `Enumerable.Take(负数)` 抛 `ArgumentOutOfRangeException` → 端点 500。
 
 **代价**：服务端要把**全部候选**加载进内存再切页。
 
