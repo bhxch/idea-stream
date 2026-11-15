@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { config, flushPromises, mount } from '@vue/test-utils';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import type { Webhook } from '../api/types';
+import ToastHost from '../components/ToastHost.vue';
 
 const { apiGet, apiSend } = vi.hoisted(() => ({ apiGet: vi.fn(), apiSend: vi.fn() }));
 
@@ -118,5 +119,23 @@ describe('ProjectWebhooksPage', () => {
 
     expect(wrapper.get('h1').text()).toContain('我的项目');
     wrapper.unmount();
+  });
+
+  it('新建成功后给一条提示（项目页同样有确认）', async () => {
+    const wrapper = mountPage();
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    await wrapper.get('.webhooks__new').trigger('click');
+    await wrapper.get('.webhook-form__name').setValue('新 hook');
+    await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
+    await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await wrapper.findAll('.webhook-form__event')[0].setValue(true);
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('已创建');
+    wrapper.unmount();
+    toastHost.unmount();
   });
 });

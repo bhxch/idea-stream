@@ -4,6 +4,7 @@ import { apiGet, apiSend } from '../api/client';
 import type { Webhook } from '../api/types';
 import { reportError } from '../lib/errors';
 import DeliveryList from './DeliveryList.vue';
+import { showToast } from './ToastHost.vue';
 import WebhookForm from './WebhookForm.vue';
 
 const props = defineProps<{
@@ -73,9 +74,19 @@ function cancelEdit(): void {
   editing.value = undefined;
 }
 
-/** 存好了：关掉表单并刷新列表。 */
+/**
+ * 存好了：关掉表单、刷新列表，并给一句确认。
+ *
+ * 成功也**要有提示**：列表变了是一回事，用户明确知道「刚才那次操作成了」
+ * 是另一回事 —— 没有提示就只能靠眼睛去扫列表，删错了都没人拦一句。
+ *
+ * 区分新建与编辑：`editing` 为 `null` = 刚才是「新建」，
+ * 是一个 webhook = 刚才是「编辑它」。
+ */
 async function onSaved(): Promise<void> {
+  const created = editing.value === null;
   editing.value = undefined;
+  showToast(created ? 'webhook 已创建' : 'webhook 已保存', 'info');
   await load();
 }
 
@@ -115,6 +126,7 @@ async function remove(webhook: Webhook): Promise<void> {
     if (deliveryId.value === webhook.id) {
       deliveryId.value = null;
     }
+    showToast('webhook 已删除', 'info');
     await load();
   } catch (error) {
     reportError(error, '删除 webhook 失败');

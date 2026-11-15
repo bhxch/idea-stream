@@ -159,6 +159,30 @@ async function applyTelegramTemplate(): Promise<void> {
   }
 }
 
+/**
+ * URL 是不是 http(s) 的绝对地址。
+ *
+ * 口径与后端 `WebhookService.NormalizeUrl` 一致：**必须是绝对地址，
+ * 且协议是 http 或 https** —— 相对地址与别的协议都投不出去
+ * （投递就是个 HTTP 请求），这类配置在保存时就不该收下。
+ *
+ * 用浏览器的 `URL` 解析：解析不出来（相对地址、缺主机、含空格等）就是非法，
+ * 协议不是 http/https 也不是非法。
+ *
+ * ⚠️ Telegram 模板给的 URL 里带 `<BOT_TOKEN>` 占位符：占位符不是合法的
+ * URI 字符，但整串仍是 http(s) 绝对地址（解析时转义成 `%3CBOT_TOKEN%3E`），
+ * 所以模板自己给的预设照样能过这一关。
+ */
+function isAbsoluteHttpUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host !== '';
+}
+
 /** 保存。 */
 async function onSave(): Promise<void> {
   if (saving.value) {
@@ -173,6 +197,12 @@ async function onSave(): Promise<void> {
   }
   if (!trimmedUrl) {
     showToast('webhook 的 URL 不能为空', 'error');
+    return;
+  }
+  if (!isAbsoluteHttpUrl(trimmedUrl)) {
+    // 与后端同一口径（WebhookService.NormalizeUrl）：必须是 http(s) 绝对地址。
+    // 前端先拦一道，省得白等一次请求再拿 400 的回包。
+    showToast('webhook 的 URL 必须是 http(s) 绝对地址', 'error');
     return;
   }
   if (!bodyTemplate.value.trim()) {

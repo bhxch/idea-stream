@@ -98,4 +98,48 @@ describe('DeliveryList', () => {
     expect(wrapper.get('.delivery__empty').text()).toContain('没有');
     wrapper.unmount();
   });
+
+  it('点「刷新」重新拉一次投递记录（面板开着也能看到新记录）', async () => {
+    const wrapper = mount(DeliveryList, { props: { webhookId: 'wh-1' } });
+    await flushPromises();
+    expect(wrapper.findAll('.delivery__row')).toHaveLength(1);
+
+    // 后端这时候又多了一条记录（投递是后台异步的，面板打开后就一直在变）。
+    const newer: Delivery = { ...delivery, id: 'delivery-2', eventType: 'idea.updated' };
+    apiGet.mockResolvedValue([newer, delivery]);
+
+    await wrapper.get('.delivery__refresh').trigger('click');
+    await flushPromises();
+
+    const rows = wrapper.findAll('.delivery__row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].text()).toContain('idea.updated');
+    wrapper.unmount();
+  });
+
+  it('拉列表时「刷新」按钮禁用（防重复请求）', async () => {
+    let resolveLoad: (value: Delivery[]) => void = () => {};
+    apiGet.mockReturnValue(
+      new Promise<Delivery[]>((resolve) => {
+        resolveLoad = resolve;
+      }),
+    );
+
+    const wrapper = mount(DeliveryList, { props: { webhookId: 'wh-1' } });
+    await flushPromises();
+    expect(wrapper.get('.delivery__refresh').attributes('disabled')).toBeDefined();
+
+    resolveLoad([delivery]);
+    await flushPromises();
+    expect(wrapper.get('.delivery__refresh').attributes('disabled')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('记录条数跟着列表走', async () => {
+    const wrapper = mount(DeliveryList, { props: { webhookId: 'wh-1' } });
+    await flushPromises();
+
+    expect(wrapper.get('.delivery-list__count').text()).toContain('1');
+    wrapper.unmount();
+  });
 });

@@ -116,6 +116,62 @@ describe('WebhookForm', () => {
     wrapper.unmount();
   });
 
+  it('URL 是 http(s) 绝对地址时不报校验错误（正常发请求）', async () => {
+    const wrapper = mountForm();
+    const toastHost = mount(ToastHost);
+    await wrapper.get('.webhook-form__name').setValue('新 hook');
+    await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
+    await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await checkFirstEvent(wrapper);
+    const toastsBefore = toastHost.findAll('.toast').length;
+
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    // 合法地址不该冒出任何校验提示（一条新的都没有）。
+    expect(toastHost.findAll('.toast')).toHaveLength(toastsBefore);
+    expect(apiSend).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
+  it('URL 不是 http(s) 绝对地址时给提示，且不发请求（前端先拦一道）', async () => {
+    const wrapper = mountForm();
+    const toastHost = mount(ToastHost);
+    await wrapper.get('.webhook-form__name').setValue('URL 不合法的 hook');
+    await wrapper.get('.webhook-form__url').setValue('not-a-url');
+    await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await checkFirstEvent(wrapper);
+
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    // 请求压根没发出去：不用等后端的 400 才知道地址不对。
+    expect(apiSend).not.toHaveBeenCalled();
+    expect(wrapper.emitted('saved')).toBeUndefined();
+    // 文案与后端同一口径（WebhookService.NormalizeUrl）。
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('http(s) 绝对地址');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
+  it('相对地址也不是 http(s) 绝对地址（同样拦下）', async () => {
+    const wrapper = mountForm();
+    const toastHost = mount(ToastHost);
+    await wrapper.get('.webhook-form__name').setValue('相对地址的 hook');
+    await wrapper.get('.webhook-form__url').setValue('/webhooks/hook');
+    await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await checkFirstEvent(wrapper);
+
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    expect(apiSend).not.toHaveBeenCalled();
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('http(s) 绝对地址');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
   it('点「Telegram 模板」按钮后 URL 与 Body 模板被预填', async () => {
     apiGet.mockResolvedValue({
       url: 'https://api.telegram.org/bot<BOT_TOKEN>/sendMessage',
@@ -133,6 +189,32 @@ describe('WebhookForm', () => {
     expect(body).toContain('message_thread_id');
     expect(body).toContain('{{idea.content}}');
     wrapper.unmount();
+  });
+
+  it('Telegram 模板给的 URL 能过校验（占位符不是合法 URI 字符，但整串仍是 http 绝对地址）', async () => {
+    apiGet.mockResolvedValue({
+      url: 'https://api.telegram.org/bot<BOT_TOKEN>/sendMessage',
+      bodyTemplate: '{"chat_id":1,"text":"x"}',
+    });
+
+    const wrapper = mountForm();
+    const toastHost = mount(ToastHost);
+    await wrapper.get('.webhook-form__telegram').trigger('click');
+    await flushPromises();
+    await wrapper.get('.webhook-form__name').setValue('Telegram hook');
+    await checkFirstEvent(wrapper);
+    const toastsBefore = toastHost.findAll('.toast').length;
+
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    // 模板自己给的预设不该被自己的校验拦下（后端也是这么认的）。
+    expect(apiSend).toHaveBeenCalledTimes(1);
+    const body = apiSend.mock.calls[0][2] as Record<string, unknown>;
+    expect(body.url).toBe('https://api.telegram.org/bot<BOT_TOKEN>/sendMessage');
+    expect(toastHost.findAll('.toast')).toHaveLength(toastsBefore);
+    wrapper.unmount();
+    toastHost.unmount();
   });
 
   it('编辑时 Secret 留空表示不改（请求里是 null）', async () => {
@@ -340,12 +422,15 @@ describe('WebhookForm', () => {
     const wrapper = mountForm();
     const toastHost = mount(ToastHost);
     await wrapper.get('.webhook-form__name').setValue('新 hook');
-    await wrapper.get('.webhook-form__url').setValue('not-a-url');
+    // ⚠️ URL 必须是**合法**的地址：前端现在会自己拦下非法地址（根本不发请求），
+    // 这条用例测的是「请求发出去了、但后端拒了」这条路径。
+    await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
     await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
     await checkFirstEvent(wrapper);
     await wrapper.get('.webhook-form__save').trigger('click');
     await flushPromises();
 
+    expect(apiSend).toHaveBeenCalledTimes(1);
     expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('http(s) 绝对地址');
     expect(wrapper.emitted('saved')).toBeUndefined();
     wrapper.unmount();

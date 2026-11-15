@@ -192,6 +192,38 @@ describe('WebhooksPage', () => {
     wrapper.unmount();
   });
 
+  it('新建成功后给一条提示（用户知道「存上了」，不用靠列表变化猜）', async () => {
+    const wrapper = mountPage();
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    await wrapper.get('.webhooks__new').trigger('click');
+    await wrapper.get('.webhook-form__name').setValue('新 hook');
+    await wrapper.get('.webhook-form__url').setValue('https://example.com/x');
+    await wrapper.get('.webhook-form__body').setValue('{"text":"x"}');
+    await wrapper.findAll('.webhook-form__event')[0].setValue(true);
+    await wrapper.get('.webhook-form__save').trigger('click');
+    await flushPromises();
+
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('已创建');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
+  it('删除成功后给一条提示', async () => {
+    const wrapper = mountPage();
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    await wrapper.get('[data-webhook-id="wh-1"] .webhooks__delete').trigger('click');
+    await wrapper.get('.webhooks__confirm-yes').trigger('click');
+    await flushPromises();
+
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('已删除');
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
   it('列表加载失败时给提示（不静默吞掉）', async () => {
     apiGet.mockImplementation((path: string) =>
       path === '/webhooks' ? Promise.reject(new Error('boom')) : Promise.resolve([]),
