@@ -111,8 +111,20 @@ const activeFilter = computed<IdeaFilter>(() => ({ ...filter.value, tagMode: tag
  */
 const RELOAD_DEBOUNCE_MS = 250;
 
-/** 待执行的防抖重拉（两个入口共用一个：先排的那个被后排的顶掉）。 */
+/**
+ * 待执行的重拉（过滤条件变了）。
+ *
+ * 过滤条件变了 → 重置到一页 + 滚到底部；
+ * SSE 事件 → 保留已加载的深度（见 {@link scheduleResync}）。
+ *
+ * ⚠️ 两种意图**各用各的计时器**：共用一个的话，SSE 事件会把还没执行的
+ * 「条件变化」重拉顶掉 —— 条件变了就该重置到一页、滚到底部，
+ * 那个重拉不能被顶掉（顶掉了用户看到的还是旧条件的结果）。
+ */
 let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** 待执行的重拉（SSE 事件）。 */
+let resyncTimer: ReturnType<typeof setTimeout> | undefined;
 
 /**
  * 换项目时自己已经拉过一遍了，别让 watch 再拉一次。
@@ -164,7 +176,7 @@ const visibleIdeas = computed(() => sortIdeas(ideas.value));
  * （设计文档 §13.5）。
  */
 function scheduleReload(): void {
-  cancelReload();
+  cancelReloadTimer();
   reloadTimer = setTimeout(() => {
     reloadTimer = undefined;
     void reloadAndReport(async () => {
@@ -183,9 +195,9 @@ function scheduleReload(): void {
  * 最新那批（设计文档 §13.5）。
  */
 function scheduleResync(): void {
-  cancelReload();
-  reloadTimer = setTimeout(() => {
-    reloadTimer = undefined;
+  cancelResyncTimer();
+  resyncTimer = setTimeout(() => {
+    resyncTimer = undefined;
     void reloadAndReport(async () => {
       // 重拉之前先记住视口在哪：重拉回来的列表顶部会多出更旧的条目
       // （`limit` 按「往上翻过的深度」给，比已加载的条数多），
@@ -256,12 +268,26 @@ function restoreViewportAnchor(anchor: ViewportAnchor | null): void {
   container.scrollTop += element.getBoundingClientRect().top - anchor.top;
 }
 
-/** 撤掉待执行的重拉。 */
-function cancelReload(): void {
+/** 撤掉待执行的「条件变化」重拉。 */
+function cancelReloadTimer(): void {
   if (reloadTimer !== undefined) {
     clearTimeout(reloadTimer);
     reloadTimer = undefined;
   }
+}
+
+/** 撤掉待执行的「SSE 事件」重拉。 */
+function cancelResyncTimer(): void {
+  if (resyncTimer !== undefined) {
+    clearTimeout(resyncTimer);
+    resyncTimer = undefined;
+  }
+}
+
+/** 撤掉待执行的重拉（两种意图都撤）。 */
+function cancelReloads(): void {
+  cancelReloadTimer();
+  cancelResyncTimer();
 }
 
 /**
@@ -1095,7 +1121,7 @@ onBeforeUnmount(() => {
   stream?.close();
   stream = null;
   // 待执行的重拉也别做了：页面都没了，重拉回来的数据没人看。
-  cancelReload();
+  cancelReloads();
 });
 </script>
 

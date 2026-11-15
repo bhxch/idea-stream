@@ -1970,6 +1970,102 @@ describe('HomePage', () => {
     }
   });
 
+  it('filter_change_resets_to_one_page_and_scrolls_to_the_bottom', async () => {
+    vi.useFakeTimers();
+    const layout = stubLayout();
+    try {
+      // 服务端按 limit 给多少就返回多少（这样「列表有多长」才说明得了问题）。
+      apiGet.mockImplementation((path: string, params?: { limit?: string }) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            return Promise.resolve(makeManyIdeas(Number(params?.limit ?? PAGE_SIZE + 1)));
+          default:
+            return Promise.resolve([]);
+        }
+      });
+
+      const wrapper = mount(HomePage);
+      await flushPromises();
+      expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1);
+
+      // 用户翻到上面去了（离底部远）。
+      const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+      scroller.scrollTop = 0;
+
+      await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+      await waitForReload();
+
+      // 重置到一页：条件变了，命中集合也变了，之前的浏览深度没有意义。
+      expect(Number(ideasCalls().at(-1)?.params?.limit)).toBe(PAGE_SIZE + 1);
+      expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1);
+
+      // 并且滚到底部（最新的一条在视野里）。
+      expect(scroller.scrollTop).toBe(600);
+      wrapper.unmount();
+    } finally {
+      layout.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('SSE 事件不会顶掉还没执行的「条件变化」重拉', async () => {
+    vi.useFakeTimers();
+    const layout = stubLayout();
+    try {
+      apiGet.mockImplementation((path: string) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            return Promise.resolve([ideaA, ideaB]);
+          default:
+            return Promise.resolve([]);
+        }
+      });
+
+      const wrapper = mount(HomePage);
+      await flushPromises();
+      const before = ideasCalls().length;
+
+      const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event('scroll'));
+
+      // 用户刚改了关键词（防抖还没走完），别处又来了一条。
+      await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+      const created: Idea = {
+        ...idea,
+        id: 'idea-new',
+        content: '别处记的',
+        updatedAt: '2026-11-12T10:00:00Z',
+      };
+      FakeEventSource.instances[0].emit('idea.created', makeEvent('idea.created', { idea: created }), 'e1');
+      await flushPromises();
+
+      await waitForReload();
+
+      // 两次重拉都要发生：条件变化的那次不能被 SSE 的重拉顶掉
+      // （顶掉了用户看到的还是旧条件的结果，也不会滚到底部）。
+      expect(ideasCalls().length).toBe(before + 2);
+      // 「条件变化」那次重拉会把视口滚到底部（用户不在底部时才看得出差别）。
+      expect(scroller.scrollTop).toBe(600);
+      wrapper.unmount();
+    } finally {
+      layout.restore();
+      vi.useRealTimers();
+    }
+  });
+
   it('visible_ideas_are_not_filtered_again_on_the_client', async () => {
     vi.useFakeTimers();
     try {
