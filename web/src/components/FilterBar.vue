@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { Tag } from '../api/types';
-import type { IdeaFilter, StatusFilter } from '../lib/filter';
+import { hasActiveFilter, type IdeaFilter, type StatusFilter } from '../lib/filter';
 import TagFilter from './TagFilter.vue';
 
 const props = defineProps<{
@@ -22,8 +23,38 @@ const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: 'done', label: '已完成' },
 ];
 
+/** 当前关键词（没给这个字段时按空处理 = 不过滤）。 */
+const keyword = computed(() => props.filter.keyword ?? '');
+
+/** 有没有过滤条件生效（决定「清除」按钮出不出现）。 */
+const filtered = computed(() => hasActiveFilter(props.filter));
+
 function setStatus(status: StatusFilter): void {
   emit('update:filter', { ...props.filter, status });
+}
+
+/**
+ * 关键词变了：输入即过滤。
+ *
+ * 过滤在客户端做（设计文档 §10.2），对已加载的正文做子串匹配。
+ */
+function onKeywordInput(event: Event): void {
+  const target = event.target;
+  if (target instanceof HTMLInputElement) {
+    emit('update:filter', { ...props.filter, keyword: target.value });
+  }
+}
+
+/**
+ * 一键清除：状态、标签、关键词一起清掉。
+ *
+ * 之前想清掉筛选只能点开标签下拉取消勾选、再点状态组的「全部」——
+ * 界面上没有一个能一次清空的入口。
+ *
+ * 项目不在这里清：它不是「过滤条件」，是列表的范围（由侧栏/Tab 选）。
+ */
+function clearFilters(): void {
+  emit('update:filter', { ...props.filter, status: 'all', tags: [], keyword: '' });
 }
 </script>
 
@@ -43,6 +74,19 @@ function setStatus(status: StatusFilter): void {
       </button>
     </div>
 
+    <!--
+      关键词过滤：对正文做子串匹配，忽略大小写（设计文档 §10.2）。
+      输入即过滤；空串 = 不过滤。
+    -->
+    <input
+      class="filter-bar__search"
+      type="search"
+      aria-label="搜索想法"
+      placeholder="搜索想法…"
+      :value="keyword"
+      @input="onKeywordInput"
+    />
+
     <TagFilter
       :all-tags="allTags"
       :selected="filter.tags"
@@ -50,6 +94,15 @@ function setStatus(status: StatusFilter): void {
       @update:selected="emit('update:filter', { ...filter, tags: $event })"
       @update:mode="emit('update:filter', { ...filter, tagMode: $event })"
     />
+
+    <button
+      v-if="filtered"
+      class="filter-bar__clear"
+      type="button"
+      @click="clearFilters"
+    >
+      清除
+    </button>
   </div>
 </template>
 
@@ -70,5 +123,16 @@ function setStatus(status: StatusFilter): void {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-fg);
+}
+
+.filter-bar__search {
+  width: 160px;
+  /* 窄屏上别把过滤栏撑出横向滚动条（输入框有固有的最小宽度）。 */
+  min-width: 0;
+  max-width: 100%;
+}
+
+.filter-bar__clear {
+  color: var(--muted);
 }
 </style>

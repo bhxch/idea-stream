@@ -51,12 +51,13 @@ const router = useRouter();
 /** 当前路由（深链 `?idea=<id>` 从 query 里读）。 */
 const route = useRoute();
 
-/** 过滤条件。项目、状态、标签三者取交集。 */
+/** 过滤条件。项目、状态、标签、关键词四者取交集。 */
 const filter = ref<IdeaFilter>({
   projectId: currentProjectId.value,
   status: 'all',
   tags: [],
   tagMode: tagMode.value,
+  keyword: '',
 });
 
 /** 全部标签（标签多选下拉的选项）。 */
@@ -102,10 +103,28 @@ const { atBottom, onNewContent, scrollToBottom, pendingCount } = useScrollFollow
 const activeFilter = computed<IdeaFilter>(() => ({ ...filter.value, tagMode: tagMode.value }));
 
 /**
+ * 首屏还在准备（项目/标签/排序方式都还没到，列表还没开始拉）。
+ *
+ * store 里的 `loading` 只覆盖「列表请求在飞」那一段；首屏还有一段
+ * 「前置请求在飞」的时间 —— 那时候数据集是空的，但**列表确实还没加载完**。
+ * 这段时间里不能渲染空状态（见 {@link listLoading}）。
+ */
+const initialLoading = ref(true);
+
+/**
+ * 列表是不是还在加载。
+ *
+ * 加载中不渲染空状态：数据没到就先闪一句「这里还没有想法。」，
+ * 等于凭空告诉用户「你什么都没记过」。
+ */
+const listLoading = computed(() => initialLoading.value || loading.value);
+
+/**
  * 列表内容。
  *
  * 过滤与排序都在客户端做（`matchesFilter` / `sortIdeas`）：
  * AND/OR 偏好存在各设备自己的 localStorage 里，服务端无从得知每条连接用哪种模式。
+ * 关键词也一样（设计文档 §10.2）：对已加载的正文做子串匹配。
  */
 const visibleIdeas = computed(() =>
   sortIdeas(ideas.value.filter((idea) => matchesFilter(idea, activeFilter.value))),
@@ -114,7 +133,7 @@ const visibleIdeas = computed(() =>
 /**
  * **数据集**维度的过滤条件：只有项目维度。
  *
- * 状态与标签的过滤交给显示层（`visibleIdeas`）做。
+ * 状态、标签与关键词的过滤都交给显示层（`visibleIdeas`）做。
  *
  * 为什么不能把显示层的过滤条件直接交给事件合并（`applyEvent`）：
  * 合并是作用在**数据集**（`ideas.value`）上的 —— 用显示层的条件合并，
@@ -126,6 +145,7 @@ const datasetFilter = computed<IdeaFilter>(() => ({
   ...activeFilter.value,
   status: 'all',
   tags: [],
+  keyword: '',
 }));
 
 /**
@@ -149,33 +169,38 @@ const { highlightedId, locateAnchor } = useDeepLink({
  * 想法列表**单独**加载，列表挂了不影响别的提示。
  */
 async function init(): Promise<void> {
-  const [projectsResult, sortModeResult, tagsResult] = await Promise.allSettled([
-    loadProjects(),
-    loadSortMode(),
-    loadTags(),
-  ]);
-  if (projectsResult.status === 'rejected') {
-    reportError(projectsResult.reason, '加载项目失败');
-  }
-  if (sortModeResult.status === 'rejected') {
-    reportError(sortModeResult.reason, '加载排序方式失败');
-  }
-  if (tagsResult.status === 'rejected') {
-    reportError(tagsResult.reason, '加载标签失败');
-  }
+  try {
+    const [projectsResult, sortModeResult, tagsResult] = await Promise.allSettled([
+      loadProjects(),
+      loadSortMode(),
+      loadTags(),
+    ]);
+    if (projectsResult.status === 'rejected') {
+      reportError(projectsResult.reason, '加载项目失败');
+    }
+    if (sortModeResult.status === 'rejected') {
+      reportError(sortModeResult.reason, '加载排序方式失败');
+    }
+    if (tagsResult.status === 'rejected') {
+      reportError(tagsResult.reason, '加载标签失败');
+    }
 
-  const result = await switchProject(currentProjectId.value);
-  if (!result.ok) {
-    await handleIdeasError(result.error, currentProjectId.value);
-  }
+    const result = await switchProject(currentProjectId.value);
+    if (!result.ok) {
+      await handleIdeasError(result.error, currentProjectId.value);
+    }
 
-  // 打开页面就看到最新的一条（列表是从上往下长的，底部才是当下）。
-  // 等一拍再滚：内容这时才刚进 DOM。
-  await nextTick();
-  // 有深链锚点时**不能**滚到底：那会把刚定位到的那条挤出视野。
-  // 定位由深链逻辑负责（它也在 DOM 更新之后才动手）。
-  if (!locateAnchor()) {
-    scrollToBottom();
+    // 打开页面就看到最新的一条（列表是从上往下长的，底部才是当下）。
+    // 等一拍再滚：内容这时才刚进 DOM。
+    await nextTick();
+    // 有深链锚点时**不能**滚到底：那会把刚定位到的那条挤出视野。
+    // 定位由深链逻辑负责（它也在 DOM 更新之后才动手）。
+    if (!locateAnchor()) {
+      scrollToBottom();
+    }
+  } finally {
+    // 首屏的准备做完了：不管成没成，都不再算「加载中」。
+    initialLoading.value = false;
   }
 }
 
@@ -956,10 +981,11 @@ onBeforeUnmount(() => {
 
       <div class="home__body">
         <div ref="scrollContainer" class="home__scroll">
-          <p v-if="loading" class="hint">加载中…</p>
+          <p v-if="listLoading" class="hint">加载中…</p>
 
           <MessageList
             :ideas="visibleIdeas"
+            :loading="listLoading"
             :selected-ids="selectedIds"
             :busy-ids="busyIds"
             :at-bottom="atBottom"

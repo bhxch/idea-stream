@@ -107,6 +107,13 @@ const projects: Project[] = [
 const ideaA: Idea = { ...idea, id: 'idea-a', projectId: 'project-2', content: '甲' };
 const ideaB: Idea = { ...idea, id: 'idea-b', projectId: 'project-2', content: '乙' };
 
+/** 关键词过滤用的两条想法：一条命中「点子」，一条不命中。 */
+const ideaPoint: Idea = { ...idea, id: 'idea-point', content: '今天想到一个点子' };
+const ideaMilk: Idea = { ...idea, id: 'idea-milk', content: '买牛奶' };
+
+/** 正文里带英文的想法（测关键词忽略大小写）。 */
+const ideaKafka: Idea = { ...idea, id: 'idea-kafka', content: 'Idea about Kafka' };
+
 /** 有标题的想法：正文原样显示，改完能直接看到改了哪。 */
 const titledIdea: Idea = { ...idea, title: '标题', content: '原正文' };
 
@@ -1552,6 +1559,181 @@ describe('HomePage', () => {
       ids: ['idea-a'],
       done: true,
     });
+    wrapper.unmount();
+  });
+
+  it('加载中不显示空状态（数据没到就先闪一次空列表）', async () => {
+    let release: ((value: Idea[]) => void) | undefined;
+    apiGet.mockImplementation((path: string) => {
+      if (path === '/ideas') {
+        return new Promise<Idea[]>((resolve) => {
+          release = resolve;
+        });
+      }
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // 列表还没到：给的是「加载中」，不是「这里还没有想法。」
+    expect(wrapper.get('.hint').text()).toBe('加载中…');
+    expect(wrapper.find('.empty').exists()).toBe(false);
+
+    release?.([idea]);
+    await flushPromises();
+
+    // 数据到了：条目在，空状态仍然不在。
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+    expect(wrapper.find('.empty').exists()).toBe(false);
+    expect(wrapper.find('.hint').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('输入关键词后只显示正文命中的条目', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([ideaPoint, ideaMilk]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+    expect(wrapper.findAll('.idea')).toHaveLength(2);
+
+    await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+    await flushPromises();
+
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+    expect(wrapper.get('.list').text()).toContain('点子');
+    expect(wrapper.get('.list').text()).not.toContain('买牛奶');
+    wrapper.unmount();
+  });
+
+  it('关键词忽略大小写', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([ideaKafka]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('input[aria-label="搜索想法"]').setValue('kafka');
+    await flushPromises();
+
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it('SSE 推来的新条目不匹配关键词时不显示（清掉关键词后它还在）', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          return Promise.resolve([ideaPoint]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+    await flushPromises();
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+
+    // 别的设备记了一条，正文不含关键词：不该出现在列表里。
+    const created: Idea = {
+      ...idea,
+      id: 'idea-new',
+      content: '别处记的',
+      updatedAt: '2026-11-12T10:00:00Z',
+    };
+    FakeEventSource.instances[0].emit('idea.created', makeEvent('idea.created', { idea: created }), 'e1');
+    await flushPromises();
+
+    expect(wrapper.findAll('.idea')).toHaveLength(1);
+    expect(wrapper.get('.list').text()).not.toContain('别处记的');
+
+    // 清掉关键词：它还在（不能因为中途的过滤被从数据集里删掉）。
+    await wrapper.get('.filter-bar__clear').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.findAll('.idea')).toHaveLength(2);
+    expect(wrapper.get('.list').text()).toContain('别处记的');
+    wrapper.unmount();
+  });
+
+  it('「清除」按钮把状态、标签、关键词一起清掉', async () => {
+    apiGet.mockImplementation((path: string) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([{ name: '想法', count: 1 }]);
+        case '/ideas':
+          return Promise.resolve([ideaPoint]);
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // 三个条件都加上：状态、标签、关键词。
+    await clickStatus(wrapper, '未完成');
+    await wrapper.get('.tag-filter__trigger').trigger('click');
+    await wrapper.get('.tag-filter__option input').setValue(true);
+    await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+    await flushPromises();
+
+    // 有过滤生效 → 「清除」按钮出现。
+    expect(wrapper.find('.filter-bar__clear').exists()).toBe(true);
+
+    await wrapper.get('.filter-bar__clear').trigger('click');
+    await flushPromises();
+
+    // 三样都清掉了。
+    expect((wrapper.get('input[aria-label="搜索想法"]').element as HTMLInputElement).value).toBe('');
+    expect(wrapper.get('.tag-filter__trigger').text()).toBe('标签');
+    expect(wrapper.get('.filter-bar__status-button.is-active').text()).toBe('全部');
+    expect(wrapper.find('.filter-bar__clear').exists()).toBe(false);
     wrapper.unmount();
   });
 });

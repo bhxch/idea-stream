@@ -91,4 +91,26 @@ describe('MessageList', () => {
     expect(wrapper.findAllComponents(MessageItem)).toHaveLength(0);
     expect(wrapper.get('.empty').text()).toBe('这里还没有想法。');
   });
+
+  it('加载中不给空状态（数据还没到就说「没有想法」是骗人）', () => {
+    const wrapper = mountList({ ideas: [], loading: true });
+
+    expect(wrapper.find('.empty').exists()).toBe(false);
+  });
+
+  it('加载中但已经有条目时，条目照常渲染', () => {
+    const wrapper = mountList({ ideas: [idea], loading: true });
+
+    expect(wrapper.findAllComponents(MessageItem)).toHaveLength(1);
+    expect(wrapper.find('.empty').exists()).toBe(false);
+  });
+
+  it('加载结束后空状态才出现', async () => {
+    const wrapper = mountList({ ideas: [], loading: true });
+    expect(wrapper.find('.empty').exists()).toBe(false);
+
+    await wrapper.setProps({ loading: false });
+
+    expect(wrapper.get('.empty').text()).toBe('这里还没有想法。');
+  });
 });

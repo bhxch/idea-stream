@@ -17,6 +17,13 @@ defineProps<{
   /** 当前是否贴着列表底部（滚动跟随用，F11 消费）。 */
   atBottom: boolean;
   /**
+   * 列表是不是还在加载。
+   *
+   * 加载中**不渲染空状态**：数据还没到就先说「这里还没有想法。」，
+   * 等于凭空告诉用户「你什么都没记过」—— 空列表先闪一次，数据才到。
+   */
+  loading?: boolean;
+  /**
    * 要高亮的条目 id（深链定位或合并结果定位）。
    *
    * `null` = 不高亮任何条目。
@@ -43,7 +50,7 @@ const emit = defineEmits<{
     组件不重排 —— 要重排请在调用方（HomePage）排好。
   -->
   <div class="list" :data-at-bottom="atBottom">
-    <p v-if="ideas.length === 0" class="empty">这里还没有想法。</p>
+    <p v-if="ideas.length === 0 && !loading" class="empty">这里还没有想法。</p>
     <MessageItem
       v-for="idea in ideas"
       :key="idea.id"
