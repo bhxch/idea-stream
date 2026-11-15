@@ -123,7 +123,11 @@ export interface ListIdeasParams {
   status?: 'all' | 'open' | 'done';
   tags?: string[];
   tagMode?: 'and' | 'or';
-  /** 关键词（后端的 `q`）。空串 = 不过滤。 */
+  /**
+   * 关键词（后端的 `q`）。
+   *
+   * 空串**不发出去**（与前端 `toQueryParams` 同一个口径）：不发 = 没有关键词 = 不过滤。
+   */
   q?: string;
   /** 一页最多几条。 */
   limit?: number;
@@ -196,7 +200,7 @@ export class IdeaApi {
     if (params.status !== undefined) query.set('status', params.status);
     if (params.tags !== undefined) query.set('tags', params.tags.join(','));
     if (params.tagMode !== undefined) query.set('tagMode', params.tagMode);
-    if (params.q !== undefined) query.set('q', params.q);
+    if (params.q) query.set('q', params.q);
     if (params.limit !== undefined) query.set('limit', String(params.limit));
     if (params.offset !== undefined) query.set('offset', String(params.offset));
     const suffix = query.toString();

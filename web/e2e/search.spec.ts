@@ -144,6 +144,22 @@ test('搜索：多段之间是 AND', async ({ page, seed }) => {
   await expect(page.locator('article').filter({ hasText: '今天泡咖啡' })).toHaveCount(1);
 });
 
+test('搜索：中文是词元相邻（标点不挡路 / 中间隔一个字就不算）', async ({ page, seed }) => {
+  // 「咖啡，水温」：标点被跳过，词元仍然**相邻** → 命中。
+  await seed.idea('咖啡，水温');
+  // 「咖啡的水温」：中间隔了一个「的」→ 不相邻 → 不命中。
+  await seed.idea('咖啡的水温');
+  await page.goto('/');
+  await expect(page.locator('article')).toHaveCount(2);
+
+  await keywordSearch(page).fill('咖啡水温');
+
+  // 只剩标点被跳过的那一条：子串匹配做不到这一点（子串里「咖啡水温」压根不是
+  // 「咖啡，水温」的子串），所以这条用例能把「词元相邻」与「子串」分开。
+  await expect(page.locator('article')).toHaveCount(1);
+  await expect(page.locator('article').filter({ hasText: '咖啡，水温' })).toHaveCount(1);
+});
+
 // ── 往回翻历史 ───────────────────────────────────────────────────────────
 
 test('往回翻：打开页面停在最下边', async ({ page, api }) => {
@@ -167,8 +183,12 @@ test('往回翻：打开页面停在最下边', async ({ page, api }) => {
 test('往回翻：接近顶部自动加载更旧的一页', async ({ page, api }) => {
   // 首屏一页是 101 条（前端按「一页 + 一条」要，好判断还有没有更旧的）。
   // 造 102 条：首屏拿到最新的 101 条，再往回翻一页就能多出更旧的那一条。
+  // id 留着：光看**条数**分不出「从最新一端数」与「从最老一端数」—— 两种口径下
+  // offset=0 都返回 101 条、offset=101 都返回 1 条。要看返回的是**哪一条**。
+  const ids: string[] = [];
   for (let index = 1; index <= 102; index += 1) {
-    await api.createIdea({ content: `第 ${index} 条想法` });
+    const idea = await api.createIdea({ content: `第 ${index} 条想法` });
+    ids.push(idea.id);
   }
 
   await page.goto('/');
@@ -181,6 +201,10 @@ test('往回翻：接近顶部自动加载更旧的一页', async ({ page, api }
   const olderPage = await api.listIdeas({ limit: 101, offset: 101 });
   expect(newestPage).toHaveLength(101);
   expect(olderPage).toHaveLength(1);
+  // 更旧的那一页就是**最老**的那一条（不是最新那一条）。
+  expect(olderPage[0].id).toBe(ids[0]);
+  // 最新那页里不能混进最老的那一条。
+  expect(newestPage.some((idea) => idea.id === ids[0])).toBe(false);
 
   // 往回翻的请求：offset 从**最新**一端数，已经加载了多少条就是多少。
   const older = page.waitForResponse(
@@ -198,4 +222,24 @@ test('往回翻：接近顶部自动加载更旧的一页', async ({ page, api }
   await older;
   // 更旧的那一条拼到了列表**前面**：列表变长了。
   await expect(page.locator('article')).toHaveCount(102);
+  // 翻完之后，最老的那一条排在列表**第一**（列表按更新时间升序，最老的在顶）。
+  //
+  // ⚠️ 这一条**断不了「更旧的一页拼在前面还是后面」**：显示层按 updated_at
+  // 重排过一遍，两种拼法排出来的顺序与滚动几何**完全一样** ——
+  // 实测把 `HomePage.vue` 的 prepend 改成 append，这条用例照样全绿。
+  // prepend 的语义由单测钉住：`web/src/pages/HomePage.spec.ts`
+  // 「更旧的一页拼到 store 数组的前面（不是后面）」—— 断言的正是**没排序**的那一份。
+  await expect(page.locator('article').first()).toHaveAttribute('data-idea-id', ids[0]);
+
+  // 往回翻之后**视口没有跳走**：用户原来看着的那一条还在视口顶上
+  // （新加载的内容落在视口**上方**，滚动修正把视口钉回原处）。
+  // 滚动修正要是没做，视口会被新内容顶下去 —— 用户看着的那条就跑了。
+  const containerBox = await scrollContainer(page).boundingBox();
+  const secondBox = await page.locator('article').nth(1).boundingBox();
+  expect(containerBox).not.toBeNull();
+  expect(secondBox).not.toBeNull();
+  if (containerBox && secondBox) {
+    // 差一两个像素是取整（滚动容器上沿上面还有 1px 的哨兵）。
+    expect(secondBox.y).toBeLessThanOrEqual(containerBox.y + 5);
+  }
 });
