@@ -82,6 +82,37 @@ describe('ProjectSidebar', () => {
     expect(wrapper.emitted('select')).toEqual([['project-1']]);
   });
 
+  it('当前项目带 aria-current="page"（辅助技术读得出当前在哪）', () => {
+    const wrapper = mountSidebar({ currentId: 'project-2' });
+
+    expect(wrapper.get('[data-project-id="project-2"]').attributes('aria-current')).toBe('page');
+    // 别的项目不带：aria-current 是「当前这一项」，不是「这一类」。
+    expect(wrapper.get('[data-project-id="project-1"]').attributes('aria-current')).toBeUndefined();
+    expect(wrapper.get('[data-project-id="project-3"]').attributes('aria-current')).toBeUndefined();
+    expect(wrapper.get('[data-project-id="all"]').attributes('aria-current')).toBeUndefined();
+  });
+
+  it('当前是「全部项目」时，标在「全部项目」上', () => {
+    const wrapper = mountSidebar({ currentId: null });
+
+    expect(wrapper.get('[data-project-id="all"]').attributes('aria-current')).toBe('page');
+    expect(wrapper.get('[data-project-id="project-1"]').attributes('aria-current')).toBeUndefined();
+  });
+
+  it('项目名元素带稳定的 data-testid（用例不用靠 class 定位）', () => {
+    const wrapper = mountSidebar();
+
+    expect(wrapper.get('[data-testid="project-name-all"]').text()).toBe('全部项目');
+    expect(wrapper.get('[data-testid="project-name-project-1"]').text()).toBe('老项目');
+    expect(wrapper.get('[data-testid="project-name-project-3"]').text()).toBe('第三个项目');
+  });
+
+  it('侧栏 nav 有 aria-label="项目"（跟窄屏 Tab 条一致）', () => {
+    const wrapper = mountSidebar();
+
+    expect(wrapper.get('nav').attributes('aria-label')).toBe('项目');
+  });
+
   it('点「全部项目」发出 select（带 null）', () => {
     const wrapper = mountSidebar();
 

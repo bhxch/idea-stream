@@ -115,10 +115,11 @@ function toggleMode(): void {
           class="project-sidebar__item"
           :class="{ 'is-active': currentId === null }"
           type="button"
+          :aria-current="currentId === null ? 'page' : undefined"
           data-project-id="all"
           @click="emit('select', null)"
         >
-          <span class="project-sidebar__name">全部项目</span>
+          <span class="project-sidebar__name" data-testid="project-name-all">全部项目</span>
           <span class="project-sidebar__count">{{ totalCount }}</span>
         </button>
       </li>
@@ -133,6 +134,7 @@ function toggleMode(): void {
           class="project-sidebar__item"
           :class="{ 'is-active': currentId === project.id, 'is-draggable': canDrag() }"
           type="button"
+          :aria-current="currentId === project.id ? 'page' : undefined"
           :draggable="canDrag()"
           :data-project-id="project.id"
           @dragstart="onDragStart(project.id, $event)"
@@ -141,7 +143,7 @@ function toggleMode(): void {
           @dragend="onDragEnd"
           @click="emit('select', project.id)"
         >
-          <span class="project-sidebar__name">{{ project.name }}</span>
+          <span class="project-sidebar__name" :data-testid="`project-name-${project.id}`">{{ project.name }}</span>
           <span class="project-sidebar__count">{{ project.ideaCount }}</span>
           <span v-if="project.lastActivityAt" class="project-sidebar__activity">
             {{ formatRelativeTime(project.lastActivityAt) }}
