@@ -21,11 +21,14 @@ import { applyEvent, findAnchorIndex } from '../lib/merge';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
 import {
   applyLocalUpsert,
+  fetchOlderIdeas,
   focusIdeaId,
+  hasMore,
   ideas,
   loadedLimit,
   loadIdeas,
   loading,
+  loadingMore,
   removeLocal,
   scrolledItems,
 } from '../stores/ideas';
@@ -898,6 +901,93 @@ function onClearSelection(): void {
 }
 
 /* ------------------------------------------------------------------ *
+ * 往回翻历史：接近顶部就预加载更旧的一页
+ * ------------------------------------------------------------------ */
+
+/**
+ * 往回翻的哨兵（消息流最上面的那个）。
+ *
+ * 往回翻的方向是**上**：看板本来就是聊天软件式的（打开页面停在最下边，
+ * 底部是当下，往上才是历史），所以哨兵放在列表顶部 —— 它进入视野就说明
+ * 用户快翻到顶了。
+ */
+const historySentinel = ref<HTMLElement | null>(null);
+
+/** 哨兵的观察者（页面没了就要断开）。 */
+let historyObserver: IntersectionObserver | undefined;
+
+/**
+ * 往回翻：取更旧的一页，拼到列表**前面**。
+ *
+ * 三件事：
+ * 1. 防重复触发：已经在翻了就不再发（`loadingMore`）；这也替代了
+ *    「加载完成前把哨兵摘掉」的做法 —— 哨兵一直观察着，靠这个开关挡住
+ *    重复请求就行；
+ * 2. 没有更旧的了就不发（`hasMore`）：翻到底了就别再打后端；
+ * 3. prepend 之后把视口钉回原来那条 —— 内容插到视口**上方**会把用户
+ *    正在看的那条往下推，不补 `scrollTop` 的话预加载反而让视口跳了。
+ */
+async function loadOlder(): Promise<void> {
+  if (loadingMore.value || !hasMore.value) {
+    return;
+  }
+  // prepend 之前先量一次内容高度：之后靠它算出「多了多少」，好把视口钉回原处。
+  const container = scrollContainer.value;
+  const before = container?.scrollHeight ?? 0;
+  // 过滤条件先记下来：等这一页的时候条件可能变（见下面）。
+  const filter = activeFilter.value;
+  let older: Idea[];
+  try {
+    // offset = 已经加载的条数：服务端从**最新**一端数（设计文档 §11.1）。
+    older = await fetchOlderIdeas(filter, ideas.value.length);
+  } catch (error) {
+    // 失败必须给一条提示：不然就是一次没人管的 Promise rejection ——
+    // 用户只看到「往上翻没反应」，不知道是翻完了还是请求挂了。
+    reportError(error, '加载更早的想法失败');
+    return;
+  }
+  if (older.length === 0) {
+    hasMore.value = false;
+    return;
+  }
+  if (filter !== activeFilter.value) {
+    // 等这一页的时候过滤条件变了：这一页是按**旧**条件要的，拼到新列表上
+    // 就是把不匹配当前条件的条目塞给用户。重拉会按新条件重新要一份，
+    // 这一页直接丢掉。
+    return;
+  }
+  ideas.value = [...older, ...ideas.value];
+  // 必须等 DOM 更新完再量：重渲染之前量到的还是旧高度，补出来的位置是错的。
+  await nextTick();
+  if (container) {
+    container.scrollTop += container.scrollHeight - before;
+  }
+}
+
+/**
+ * 观察往回翻的哨兵：接近顶部就预加载更旧的一页。
+ *
+ * `rootMargin` 的 `'400px 0px 0px 0px'` = **顶部**提前 400px 就触发：
+ * 列表遍历方向的尽头是顶部（底部是当下，新内容靠 SSE 进来），
+ * 「快到底时预加载」在这里就是「快到顶时预加载」。
+ *
+ * `root` 是消息流那个滚动容器（不是 window）：列表是在它里面滚的。
+ */
+function observeHistorySentinel(): void {
+  historyObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        void loadOlder();
+      }
+    },
+    { root: scrollContainer.value, rootMargin: '400px 0px 0px 0px' },
+  );
+  if (historySentinel.value) {
+    historyObserver.observe(historySentinel.value);
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * SSE：别的设备改了东西，这里同步过来
  * ------------------------------------------------------------------ */
 
@@ -1115,6 +1205,8 @@ function deepLinkId(): string | null {
 onMounted(() => {
   void init();
   stream = connectEvents({ onEvent, onResync });
+  // 往回翻的哨兵：接近顶部就预加载更旧的一页。
+  observeHistorySentinel();
 });
 
 onBeforeUnmount(() => {
@@ -1123,6 +1215,9 @@ onBeforeUnmount(() => {
   stream = null;
   // 待执行的重拉也别做了：页面都没了，重拉回来的数据没人看。
   cancelReloads();
+  // 哨兵也别观察了：没人看的时候它进了视野也只会白白发请求。
+  historyObserver?.disconnect();
+  historyObserver = undefined;
 });
 </script>
 
@@ -1167,6 +1262,15 @@ onBeforeUnmount(() => {
       <div class="home__body">
         <div ref="scrollContainer" class="home__scroll">
           <p v-if="listLoading" class="hint">加载中…</p>
+
+          <!--
+            往回翻的哨兵：它在消息流的最**上面**（往回翻的方向是上）。
+            接近顶部时它进入视野 → 预加载更旧的一页。
+          -->
+          <div ref="historySentinel" class="home__history-sentinel" aria-hidden="true"></div>
+
+          <!-- 正在往回翻：给个提示（不然用户以为页面没反应）。 -->
+          <p v-if="loadingMore" class="hint">加载更早的…</p>
 
           <MessageList
             :ideas="visibleIdeas"
@@ -1300,6 +1404,14 @@ onBeforeUnmount(() => {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+}
+
+/*
+  往回翻的哨兵：不占地方，但要是个**看得见的**元素 ——
+  零高度的块在浏览器里不好判定相交，1px 高的块最稳。
+*/
+.home__history-sentinel {
+  height: 1px;
 }
 
 /* 「↓ 有 N 条新内容」：浮在消息流底部，不抢滚动。 */

@@ -6,7 +6,15 @@ import type { Idea, IdeaEvent, Project } from '../api/types';
 import MessageList from '../components/MessageList.vue';
 import ToastHost from '../components/ToastHost.vue';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
-import { fetchOlderIdeas, focusIdeaId, ideas, PAGE_SIZE, scrolledItems } from '../stores/ideas';
+import {
+  fetchOlderIdeas,
+  focusIdeaId,
+  hasMore,
+  ideas,
+  loadingMore,
+  PAGE_SIZE,
+  scrolledItems,
+} from '../stores/ideas';
 import { currentProjectId } from '../stores/projects';
 
 /**
@@ -56,6 +64,75 @@ class FakeEventSource {
     for (const listener of [...(this.listeners.get(type) ?? [])]) {
       listener(ev);
     }
+  }
+}
+
+/**
+ * 假的 `IntersectionObserver`。
+ *
+ * jsdom 不实现它（只有真实浏览器有），所以这里造一个替身：记下每个实例、
+ * 记下被观察的元素，并让测试手动送一次「进入视野」。
+ *
+ * 送一次「进入视野」就相当于「用户滚到了接近顶部的位置」——
+ * 往回翻的哨兵在列表顶部，它进了视野就该预加载更旧的一页。
+ */
+class FakeIntersectionObserver {
+  /** 按创建顺序记录所有实例。 */
+  static instances: FakeIntersectionObserver[] = [];
+
+  /** 被观察的元素。 */
+  readonly targets = new Set<Element>();
+
+  /** 观察的根元素（滚动容器）。 */
+  readonly root: Element | Document | null;
+
+  /** 提前多少像素就算相交（`'上 右 下 左'`）。 */
+  readonly rootMargin: string;
+
+  /** 已经断开（组件卸载时应该断开）。 */
+  disconnected = false;
+
+  private readonly callback: IntersectionObserverCallback;
+
+  constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+    this.callback = callback;
+    this.root = options?.root ?? null;
+    this.rootMargin = options?.rootMargin ?? '0px 0px 0px 0px';
+    FakeIntersectionObserver.instances.push(this);
+  }
+
+  observe(target: Element): void {
+    this.targets.add(target);
+  }
+
+  unobserve(target: Element): void {
+    this.targets.delete(target);
+  }
+
+  disconnect(): void {
+    this.disconnected = true;
+    this.targets.clear();
+  }
+
+  takeRecords(): IntersectionObserverEntry[] {
+    return [];
+  }
+
+  /** 手动送一次「哨兵进入视野」。 */
+  trigger(): void {
+    const entries: IntersectionObserverEntry[] = [...this.targets].map((target) => {
+      const rect = target.getBoundingClientRect();
+      return {
+        target,
+        isIntersecting: true,
+        intersectionRatio: 1,
+        boundingClientRect: rect,
+        intersectionRect: rect,
+        rootBounds: null,
+        time: 0,
+      };
+    });
+    this.callback(entries, this as unknown as IntersectionObserver);
   }
 }
 
@@ -116,6 +193,21 @@ function makeManyIdeas(count: number): Idea[] {
   }));
 }
 
+/**
+ * 造 n 条**更旧**的想法（往回翻时拿到的那一页）。
+ *
+ * id 与更新时间都比 {@link makeManyIdeas} 更早：拼到列表前面之后，
+ * 排序（`sortIdeas`）仍然把它们放在最上面 —— 也就看得出「拼到前面」了。
+ */
+function makeOlderIdeas(count: number): Idea[] {
+  return Array.from({ length: count }, (_unused, index) => ({
+    ...idea,
+    id: `idea-older-${index}`,
+    content: `更旧的第 ${index} 条`,
+    updatedAt: '2026-10-01T10:00:00Z',
+  }));
+}
+
 /** 关键词过滤用的两条想法：一条命中「点子」，一条不命中。 */
 const ideaPoint: Idea = { ...idea, id: 'idea-point', content: '今天想到一个点子' };
 const ideaMilk: Idea = { ...idea, id: 'idea-milk', content: '买牛奶' };
@@ -148,7 +240,10 @@ beforeEach(async () => {
   apiGet.mockReset();
   apiSend.mockReset();
   FakeEventSource.instances = [];
+  FakeIntersectionObserver.instances = [];
   vi.stubGlobal('EventSource', FakeEventSource);
+  // 往回翻的哨兵靠它观察：jsdom 没有它，不装替身的话组件一挂载就报错。
+  vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
   currentProjectId.value = null;
   focusIdeaId.value = null;
   // 想法列表是模块级单例（跨用例共享）：不清的话，上一个用例留下的数据
@@ -158,6 +253,10 @@ beforeEach(async () => {
   // 往上翻过的深度也是模块级单例（跨用例共享）：不清的话，上一个用例
   // 留下的深度会让这一次的重拉要多要一批条目。
   scrolledItems.value = 0;
+  // 「还有没有更旧的」也是共享状态：不清的话，上一个用例翻到底了，
+  // 这一次的哨兵就不会发往回翻的请求。
+  hasMore.value = false;
+  loadingMore.value = false;
   apiGet.mockImplementation((path: string) => {
     switch (path) {
       case '/projects':
@@ -295,6 +394,49 @@ function ideasCalls(): { path: string; params?: Record<string, string | undefine
   return apiGet.mock.calls
     .filter((call) => call[0] === '/ideas')
     .map((call) => ({ path: call[0], params: call[1] }));
+}
+
+/** 往回翻（带 `offset`）的那些 `/ideas` 请求。 */
+function olderIdeasCalls(): { path: string; params?: Record<string, string | undefined> }[] {
+  return ideasCalls().filter((call) => call.params?.offset !== undefined);
+}
+
+/**
+ * 手动送一次「哨兵进入视野」。
+ *
+ * 相当于用户滚到了接近顶部的位置：往回翻的哨兵在列表顶部，它进了视野
+ * 就该预加载更旧的一页。
+ */
+function triggerHistorySentinel(): void {
+  const observer = FakeIntersectionObserver.instances.at(-1);
+  expect(observer, '没有创建 IntersectionObserver（哨兵没被观察）').toBeTruthy();
+  observer!.trigger();
+}
+
+/**
+ * 让服务端按分页回答 `/ideas`。
+ *
+ * - 不带 `offset`（普通拉取）→ 最新的那一页，**满满一整页**
+ *   （服务端就是靠「多要一条」来判断还有没有更旧的，见设计文档 §11.1）；
+ * - 带 `offset`（往回翻）→ `olderCount` 条更旧的。
+ */
+function mockPagedIdeas(olderCount: number): void {
+  apiGet.mockImplementation((path: string, params?: { offset?: string }) => {
+    switch (path) {
+      case '/projects':
+        return Promise.resolve(projects);
+      case '/settings':
+        return Promise.resolve({});
+      case '/tags':
+        return Promise.resolve([]);
+      case '/ideas':
+        return Promise.resolve(
+          params?.offset === undefined ? makeManyIdeas(PAGE_SIZE + 1) : makeOlderIdeas(olderCount),
+        );
+      default:
+        return Promise.resolve([]);
+    }
+  });
 }
 
 /**
@@ -2212,6 +2354,151 @@ describe('HomePage', () => {
       wrapper.unmount();
     } finally {
       restoreRects();
+      vi.useRealTimers();
+    }
+  });
+
+  it('scroll_to_the_top_loads_older_ideas', async () => {
+    mockPagedIdeas(PAGE_SIZE + 1);
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+    expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1);
+
+    // 用户滚到接近顶部 → 哨兵进入视野 → 预加载更旧的一页。
+    triggerHistorySentinel();
+    await flushPromises();
+
+    // 请求带上了「已经翻过多少条」：offset 从**最新**一端数（设计文档 §11.1）。
+    const olderCalls = olderIdeasCalls();
+    expect(olderCalls).toHaveLength(1);
+    expect(olderCalls[0].params?.offset).toBe(String(PAGE_SIZE + 1));
+
+    // 更旧的条目拼到了列表**前面**。
+    expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1 + PAGE_SIZE);
+    expect(wrapper.findAll('.idea')[0].attributes('data-idea-id')).toBe('idea-older-0');
+    wrapper.unmount();
+  });
+
+  it('prepending_older_ideas_keeps_the_viewport_in_place', async () => {
+    mockPagedIdeas(PAGE_SIZE + 1);
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // jsdom 不做布局：自己钉上滚动相关的高度（每条 300px，见 makeScrollable）。
+    const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+    makeScrollable(scroller, 0);
+
+    triggerHistorySentinel();
+    await flushPromises();
+
+    // 更旧的一页插到了视口**上方**（100 条 × 300px）→ scrollTop 得补回去，
+    // 否则用户正在看的那条会被顶下去（预加载反而让视口跳了）。
+    expect(scroller.scrollTop).toBe(PAGE_SIZE * 300);
+    wrapper.unmount();
+  });
+
+  it('no_more_older_ideas_stops_the_requests', async () => {
+    // 往回翻的这一页**不满**：服务端没给够，说明没有更旧的了。
+    mockPagedIdeas(PAGE_SIZE);
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    triggerHistorySentinel();
+    await flushPromises();
+
+    // 更旧的都翻到手了：到底了。
+    expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1 + PAGE_SIZE);
+    expect(hasMore.value).toBe(false);
+
+    // 再滚到顶部也不发请求了（没有更旧的了，别再打后端）。
+    triggerHistorySentinel();
+    await flushPromises();
+
+    expect(olderIdeasCalls()).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it('往回翻请求失败时给提示（不让它变成没人管的 rejection）', async () => {
+    apiGet.mockImplementation((path: string, params?: { offset?: string }) => {
+      switch (path) {
+        case '/projects':
+          return Promise.resolve(projects);
+        case '/settings':
+          return Promise.resolve({});
+        case '/tags':
+          return Promise.resolve([]);
+        case '/ideas':
+          if (params?.offset !== undefined) {
+            // 往回翻的这一页挂了。
+            return Promise.reject(new Error('boom'));
+          }
+          return Promise.resolve(makeManyIdeas(PAGE_SIZE + 1));
+        default:
+          return Promise.resolve([]);
+      }
+    });
+
+    const wrapper = mount(HomePage);
+    const toastHost = mount(ToastHost);
+    await flushPromises();
+
+    triggerHistorySentinel();
+    await flushPromises();
+
+    // 失败要有提示：不然用户只看到「往上翻没反应」，不知道是翻完了还是挂了。
+    expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('加载更早的想法失败');
+    // 列表没被动（没有拼到一半的东西）。
+    expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1);
+    wrapper.unmount();
+    toastHost.unmount();
+  });
+
+  it('往回翻的那一页在等待期间改了过滤条件就丢掉（别塞不匹配的条目）', async () => {
+    vi.useFakeTimers();
+    try {
+      let release: ((value: Idea[]) => void) | undefined;
+      apiGet.mockImplementation((path: string, params?: { offset?: string }) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            if (params?.offset !== undefined) {
+              // 往回翻的这一页卡住：好在它卡着的时候改条件。
+              return new Promise<Idea[]>((resolve) => {
+                release = resolve;
+              });
+            }
+            return Promise.resolve(makeManyIdeas(PAGE_SIZE + 1));
+          default:
+            return Promise.resolve([]);
+        }
+      });
+
+      const wrapper = mount(HomePage);
+      await flushPromises();
+
+      triggerHistorySentinel();
+      await flushPromises();
+
+      // 等这一页的时候改了过滤条件。
+      await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+      await waitForReload();
+
+      // 这一页是按**旧**条件要的：它回来时不能拼到新列表上。
+      release?.(makeOlderIdeas(PAGE_SIZE + 1));
+      await flushPromises();
+
+      expect(wrapper.findAll('.idea')).toHaveLength(PAGE_SIZE + 1);
+      expect(wrapper.get('.list').text()).not.toContain('更旧的第 0 条');
+      wrapper.unmount();
+    } finally {
       vi.useRealTimers();
     }
   });

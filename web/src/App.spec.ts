@@ -26,8 +26,29 @@ class FakeEventSource {
   close(): void {}
 }
 
+/**
+ * 假的 `IntersectionObserver`。
+ *
+ * jsdom 不提供它，首页挂上后要观察「往回翻历史」的哨兵 —— 这里给个空壳，
+ * 让挂载不至于抛错（往回翻本身在 `pages/HomePage.spec.ts` 里测）。
+ */
+class FakeIntersectionObserver {
+  constructor(
+    _callback: IntersectionObserverCallback,
+    _options?: IntersectionObserverInit,
+  ) {}
+
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+  takeRecords(): IntersectionObserverEntry[] {
+    return [];
+  }
+}
+
 beforeEach(() => {
   vi.stubGlobal('EventSource', FakeEventSource);
+  vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
 });
 
 afterEach(() => {
