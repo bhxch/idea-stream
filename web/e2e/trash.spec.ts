@@ -13,11 +13,12 @@
  *   - 断言回收站时**按内容定位**，不要断言条目总数 —— 复位清不掉残渣
  *     （每个被删项目会留一条 `e2e-reset` 的想法在容器里）。
  *
- * ⚠️ 关于重试：整个 E2E 底座只有**一个**服务、**一个**库（web/e2e/.tmp/e2e.db），
- * 分区之间是并行的。别的分区跑用例时，它的复位（恢复回收站、合并想法、删项目）
- * 会把本文件刚造的数据一起抹掉 —— 表现是夹具的复位自己报 400 `not_in_trash`
- * 或 404 `idea_not_found`，用例在 beforeEach 就挂掉。这里允许重试两次，
- * 把这种**环境层面的偶发**扛过去；真正的断言失败重试了也还是失败。
+ * ⚠️ 关于重试：底座现在是「一轮 = 一个端口 + 一个库」
+ * （web/e2e/.tmp/run-<端口>/e2e.db），一轮内部 `workers: 1`，
+ * 两轮并发跑也各用各的库 —— 跨轮次的数据串扰已经没有了。
+ * 这里保留两次重试当**兜底**：真出问题时表现是夹具的复位自己报
+ * 400 `not_in_trash` 或 404 `idea_not_found`，用例在 beforeEach 就挂掉；
+ * 重试能把这种**环境层面的偶发**扛过去，而真正的断言失败重试了也还是失败。
  */
 import type { Page } from '@playwright/test';
 
@@ -26,7 +27,7 @@ import { test, expect, type IdeaApi } from './fixtures';
 /**
  * 回收站里的一个条目（按内容定位）。
  *
- * ⚠️ 条目本身没有可访问名，也没有 data-testid（前端一个 data-testid 都没有），
+ * ⚠️ 条目本身没有可访问名，也没有 data-testid（回收站页面上还没有），
  * 只能退回 BEM class —— 这是 README 里说的「最后手段」。用 hasText 限定内容，
  * 所以 class 改名只会让这条用例需要改，不会误伤别的条目。
  */
@@ -176,6 +177,10 @@ test.describe('回收站 /trash', () => {
     await expect(entry).toHaveCount(0);
 
     // 回到**原项目**：选中那个项目，它出现在那个项目的列表里。
+    // 定位写 `nav[aria-label="项目"]`：主页面有**两套**项目导航 ——
+    // 宽屏侧栏是 aria-label="项目"，窄屏 Tab 条是 aria-label="项目切换"。
+    // 两套渲染的是同一批项目，所以只写 `[data-project-id=...]` 会命中两个元素；
+    // 带上侧栏那个 aria-label 就只命中一个（宽屏下它也是可见的那个）。
     await page.goto('/');
     await page.locator(`nav[aria-label="项目"] [data-project-id="${project.id}"]`).click();
     await expect(page.locator(`[data-idea-id="${idea.id}"]`)).toBeVisible();

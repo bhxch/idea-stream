@@ -5,8 +5,10 @@
  *   - 全局页 /webhooks 与项目级页 /projects/:id/webhooks 都能新建 webhook
  *     （URL、订阅事件、Telegram 模板）；
  *   - 列表展示、编辑、启用/禁用、删除（二次确认）；
- *   - 投递记录列表与「重投」按钮；
- *   - 表单校验：名称/URL 为空、URL 不是 http(s) 绝对地址、一个事件都不选。
+ *   - 成功后的提示（新建/编辑/删除各一条 info 提示，且与错误提示不互相顶掉）；
+ *   - 投递记录列表、「刷新」按钮与「重投」按钮；
+ *   - 表单校验：名称/URL 为空、URL 不是 http(s) 绝对地址（前端拦下，不发请求）、
+ *     一个事件都不选。
  *
  * 约定见 web/e2e/README.md：
  *   - 选择器优先 role/文本/label，其次用代码里已有的 [data-webhook-id] /
@@ -92,8 +94,10 @@ function deliveryRow(page: Page) {
 /**
  * 重新拉一次投递记录。
  *
- * DeliveryList 只在**挂载**时拉一次列表（DeliveryList.vue:57），
- * 页面上没有「刷新」按钮 —— 重新加载页面再展开面板，才会再拉一次。
+ * 面板上现在有一个「刷新」按钮（DeliveryList.vue 的 `delivery__refresh`），
+ * 点它也能重新拉 —— 但这里用「重新加载页面再展开面板」：
+ * 它更接近「用户刷新整个页面」这条路径，而且不依赖面板此刻是不是开着。
+ * 面板自己的「刷新」按钮由另一组用例专门盯着（见「投递记录：刷新按钮」那几条）。
  *
  * `.delivery-list` 是 BEM class：面板没有 role/aria 钩子可用来判断它
  * 开没开（里面的行有 [data-delivery-id]，空状态只有一句中文），
@@ -105,18 +109,25 @@ async function refreshDeliveries(page: Page, item: Locator): Promise<void> {
   await expect(page.locator('.delivery-list')).toBeVisible();
 }
 
+/** 提示条里的**普通**提示（info）。 */
+function infoToast(page: Page): Locator {
+  return page.locator('[role="status"] .toast--info');
+}
+
+/** 提示条里的**错误**提示（error）。 */
+function errorToast(page: Page): Locator {
+  return page.locator('[role="status"] .toast--error');
+}
+
 /**
  * 清掉「挂在回收站项目上」的 webhook（孤儿 webhook）。
  *
- * ⚠️ 这是绕开**底座**的一个 bug（web/e2e/fixtures.ts 的 `IdeaApi.reset`）：
- * 复位先删项目、后删 webhook —— 项目一删就不再出现在 `GET /api/projects` 里，
- * `clearWebhooks` 顺着「活动项目」列表去找 webhook 时就找不到它们了，
- * 于是**项目级 webhook 永远删不掉**。
- *
- * 后果不只是库里多几行：这些 webhook 一直是**启用**状态，每次复位都会
- * 给它们发事件，投递全部失败（地址早就没了），而失败的投递会在
- * 1s/5s/30s 的退避里**一直占着投递 worker 的并发槽**（一共 8 个）——
- * 攒多了之后新的投递排不上队，投递记录迟迟不出现。
+ * 底座早先有这个 bug（web/e2e/fixtures.ts 的 `IdeaApi.reset` 先删项目、后删 webhook）：
+ * 项目一删就不再出现在 `GET /api/projects` 里，顺着「活动项目」列表去找 webhook
+ * 就找不到它们了 —— 项目级 webhook 会永远留在库里。底座已经修好了
+ * （复位先删 webhook，回收站里的项目也一并查），这里保留这个函数当**兜底**：
+ * 留下的孤儿 webhook 一直是启用状态，每次复位都给死地址投递，
+ * 投递记录迟迟不出现（投递队列被塞满时更明显）。
  *
  * 它们的项目都在回收站里（项目没了，webhook 也就没用了），清掉不影响任何用例。
  */
@@ -160,7 +171,8 @@ async function deliveryFlow(page: Page, api: IdeaApi, seed: Seed): Promise<void>
     // 造一条想法 → idea.created → 投到接收端。
     await seed.idea('会被投递的想法', { projectId: project.id });
 
-    // 投递记录：等这一条投递落库（重新加载页面才会重新拉列表）。
+    // 投递记录：等这一条投递落库（这里用「重新加载页面」重新拉列表；
+    // 面板上那个「刷新」按钮是另一条路径，由专门的那组用例盯着）。
     await expect(async () => {
       await refreshDeliveries(page, item);
       await expect(deliveryRow(page)).toContainText('idea.created');
@@ -292,7 +304,17 @@ test.describe('全局页 /webhooks', () => {
     await expect(page.getByText('还没有 webhook。')).toBeVisible();
   });
 
-  test('表单校验：URL 不是 http(s) 绝对地址时给出错误提示，也不保存', async ({ page }) => {
+  test('表单校验：URL 不是 http(s) 绝对地址时给出错误提示，也不保存（前端先拦下，请求根本没发）', async ({
+    page,
+  }) => {
+    // 记下所有发往 /api/webhooks 的写请求：前端自己拦下时**一个都不该有**。
+    const posted: string[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url().includes('/api/webhooks')) {
+        posted.push(request.url());
+      }
+    });
+
     await page.goto('/webhooks');
     await openCreateForm(page);
 
@@ -307,7 +329,30 @@ test.describe('全局页 /webhooks', () => {
     await page.getByRole('button', { name: '保存' }).click();
 
     await expect(page.getByRole('status')).toContainText('http(s) 绝对地址');
+    // 列表仍然空 —— 没保存成功。
     await expect(page.getByText('还没有 webhook。')).toBeVisible();
+    // 前端自己就拦下来了：请求根本没发出去（省得白等一次 400）。
+    expect(posted, 'URL 非法时前端仍发了保存请求').toEqual([]);
+  });
+
+  test('表单校验：URL 是 http(s) 绝对地址时正常保存', async ({ page, api }) => {
+    await page.goto('/webhooks');
+    await openCreateForm(page);
+
+    await fillForm(page, {
+      name: 'URL 合法的 webhook',
+      url: 'https://example.com/hook',
+      bodyTemplate: '{"text":"x"}',
+    });
+    await page.getByRole('checkbox', { name: '想法新建' }).check();
+    await page.getByRole('button', { name: '保存' }).click();
+
+    await expect(webhookItem(page, 'URL 合法的 webhook')).toBeVisible();
+    // 页面上显示的是**未遮蔽**的 URL（页面显式要了 unmask=true）。
+    await expect(webhookItem(page, 'URL 合法的 webhook')).toContainText('https://example.com/hook');
+    // 后端那边确实存下来了（接口默认回传遮蔽版，路径段是 ***）。
+    const saved = await api.listWebhooks();
+    expect(saved.map((item) => item.name)).toContain('URL 合法的 webhook');
   });
 
   test('表单校验：一个事件都不选时给出错误提示（不该静默存成不订阅任何事件）', async ({ page }) => {
@@ -345,6 +390,70 @@ test.describe('全局页 /webhooks', () => {
     await expect(webhookItem(page, '新名字')).toBeVisible();
     await expect(item).toContainText('https://example.com/new');
     await expect(page.getByRole('heading', { name: '编辑 webhook' })).toHaveCount(0);
+  });
+
+  test('成功提示：新建 webhook 给出 info 提示「webhook 已创建」', async ({ page }) => {
+    await page.goto('/webhooks');
+    await openCreateForm(page);
+
+    await fillForm(page, {
+      name: '带成功提示的 webhook',
+      url: 'https://example.com/hook',
+      bodyTemplate: '{"text":"x"}',
+    });
+    await page.getByRole('checkbox', { name: '想法新建' }).check();
+    await page.getByRole('button', { name: '保存' }).click();
+
+    // 成功也要有提示：列表变了是一回事，用户明确知道「刚才那次操作成了」
+    // 是另一回事 —— 没有提示就只能靠眼睛去扫列表。
+    await expect(infoToast(page)).toContainText('webhook 已创建');
+    // info 与 error 是两种 class（ToastHost.vue），这里不该混。
+    await expect(errorToast(page)).toHaveCount(0);
+  });
+
+  test('成功提示：编辑 webhook 给出 info 提示「webhook 已保存」', async ({ page, seed }) => {
+    const webhook = await seed.webhook({ name: '要改名的 webhook' });
+
+    await page.goto('/webhooks');
+    await page.locator(`[data-webhook-id="${webhook.id}"]`).getByRole('button', { name: '编辑' }).click();
+
+    await page.getByLabel('名称').fill('改过名字的 webhook');
+    await page.getByRole('button', { name: '保存' }).click();
+
+    await expect(infoToast(page)).toContainText('webhook 已保存');
+    await expect(errorToast(page)).toHaveCount(0);
+  });
+
+  test('成功提示：删除 webhook 给出 info 提示「webhook 已删除」', async ({ page, seed }) => {
+    const webhook = await seed.webhook({ name: '要删掉的 webhook' });
+
+    await page.goto('/webhooks');
+    const item = page.locator(`[data-webhook-id="${webhook.id}"]`);
+    await item.getByRole('button', { name: '删除', exact: true }).click();
+    await item.getByRole('button', { name: '确认删除' }).click();
+
+    await expect(infoToast(page)).toContainText('webhook 已删除');
+    await expect(errorToast(page)).toHaveCount(0);
+  });
+
+  test('成功提示与错误提示并存：两种 class 不同，互不顶掉', async ({ page }) => {
+    await page.goto('/webhooks');
+    await openCreateForm(page);
+
+    // 先制造一条**错误**提示：名称留空就保存。
+    await page.getByLabel('URL').fill('https://example.com/hook');
+    await page.getByLabel('Body 模板').fill('{"text":"x"}');
+    await page.getByRole('button', { name: '保存' }).click();
+    await expect(errorToast(page)).toContainText('webhook 名称不能为空');
+
+    // 再制造一条**普通**提示：把表单填对，保存成功。
+    await page.getByLabel('名称').fill('两个提示并存');
+    await page.getByRole('checkbox', { name: '想法新建' }).check();
+    await page.getByRole('button', { name: '保存' }).click();
+
+    // 两条提示同时在：谁也没顶掉谁。
+    await expect(infoToast(page)).toContainText('webhook 已创建');
+    await expect(errorToast(page)).toContainText('webhook 名称不能为空');
   });
 
   test('删除：要二次确认，取消不删，确认后从列表里消失', async ({ page, seed }) => {
@@ -400,6 +509,85 @@ test.describe('全局页 /webhooks', () => {
     await expect(page.getByText('还没有投递记录。')).toBeVisible();
   });
 
+  test('投递记录：面板上的「刷新」按钮会重新拉一次列表，显示新记录', async ({
+    page,
+    api,
+    seed,
+  }) => {
+    // 投递走后台队列（排队 + 重试），慢的时候要等一会儿。
+    test.setTimeout(120_000);
+
+    await cleanupOrphanWebhooks(api);
+
+    const receiver = await startReceiver();
+    try {
+      const project = await seed.project('刷新测试项目');
+      await page.goto(`/projects/${project.id}/webhooks`);
+      await openCreateForm(page);
+      await fillForm(page, {
+        name: '刷新测试',
+        url: receiver.url,
+        bodyTemplate: '{"text":"{{idea.content}}"}',
+      });
+      await page.getByRole('checkbox', { name: '想法新建' }).check();
+      await page.getByRole('button', { name: '保存' }).click();
+
+      const item = webhookItem(page, '刷新测试');
+      await expect(item).toBeVisible();
+
+      // 打开面板：此刻还没有投递记录。
+      await item.getByRole('button', { name: '投递记录' }).click();
+      await expect(page.getByText('还没有投递记录。')).toBeVisible();
+
+      // 造一条想法 → 后台投递 → 记录落库。
+      await seed.idea('会被投递的想法', { projectId: project.id });
+      // 等投递真的发生了（接收端收到请求）。
+      // 后端是**先落记录再发请求**的（WebhookDeliveryWorker.DeliverAttemptAsync），
+      // 所以这里返回时那条记录已经在库里了。
+      await expect.poll(() => receiver.hits(), { timeout: 30_000 }).toBeGreaterThan(0);
+
+      // 面板不会自己更新：它只在挂载时拉一次，事件是**后台异步**的。
+      await expect(page.getByText('还没有投递记录。')).toBeVisible();
+
+      // 点「刷新」→ 重新拉一次 → 新记录出现。
+      await page.getByRole('button', { name: '刷新', exact: true }).click();
+
+      await expect(page.locator('[data-delivery-id]')).toHaveCount(1);
+      await expect(deliveryRow(page)).toContainText('idea.created');
+    } finally {
+      await receiver.close();
+    }
+  });
+
+  test('投递记录：拉取中「刷新」按钮是禁用的', async ({ page, seed }) => {
+    const webhook = await seed.webhook({ name: '刷新按钮的 webhook' });
+
+    await page.goto('/webhooks');
+    const item = page.locator(`[data-webhook-id="${webhook.id}"]`);
+    await item.getByRole('button', { name: '投递记录' }).click();
+    await expect(page.locator('.delivery-list')).toBeVisible();
+
+    // 把拉取接口按住，看请求在飞时按钮的样子。
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route('**/api/webhooks/*/deliveries', async (route) => {
+      await gate;
+      await route.continue();
+    });
+
+    await page.getByRole('button', { name: '刷新', exact: true }).click();
+
+    // 拉取中：按钮禁用，文字也变成「刷新中…」（防重复请求）。
+    await expect(page.getByRole('button', { name: '刷新中…' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '刷新中…' })).toBeDisabled();
+
+    release();
+    // 拉完了：按钮恢复可点。
+    await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled();
+  });
+
   test('投递记录：事件触发后列出记录；点「重投」会真的再投一次', async ({
     page,
     api,
@@ -412,8 +600,9 @@ test.describe('全局页 /webhooks', () => {
     // 它们会把投递队列占满，不清掉的话这一条永远等不到投递记录。
     await cleanupOrphanWebhooks(api);
 
-    // ⚠️ E2E 服务与库是**共享**的：别的分区用例跑起来时，它们的复位会把所有
-    // 项目删掉（复位会删掉它们）。所以整段流程允许重来几轮 ——
+    // 底座现在是「一轮 = 一个端口 + 一个库」，一轮内部 `workers: 1` ——
+    // 别的用例不会把本文件刚造的数据删掉。整段流程仍然允许重来几轮：
+    // 投递走后台队列（排队 + 重试），慢的时候要等一会儿，重来一轮更省心。
     // 每轮从头来一遍（接收端 → 项目 → webhook → 想法 → 投递记录）。
     // 失败的信息不会丢：三轮都失败时抛最后一轮的错。
     let lastError: unknown;

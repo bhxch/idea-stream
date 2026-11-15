@@ -8,7 +8,9 @@
  * - 关键文本块没有被容器裁掉（scrollWidth/scrollHeight 不超出 clientWidth/clientHeight）；
  * - 固定元素（批量操作条、底部输入框）不互相遮挡；
  * - 移动端（375×667）可点击元素不小于 32×32；
- * - 关键元素落在视口里（用户不用先滚一下才看得到）。
+ * - 关键元素落在视口里（用户不用先滚一下才看得到）；
+ * - 底部输入框只有一层边框（外壳不画边框，输入框自己画一层）；
+ * - 窄屏项目 Tab 条的渐隐带不淡掉还看得清的字（条数字样保持可读）。
  *
  * 每个「路由-视口」都拍一张截图，落在 `web/e2e/screenshots/<route>-<viewport>.png`。
  *
@@ -140,9 +142,11 @@ const ROUTES: RouteSpec[] = [
     keyElements: (page) => [
       { name: '标题「项目管理」', locator: page.getByRole('heading', { name: '项目管理' }) },
       { name: '管理页导航', locator: page.getByRole('navigation', { name: '管理' }) },
+      { name: '导航条上的「想法」入口', locator: page.getByRole('navigation', { name: '管理' }).getByRole('link', { name: '想法' }) },
       { name: '新项目名称输入框', locator: page.getByRole('textbox', { name: '新项目名称' }) },
       { name: '「新建项目」按钮', locator: page.getByRole('button', { name: '新建项目' }) },
       { name: '排序方式按钮组', locator: page.getByRole('group', { name: '排序方式' }) },
+      { name: '项目行的「Webhook」入口', locator: page.getByRole('link', { name: '项目级 Webhook' }).first() },
     ],
     containers: (page) => [
       { name: '.page', locator: page.locator('.page') },
@@ -164,6 +168,7 @@ const ROUTES: RouteSpec[] = [
     keyElements: (page) => [
       { name: '标题「回收站」', locator: page.getByRole('heading', { name: '回收站' }) },
       { name: '管理页导航', locator: page.getByRole('navigation', { name: '管理' }) },
+      { name: '导航条上的「想法」入口', locator: page.getByRole('navigation', { name: '管理' }).getByRole('link', { name: '想法' }) },
     ],
     containers: (page) => [
       { name: '.page', locator: page.locator('.page') },
@@ -184,6 +189,7 @@ const ROUTES: RouteSpec[] = [
     keyElements: (page) => [
       { name: '标题「Webhook」', locator: page.getByRole('heading', { name: 'Webhook', exact: true }) },
       { name: '管理页导航', locator: page.getByRole('navigation', { name: '管理' }) },
+      { name: '导航条上的「想法」入口', locator: page.getByRole('navigation', { name: '管理' }).getByRole('link', { name: '想法' }) },
       { name: '「新建 webhook」按钮', locator: page.getByRole('button', { name: '新建 webhook' }) },
     ],
     containers: (page) => [
@@ -210,6 +216,7 @@ const ROUTES: RouteSpec[] = [
     keyElements: (page) => [
       { name: '标题「项目 Webhook」', locator: page.getByRole('heading', { name: /项目 Webhook/ }) },
       { name: '管理页导航', locator: page.getByRole('navigation', { name: '管理' }) },
+      { name: '导航条上的「想法」入口', locator: page.getByRole('navigation', { name: '管理' }).getByRole('link', { name: '想法' }) },
       { name: '「新建 webhook」按钮', locator: page.getByRole('button', { name: '新建 webhook' }) },
     ],
     containers: (page) => [
@@ -605,4 +612,226 @@ test.describe('排版与响应式', () => {
       ).toEqual([]);
     });
   }
+
+  // ── 新加的元素：点按目标也要够大 ──────────────────────────────────────
+
+  /**
+   * 量一个元素的点按目标尺寸。
+   *
+   * 允许 0.5px 的误差：`min-height: 32px` 在小数像素布局下可能被浏览器算成
+   * 31.99 之类（视口缩放、字体度量），那不是真的点不中。
+   */
+  async function expectTapTarget(
+    locator: Locator,
+    name: string,
+  ): Promise<void> {
+    await expect(locator, `「${name}」不在页面上`).toBeVisible();
+    const box = await locator.boundingBox();
+    expect(box, `量不到「${name}」的位置`).not.toBeNull();
+    if (!box) {
+      return;
+    }
+    expect(
+      box.width,
+      `「${name}」的宽度只有 ${box.width}px，手机上点不中（要 ≥${MIN_TAP_TARGET}px）`,
+    ).toBeGreaterThanOrEqual(MIN_TAP_TARGET - 0.5);
+    expect(
+      box.height,
+      `「${name}」的高度只有 ${box.height}px，手机上点不中（要 ≥${MIN_TAP_TARGET}px）`,
+    ).toBeGreaterThanOrEqual(MIN_TAP_TARGET - 0.5);
+  }
+
+  test('移动端点按目标：项目行的「Webhook」入口够大', async ({ page, seed }) => {
+    const project = await seed.project('点按目标探测项目');
+    await page.setViewportSize({
+      width: MOBILE_VIEWPORT.width,
+      height: MOBILE_VIEWPORT.height,
+    });
+    await page.goto('/projects');
+
+    // 项目级 webhook 页在应用里没有别的入口（只能手敲 URL），
+    // 这个链接是唯一的入口 —— 它太小的话，手机上根本进不去。
+    const link = page
+      .locator(`li[data-project-id="${project.id}"]`)
+      .getByRole('link', { name: '项目级 Webhook' });
+
+    await expectTapTarget(link, '项目行的「Webhook」入口');
+  });
+
+  test('移动端点按目标：导航条上的「想法」入口够大', async ({ page }) => {
+    await page.setViewportSize({
+      width: MOBILE_VIEWPORT.width,
+      height: MOBILE_VIEWPORT.height,
+    });
+    await page.goto('/projects');
+
+    // 「想法」是管理页回想法列表的唯一入口（整页上再没有别的链接指回去）。
+    const link = page
+      .getByRole('navigation', { name: '管理' })
+      .getByRole('link', { name: '想法', exact: true });
+
+    await expectTapTarget(link, '导航条上的「想法」入口');
+  });
+
+  // ── 底部输入框的边框 ──────────────────────────────────────────────────
+
+  test('底部输入框只有一层边框：外壳不画边框，输入框自己画一层', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByRole('textbox', { name: /记一条想法/ })).toBeVisible();
+
+    // 真浏览器里读得到计算样式（Vitest 的 jsdom 读不到，别学它）。
+    const borders = await page.evaluate(() => {
+      const composer = document.querySelector('.composer');
+      const textarea = document.querySelector('.composer textarea');
+      if (!composer || !textarea) {
+        return null;
+      }
+      const read = (el: Element): { widths: string[]; style: string } => {
+        const style = getComputedStyle(el);
+        return {
+          widths: [
+            style.borderTopWidth,
+            style.borderRightWidth,
+            style.borderBottomWidth,
+            style.borderLeftWidth,
+          ],
+          style: style.borderStyle,
+        };
+      };
+      return { composer: read(composer), textarea: read(textarea) };
+    });
+
+    expect(borders, '没找到底部输入框（.composer / .composer textarea）').not.toBeNull();
+    // 外壳不画边框：不然就是「框里套框」，两层同色圆角框谁也说不清哪层是输入框。
+    expect(borders!.composer.widths).toEqual(['0px', '0px', '0px', '0px']);
+    // 唯一的一层边框在输入框自己身上。
+    expect(borders!.textarea.widths).toEqual(['1px', '1px', '1px', '1px']);
+    expect(borders!.textarea.style).toBe('solid');
+  });
+
+  // ── 窄屏项目 Tab 条的渐隐带 ───────────────────────────────────────────
+
+  /** 渐隐带的量法结果。 */
+  interface FadeReport {
+    /** 当前横向滚动位置（px）。 */
+    scrollLeft: number;
+    /** 渐隐带宽度（px）—— 来自 `--tabs-fade`。 */
+    fade: number;
+    /** 渐隐带的左边界（容器右边缘 - 渐隐带宽度）。 */
+    fadeStart: number;
+    /** 落在渐隐带里、却**完整露出**的字（这些字被淡掉了）。 */
+    offenders: Array<{ text: string; parent: string }>;
+    /** 完整露出的「条数」字样有几个（证明量到了计数字样，不是空转）。 */
+    visibleCountChars: number;
+  }
+
+  /**
+   * 量一次渐隐带。
+   *
+   * 判据：Tab 条右边缘挂着一层遮罩，把最右边的 `--tabs-fade` 像素淡掉
+   * （mask-image 的 linear-gradient）。**完整露出来的字一个字都不该被淡** ——
+   * 淡过的字对比度会掉到 AA（4.5:1）以下。
+   *
+   * 所以：把 Tab 条里每个字的位置都量出来，找出「完整露出」（右边缘还在容器里）
+   * 的那些，看有没有哪个的右边缘伸进了渐隐带里。
+   */
+  async function measureFade(page: Page): Promise<FadeReport | null> {
+    return page.evaluate(() => {
+      const list = document.querySelector('.project-tabs__list');
+      if (!list) {
+        return null;
+      }
+      const el = list as HTMLElement;
+      const style = getComputedStyle(el);
+      const fadeText = style.getPropertyValue('--tabs-fade').trim();
+      const fade = fadeText.endsWith('px') ? Number.parseFloat(fadeText) : 0;
+      const box = el.getBoundingClientRect();
+      // 遮罩把最右边的 fade 像素淡掉 —— 这一段的左边界就是 fadeStart。
+      const fadeStart = box.right - fade;
+
+      const offenders: Array<{ text: string; parent: string }> = [];
+      let visibleCountChars = 0;
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      let node = walker.nextNode();
+      while (node) {
+        const textNode = node;
+        const text = textNode.textContent ?? '';
+        const owner = textNode.parentElement;
+        const ownerBox = owner?.getBoundingClientRect();
+        // 整段都在可视区外（还没滚进来 / 已经滚过去了）：跳过。
+        const outside = !!ownerBox && (ownerBox.left >= box.right || ownerBox.right <= box.left);
+        if (!outside) {
+          for (let i = 0; i < text.length; i += 1) {
+            range.setStart(textNode, i);
+            range.setEnd(textNode, i + 1);
+            const rect = range.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) {
+              continue; // 空格之类，没有字形
+            }
+            if (rect.right > box.right) {
+              continue; // 被右边缘切掉了：不是「完整露出」的字
+            }
+            if (rect.right <= box.left) {
+              continue; // 已经滚出可视区了
+            }
+            const isCount = (owner?.className ?? '').includes('project-tab__count');
+            if (isCount) {
+              visibleCountChars += 1;
+            }
+            if (rect.right > fadeStart + 0.5) {
+              offenders.push({ text: text[i], parent: owner?.className ?? '' });
+            }
+          }
+        }
+        node = walker.nextNode();
+      }
+      return { scrollLeft: el.scrollLeft, fade, fadeStart, offenders, visibleCountChars };
+    });
+  }
+
+  test('窄屏项目 Tab 条：渐隐带不淡掉还看得清的字（计数字样保持可读）', async ({
+    page,
+    seed,
+  }) => {
+    // 造足够多的项目，Tab 条才会横向溢出（不溢出就没有渐隐带可测）。
+    for (let index = 0; index < 8; index += 1) {
+      await seed.project(`渐隐探测项目${index}`);
+    }
+    await page.setViewportSize({
+      width: MOBILE_VIEWPORT.width,
+      height: MOBILE_VIEWPORT.height,
+    });
+    await page.goto('/');
+    await expect(page.locator('.project-tabs__list')).toBeVisible();
+
+    // 等 Tab 条真的溢出、渐隐带真的量出来了。
+    await expect
+      .poll(async () => (await measureFade(page))?.fade ?? 0, { timeout: 10_000 })
+      .toBeGreaterThan(0);
+
+    const atStart = await measureFade(page);
+    expect(atStart, '没找到项目 Tab 条').not.toBeNull();
+    // 渐隐带确实在（否则这个检查是空转的）。
+    expect(atStart!.fade, 'Tab 条没有渐隐带（是没溢出吗？）').toBeGreaterThan(0);
+    // 量到了「条数」字样（下面那条断言才不是空转）。
+    expect(atStart!.visibleCountChars, '一个完整露出的条数字样都没量到').toBeGreaterThan(0);
+    // 渐隐带里没有一个「完整露出来」的字 —— 条数字样也在其中
+    //（Tab 条里的每个字都在 .project-tabs__list 里，逐字都量到了）。
+    expect(
+      atStart!.offenders,
+      '渐隐带淡掉了还看得清的字（完整露出来的字一个字都不该被淡）',
+    ).toEqual([]);
+
+    // 滚到中间再量一次：渐隐带的位置随滚动变，两处都要盖不到完整露出的字。
+    await page.locator('.project-tabs__list').evaluate((el) => {
+      el.scrollLeft = Math.floor((el.scrollWidth - el.clientWidth) / 2);
+    });
+    await expect
+      .poll(async () => (await measureFade(page))?.fade ?? 0, { timeout: 10_000 })
+      .toBeGreaterThan(0);
+
+    const atMiddle = await measureFade(page);
+    expect(atMiddle!.offenders, '滚到中间后渐隐带淡掉了还看得清的字').toEqual([]);
+  });
 });

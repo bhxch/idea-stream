@@ -8,6 +8,7 @@
  *     （项目管理页与宽屏侧栏两处都能拖）；
  *   - 宽屏（侧栏）与窄屏（顶部 Tab）两种形态下切换项目、当前项目高亮；
  *   - 项目里想法的标签增删与标签补全；
+ *   - 项目级 webhook 页的入口（每个项目行一个「Webhook」链接）；
  *   - 空状态文案。
  *
  * 约定见 web/e2e/README.md：test/expect 一律从 ./fixtures 导入（复位自动生效），
@@ -360,11 +361,23 @@ test.describe('项目里的标签', () => {
 });
 
 test.describe('空状态', () => {
-  test('项目管理页只有收件箱时不显示空状态提示', async ({ page }) => {
+  test('项目管理页只有收件箱时给出「还没有其它项目。」的提示', async ({ page }) => {
     await page.goto('/projects');
 
     await expect(projectNames(page)).toHaveText(['收件箱']);
-    await expect(page.getByText('还没有项目。')).toBeHidden();
+    // 列表里永远有收件箱那一项（后端写死的，删不掉），
+    // 所以空状态说的是「还没有**其它**项目」——不是「还没有项目」。
+    await expect(page.getByText('还没有其它项目。')).toBeVisible();
+  });
+
+  test('项目管理页有别的项目时不显示空状态提示', async ({ page, seed }) => {
+    await seed.project('自己的项目');
+    await page.goto('/projects');
+
+    // 顺序不钉：默认按「最近活动」排，刚建的项目排在收件箱前面。
+    await expect(projectNames(page)).toHaveCount(2);
+    await expect(page.getByText('自己的项目', { exact: true })).toBeVisible();
+    await expect(page.getByText('还没有其它项目。')).toHaveCount(0);
   });
 
   test('切到没有想法的项目：想法列表给出空状态文案', async ({ page, seed }) => {
@@ -374,5 +387,29 @@ test.describe('空状态', () => {
     await page.getByRole('button', { name: /空项目/ }).click();
 
     await expect(page.getByText('这里还没有想法。')).toBeVisible();
+  });
+});
+
+test.describe('项目级 webhook 入口', () => {
+  test('每个项目行都有「Webhook」链接，点它到那个项目的 webhook 页', async ({
+    page,
+    seed,
+  }) => {
+    const project = await seed.project('带 webhook 入口的项目');
+    await page.goto('/projects');
+
+    // 每个项目行一个入口（内置收件箱也算一个）。
+    await expect(page.getByRole('link', { name: '项目级 Webhook' })).toHaveCount(2);
+
+    const row = page.locator(`li[data-project-id="${project.id}"]`);
+    const link = row.getByRole('link', { name: '项目级 Webhook' });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute('href', `/projects/${project.id}/webhooks`);
+
+    await link.click();
+
+    await expect(page).toHaveURL(new RegExp(`/projects/${project.id}/webhooks$`));
+    // 标题里带项目名（不是空白的「项目 Webhook」）。
+    await expect(page.getByRole('heading', { name: `项目 Webhook · ${project.name}` })).toBeVisible();
   });
 });

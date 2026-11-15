@@ -1,10 +1,12 @@
 /**
  * 外壳、导航与深链。
  *
- * 覆盖三块：
- *   1. 外壳与 PageNav —— 管理页之间的导航条（链接、当前项高亮、点击后的路由与内容）；
+ * 覆盖四块：
+ *   1. 外壳与 PageNav —— 管理页之间的导航条（四个链接、当前项高亮与 aria-current、
+ *      回首页的「想法」入口、点击后的路由与内容）；
  *   2. 深链 —— 五个路由直接访问 / 刷新不 404，浏览器前进后退，未知路由的兜底；
- *   3. ToastHost —— 成功/失败提示与加载态、空状态文案。
+ *   3. ToastHost —— 成功/失败提示与加载态、空状态文案；
+ *   4. 加载态与空状态的关系 —— 加载中不闪空状态。
  *
  * 约定见 web/e2e/README.md：夹具（复位、造数据）从 './fixtures' 导入，
  * 选择器优先 role/文本，其次已有的无障碍钩子（nav[aria-label="管理"] 等），
@@ -85,17 +87,22 @@ async function reloadApp(page: Page): Promise<Response | null> {
 // ── 导航条本身 ────────────────────────────────────────────────────────────
 
 for (const path of ['/projects', '/trash', '/webhooks']) {
-  test(`导航条在 ${path} 上渲染，三个入口都在`, async ({ page }) => {
+  test(`导航条在 ${path} 上渲染，四个入口都在`, async ({ page }) => {
     await openApp(page, path);
 
     await expect(nav(page)).toBeVisible();
-    await expect(nav(page).getByRole('link')).toHaveCount(3);
+    // 四个入口：回想法列表的「想法」+ 三个管理页。
+    await expect(nav(page).getByRole('link')).toHaveCount(4);
+    // 顺序也钉住：第一个是回首页的那个「想法」。
+    await expect(nav(page).getByRole('link')).toHaveText(['想法', '项目', '回收站', 'Webhook']);
   });
 }
 
-test('导航条的三个链接指向 /projects、/trash、/webhooks', async ({ page }) => {
+test('导航条的四个链接指向 /、/projects、/trash、/webhooks', async ({ page }) => {
   await openApp(page, '/projects');
 
+  // 「想法」是回主列表页的入口（管理页之间跳得再顺，也得有一条路回想法列表）。
+  await expect(navLink(page, '想法')).toHaveAttribute('href', '/');
   await expect(navLink(page, '项目')).toHaveAttribute('href', '/projects');
   await expect(navLink(page, '回收站')).toHaveAttribute('href', '/trash');
   await expect(navLink(page, 'Webhook')).toHaveAttribute('href', '/webhooks');
@@ -105,8 +112,20 @@ test('主页面没有管理页导航条（外壳不同）', async ({ page }) => 
   await openApp(page, '/');
 
   await expect(nav(page)).toHaveCount(0);
-  // 主页面自己的外壳：左侧项目栏。
-  await expect(page.locator('nav[aria-label="项目"]')).toBeVisible();
+
+  // 主页面自己有**两套**项目导航，用不同的 aria-label 区分开：
+  //   - 宽屏侧栏：aria-label="项目"；
+  //   - 窄屏 Tab 条：aria-label="项目切换"。
+  // 两套渲染的是同一批项目，靠 CSS 媒体查询互斥显示（断点两侧各露一个），
+  // 所以**窄屏那套此刻也在 DOM 里**，只是被 display:none 藏起来了。
+  const sidebar = page.locator('nav[aria-label="项目"]');
+  const tabs = page.locator('nav[aria-label="项目切换"]');
+
+  await expect(sidebar).toHaveCount(1);
+  await expect(tabs).toHaveCount(1);
+  // 宽屏（默认视口 1280×720）显示的是侧栏，Tab 条收着。
+  await expect(sidebar).toBeVisible();
+  await expect(tabs).toBeHidden();
 });
 
 // ── 当前项高亮 ────────────────────────────────────────────────────────────
@@ -131,13 +150,60 @@ test('项目级 webhook 页点亮的是「Webhook」，不是「项目」', asyn
   // 用内置收件箱（不会被复位删掉）—— 用例之间不共享任何数据。
   await openApp(page, `/projects/${INBOX_ID}/webhooks`);
 
-  // 这个路由上没有任何链接是 vue-router 意义上的「完全匹配」，
-  // 所以没有 aria-current —— 只能看 PageNav 自己算的高亮 class
-  // （PageNav.vue:14-17 是故意绕开 router-link-active 的前缀匹配）。
+  // 高亮是 PageNav 自己算的（PageNav.vue:14-17 是故意绕开 router-link-active
+  // 的前缀匹配：项目级 webhook 页会把「项目」也点亮，与用户以为的正好相反）。
   await expect(navLink(page, 'Webhook')).toHaveClass(/is-active/);
   await expect(navLink(page, '项目')).not.toHaveClass(/is-active/);
   await expect(navLink(page, '回收站')).not.toHaveClass(/is-active/);
+
+  // aria-current 跟着同一个判据走（vue-router 只在「完全匹配」时加它，
+  // 这个路由上它一个都不加 —— 读屏软件就不知道当前在哪一页了）。
+  await expect(navLink(page, 'Webhook')).toHaveAttribute('aria-current', 'page');
+  await expect(navLink(page, '项目')).not.toHaveAttribute('aria-current', 'page');
+  await expect(navLink(page, '回收站')).not.toHaveAttribute('aria-current', 'page');
+  await expect(navLink(page, '想法')).not.toHaveAttribute('aria-current', 'page');
 });
+
+test('当前项目：侧栏项与 Tab 项都带 aria-current="page"', async ({ page, seed }) => {
+  const project = await seed.project('当前项目');
+  await openApp(page, '/');
+
+  const sidebarItem = (id: string) => page.locator(`nav[aria-label="项目"] [data-project-id="${id}"]`);
+  const tabsItem = (id: string) => page.locator(`nav[aria-label="项目切换"] [data-project-id="${id}"]`);
+
+  // 默认选中「全部项目」：两套导航里的「全部」都带 aria-current。
+  await expect(sidebarItem('all')).toHaveAttribute('aria-current', 'page');
+  await expect(tabsItem('all')).toHaveAttribute('aria-current', 'page');
+
+  // 切到那个项目：侧栏项与 Tab 项都带上，「全部」那两项都摘掉。
+  await sidebarItem(project.id).click();
+
+  await expect(sidebarItem(project.id)).toHaveAttribute('aria-current', 'page');
+  await expect(tabsItem(project.id)).toHaveAttribute('aria-current', 'page');
+  await expect(sidebarItem('all')).not.toHaveAttribute('aria-current', 'page');
+  await expect(tabsItem('all')).not.toHaveAttribute('aria-current', 'page');
+
+  // 两套导航的项目名也用不同的 data-testid 区分开
+  // （project-sidebar-name-<id> / project-tabs-name-<id>）——
+  // 两个元素都渲染着，光看文字分不出谁是谁。
+  await expect(page.getByTestId(`project-sidebar-name-${project.id}`)).toHaveCount(1);
+  await expect(page.getByTestId(`project-tabs-name-${project.id}`)).toHaveCount(1);
+});
+
+// ── 回首页的入口 ───────────────────────────────────────────────────────────
+
+for (const path of ['/projects', '/trash', '/webhooks']) {
+  test(`从 ${path} 点「想法」回到首页，想法列表还在`, async ({ page, seed }) => {
+    const idea = await seed.idea('回到首页要看得见的想法');
+    await openApp(page, path);
+
+    await navLink(page, '想法').click();
+
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole('heading', { name: '想法', exact: true })).toBeVisible();
+    await expect(page.locator(`article[data-idea-id="${idea.id}"]`)).toBeVisible();
+  });
+}
 
 // ── 点击导航：路由与内容对应 ──────────────────────────────────────────────
 
@@ -273,9 +339,9 @@ test('未知路由有兜底：显示首页而不是白屏', async ({ page }) => 
 /**
  * 把项目管理页要的两个接口固定成成功响应。
  *
- * E2E 库是共享的：别的阶段正在跑的时候 SQLite 可能被写锁住，
- * 页面的加载请求会偶发失败 → 应用弹一条错误提示 → 「没有消息时是空的」
- * 这条断言就被一条无关的提示顶掉了。这里只关心 ToastHost 自己的行为。
+ * 为什么要打桩：页面的加载请求一旦失败，应用会弹一条错误提示 →
+ * 「没有消息时是空的」这条断言就被一条无关的提示顶掉了。
+ * 这里只关心 ToastHost 自己的行为。
  */
 async function stubProjectsPage(page: Page): Promise<void> {
   await page.route('**/api/projects**', (route) => route.fulfill({ json: [] }));
@@ -337,9 +403,66 @@ test('加载态：想法列表加载中显示「加载中…」', async ({ page 
   await expect(page.getByText('加载中…')).toHaveCount(0);
 });
 
+test('加载态：加载中不闪空状态（「这里还没有想法。」不与「加载中…」同时出现）', async ({ page }) => {
+  // 装一个观察者：只要「加载中…」与「这里还没有想法。」在 DOM 里**同时**出现过，
+  // 就记一笔 —— 这样连「闪一帧」也抓得住（只断言某一瞬间看不到是不够的）。
+  await page.addInitScript(() => {
+    const store = window as unknown as { __loadingAndEmptyCoexisted: number };
+    store.__loadingAndEmptyCoexisted = 0;
+    const scan = (): void => {
+      const texts = Array.from(document.querySelectorAll('p'));
+      const loading = texts.some((el) => el.textContent?.trim() === '加载中…');
+      const empty = texts.some((el) => el.textContent?.trim() === '这里还没有想法。');
+      if (loading && empty) {
+        store.__loadingAndEmptyCoexisted += 1;
+      }
+    };
+    const observer = new MutationObserver(() => scan());
+    const attach = (): void => {
+      if (document.documentElement) {
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
+      }
+    };
+    if (document.documentElement) {
+      attach();
+    } else {
+      document.addEventListener('DOMContentLoaded', attach);
+    }
+  });
+
+  // 把想法列表的接口按住，好观察加载态 —— 这是唯一能看到「加载中…」的窗口。
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/api/ideas**', async (route) => {
+    await gate;
+    await route.continue();
+  });
+
+  await openApp(page, '/');
+
+  await expect(page.getByText('加载中…')).toBeVisible();
+  // 加载中时那条空状态文案不在 DOM 里（不是「存在但看不见」）。
+  await expect(page.getByText('这里还没有想法。')).toHaveCount(0);
+
+  release();
+  await expect(page.getByText('加载中…')).toHaveCount(0);
+
+  // 整个过程中两者一次都没同时出现过。
+  const coexisted = await page.evaluate(
+    () => (window as unknown as { __loadingAndEmptyCoexisted: number }).__loadingAndEmptyCoexisted,
+  );
+  expect(coexisted, '「加载中…」与「这里还没有想法。」同时出现过').toBe(0);
+});
+
 test('空状态：没有想法时显示「这里还没有想法。」', async ({ page }) => {
-  // 「空」这个状态用桩数据钉住：E2E 库是共享的，别的阶段正在跑的时候库里
-  // 可能有想法（它们默认往收件箱里造），靠真实数据断言「空」不稳定。
+  // 「空」这个状态用桩数据钉住：靠真实数据断言「空」不稳
+  // （库里可能有想法 —— 它们默认往收件箱里造）。
   // 这里关心的是文案，不是数据。
   await page.route('**/api/ideas**', (route) => route.fulfill({ json: [] }));
 
@@ -361,6 +484,6 @@ test('空状态：没有 webhook 时显示「还没有 webhook。」', async ({ 
 
 // ⚠️ 「回收站是空的。」这条没有写用例：它只在**全新数据库**下出现 ——
 // 复位清不掉回收站（应用只允许恢复、不允许彻底删除），而拿到全新库要靠
-// freshDatabase()，那会删掉 E2E 库并重启**共享的** 5299 服务，
-// 会打断同时在跑的其它阶段（workers=1 只保证单进程内串行，管不了跨进程）。
+// freshDatabase()，那会删掉本轮的 E2E 库并重启本轮的服务，
+// 会打断同时在跑的其它用例（workers=1 只保证单进程内串行，管不了跨进程）。
 // 详见本次交付的 gaps。

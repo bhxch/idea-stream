@@ -3,13 +3,15 @@
  *
  * 覆盖：新建想法、编辑正文、标记完成/取消完成、加/改/删标签、删除进回收站、
  * 多选批量（条数 / 完成 / 加标签 / 删除）、合并、按项目/按标签/按状态筛选、
- * 清除筛选、深链定位、SSE 实时同步。
+ * 清除筛选、关键词搜索（大小写不敏感）、一键「清除」过滤条件、深链定位、
+ * SSE 实时同步。
  *
  * 约定见 web/e2e/README.md：
  * - 从 ./fixtures 导入 test/expect（复位在 beforeEach 里自动发生，用例之间互不依赖）；
  * - 不用固定时长等待，一律等状态（toBeVisible / toHaveCount / toHaveText）；
  * - 选择器优先 role / 文本 / label，其次是应用**已有**的钩子
- *   （data-idea-id、aria-label="选择 …" 等）——应用里一个 data-testid 都没有。
+ *   （data-idea-id、aria-label="选择 …" 等）——想法条目上还没有 data-testid
+ *   （项目侧栏与 Tab 条上有了，见 projects.spec.ts）。
  */
 import { test, expect } from './fixtures';
 import type { Locator, Page } from '@playwright/test';
@@ -558,6 +560,151 @@ test('清除筛选：取消标签与状态筛选后列表恢复全部', async ({
 
   await expect(page.locator('article')).toHaveCount(2);
   await expect(page.getByRole('button', { name: '标签', exact: true })).toBeVisible();
+});
+
+// ── 关键词搜索（过滤栏里的搜索框） ──────────────────────────────────────────
+
+/**
+ * 过滤栏里的关键词输入框。
+ *
+ * 过滤栏的搜索框是 `type="search"`，无障碍角色是 searchbox，
+ * 名字来自 aria-label="搜索想法"（应用自带的钩子）。
+ */
+function keywordSearch(page: Page): Locator {
+  return page.getByRole('searchbox', { name: '搜索想法' });
+}
+
+/**
+ * 过滤栏里的「清除」按钮。
+ *
+ * 名字就是「清除」两个字（exact 匹配，免得撞上别的含「清除」的名字）。
+ * 没有过滤条件生效时它不出现 —— 所以用 count 断言「它在不在」，
+ * 用 toBeVisible 断言「它在」。
+ */
+function clearFiltersButton(page: Page): Locator {
+  return page.getByRole('button', { name: '清除', exact: true });
+}
+
+test('搜索：输入关键词后只显示正文含该词的想法', async ({ page, seed }) => {
+  await seed.idea('做苹果派的想法');
+  await seed.idea('做香蕉派的想法');
+  await seed.idea('今天天气不错');
+  await page.goto('/');
+  await expect(page.locator('article')).toHaveCount(3);
+
+  await keywordSearch(page).fill('苹果');
+
+  await expect(page.locator('article')).toHaveCount(1);
+  await expect(page.locator('article').filter({ hasText: '做苹果派的想法' })).toHaveCount(1);
+});
+
+test('搜索：关键词大小写不敏感', async ({ page, seed }) => {
+  await seed.idea('Weather today');
+  await seed.idea('别的想法');
+  await page.goto('/');
+  await expect(page.locator('article')).toHaveCount(2);
+
+  // 搜小写，命中的是大写开头的那一条。
+  await keywordSearch(page).fill('weather');
+
+  await expect(page.locator('article')).toHaveCount(1);
+  await expect(page.locator('article').filter({ hasText: 'Weather today' })).toHaveCount(1);
+});
+
+test('搜索：搜不到时显示空状态', async ({ page, seed }) => {
+  await seed.idea('有的想法');
+  await page.goto('/');
+  await expect(page.locator('article')).toHaveCount(1);
+
+  await keywordSearch(page).fill('这个词库里没有');
+
+  await expect(page.locator('article')).toHaveCount(0);
+  await expect(page.getByText('这里还没有想法。')).toBeVisible();
+});
+
+test('搜索：清空输入后列表恢复全部', async ({ page, seed }) => {
+  await seed.idea('第一条想法');
+  await seed.idea('第二条想法');
+  await page.goto('/');
+  await expect(page.locator('article')).toHaveCount(2);
+
+  await keywordSearch(page).fill('第一条');
+  await expect(page.locator('article')).toHaveCount(1);
+
+  await keywordSearch(page).fill('');
+  await expect(page.locator('article')).toHaveCount(2);
+});
+
+// ── 「清除」按钮 ───────────────────────────────────────────────────────────
+
+test('清除按钮：没有过滤条件时不出现', async ({ page, seed }) => {
+  await seed.idea('一条想法');
+  await page.goto('/');
+  await expect(page.locator('article')).toHaveCount(1);
+
+  await expect(clearFiltersButton(page)).toHaveCount(0);
+});
+
+test('清除按钮：按状态过滤时出现', async ({ page, seed }) => {
+  await seed.idea('一条想法');
+  await page.goto('/');
+
+  await statusFilter(page).getByRole('button', { name: '未完成', exact: true }).click();
+
+  await expect(clearFiltersButton(page)).toBeVisible();
+});
+
+test('清除按钮：按标签过滤时出现', async ({ page, seed }) => {
+  // 条目的正文刻意**不含**标签名：想法条目上的勾选框
+  // （aria-label="选择 <标题>"）与标签过滤里的勾选框都是 checkbox，
+  // 正文里带上标签名就会撞名（strict mode 报错）。
+  await seed.idea('想法甲', { tags: ['灵感库'] });
+  await page.goto('/');
+
+  await page.getByRole('button', { name: '标签', exact: true }).click();
+  await page.getByRole('checkbox', { name: '灵感库' }).check();
+
+  await expect(clearFiltersButton(page)).toBeVisible();
+});
+
+test('清除按钮：有关键词时出现', async ({ page, seed }) => {
+  await seed.idea('一条想法');
+  await page.goto('/');
+
+  await keywordSearch(page).fill('一条');
+
+  await expect(clearFiltersButton(page)).toBeVisible();
+});
+
+test('清除按钮：一下把状态、标签、关键词一起清掉', async ({ page, seed }) => {
+  await seed.idea('带标签的想法', { tags: ['灵感库'] });
+  await seed.idea('普通想法');
+  await page.goto('/');
+  await expect(page.locator('article')).toHaveCount(2);
+
+  // 三个过滤条件同时生效：「已完成」把两条都筛掉了。
+  await statusFilter(page).getByRole('button', { name: '已完成', exact: true }).click();
+  await page.getByRole('button', { name: '标签', exact: true }).click();
+  await page.getByRole('checkbox', { name: '灵感库' }).check();
+  await keywordSearch(page).fill('想法');
+  await expect(page.locator('article')).toHaveCount(0);
+  await expect(clearFiltersButton(page)).toBeVisible();
+
+  await clearFiltersButton(page).click();
+
+  // 状态回到「全部」。
+  await expect(statusFilter(page).getByRole('button', { name: '全部', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  // 关键词清空。
+  await expect(keywordSearch(page)).toHaveValue('');
+  // 标签取消勾选（触发按钮上的计数消失；面板会被这次点击收起，重新打开看勾选状态）。
+  await expect(page.getByRole('button', { name: '标签', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '标签', exact: true }).click();
+  await expect(page.getByRole('checkbox', { name: '灵感库' })).not.toBeChecked();
+  // 列表恢复全部。
+  await expect(page.locator('article')).toHaveCount(2);
 });
 
 // ── 深链 ─────────────────────────────────────────────────────────────────
