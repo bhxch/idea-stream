@@ -4,8 +4,8 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 
 - **覆盖范围**：`web/src/pages`、`web/src/components`、`web/src/composables`、`web/src/stores`、`web/src/router.ts` 里
   用户能直接操作到的功能。
-- **用例来源**：`web/e2e/*.spec.ts`。现有规模：`npx playwright test --list` → **194 条用例 / 14 个文件**
-  （navigation 35、layout 29、ideas 29、webhooks 24、projects 21、trash 10、extra-1 8、extra-3 8、
+- **用例来源**：`web/e2e/*.spec.ts`。现有规模：`npx playwright test --list` → **196 条用例 / 14 个文件**
+  （navigation 35、layout 29、ideas 29、webhooks 24、projects 22、trash 11、extra-1 8、extra-3 8、
   extra-4 8、extra-6 8、extra-2 5、extra-5 4、fixtures 4、smoke 1）。
 - **读法**：「覆盖它的用例」列写用例标题 + 文件；`—` 表示**没有用例覆盖**（漏掉的功能点）。
   漏掉的理由写在「备注」列里，代码位置以 `文件:行` 标出。
@@ -192,6 +192,8 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | `/webhooks` | 成功提示：新建 → info「webhook 已创建」 | webhooks.spec.ts:395 | — |
 | `/webhooks` | 成功提示：编辑 → info「webhook 已保存」 | webhooks.spec.ts:414 | — |
 | `/webhooks` | 成功提示：删除 → info「webhook 已删除」 | webhooks.spec.ts:427 | — |
+| `/projects` | 成功提示：新建 / 改名 / 删除 → info 提示 | projects.spec.ts:84 | — |
+| `/trash` | 成功提示：恢复项目 / 恢复想法 → info 提示 | trash.spec.ts:167 | — |
 | `/webhooks` | info 提示与 error 提示并存（两种 class 不同，互不顶掉） | webhooks.spec.ts:439 | — |
 | `/webhooks` | 投递记录：「刷新」按钮重新拉一次，显示新记录 | webhooks.spec.ts:512 | — |
 | `/webhooks` | 投递记录：拉取中「刷新」按钮是禁用的 | webhooks.spec.ts:562 | — |
