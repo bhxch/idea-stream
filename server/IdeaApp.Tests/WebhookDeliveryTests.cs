@@ -142,6 +142,66 @@ public sealed class WebhookDeliveryTests
             $"第 3 次退避不到 30 秒：{requests[3].ReceivedAt - requests[2].ReceivedAt}");
     }
 
+    /// <summary>
+    /// 退避**不占并发位**：一批投递在退避里等着时，后来的投递照样很快落地。
+    /// </summary>
+    /// <remarks>
+    /// 旧实现把退避（1s / 5s / 30s）放在**消费槽里** await：
+    /// 一批指向不可达地址的 webhook（退避合计约 36 秒）能把 8 个并发位全占住，
+    /// 后面那个指向正常地址的 webhook 会被饿死 —— 实测 90 秒都没落地，
+    /// 清掉那批失败 webhook 后 5 秒内就 delivered 了。
+    /// <para>
+    /// 这条用一条很长的退避（30 秒）把「退避占着槽」放大到没法忽略：
+    /// 断言窗口（10 秒）远小于退避（30 秒）——
+    /// 退避占着槽的话这条必挂，退避让到消费槽之外的话立刻就投出去了。
+    /// </para>
+    /// <para>
+    /// 两个 webhook 订阅**不同**的事件类型（idea.created / idea.updated）：
+    /// 免得「正常的那个」也去失败端点排队，把「谁占了槽」搅浑。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task A_delivery_in_backoff_does_not_hold_a_slot_for_later_deliveries()
+    {
+        using var failingEndpoint = new FakeEndpoint { StatusCodeProvider = _ => 500 };
+        using var goodEndpoint = new FakeEndpoint();
+        using var factory = new TestAppFactory(webhookMaxAttempts: 4);
+        using var client = factory.CreateClient();
+
+        // 退避表换成很长的值：把「退避占着槽」放大到没法忽略。
+        var worker = factory.Services.GetRequiredService<WebhookDeliveryWorker>();
+        worker.Backoff = [TimeSpan.FromSeconds(30)];
+
+        // 失败的那个订阅 idea.created：8 条想法 → 8 次失败 → 8 段退避。
+        await CreateWebhookAsync(client, failingEndpoint.Url, ["idea.created"]);
+        // 正常的那个订阅 idea.updated：只被最后那次「改想法」触发。
+        var goodWebhookId = await CreateWebhookAsync(client, goodEndpoint.Url, ["idea.updated"]);
+
+        for (var i = 0; i < 8; i++)
+        {
+            var created = await client.PostAsJsonAsync("/api/ideas", new { content = $"会失败的想法 {i}" });
+            Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        }
+
+        // 8 次请求都打到目标端点上：这 8 条投递的首轮尝试都跑完了，
+        // 它们接下来在退避里等着重试。
+        await failingEndpoint.WaitForRequestsAsync(8, TimeSpan.FromSeconds(30));
+
+        // 等它们都进到退避里（收到响应到进退避之间有一小段）。
+        await Task.Delay(500);
+
+        // 现在来一条指向正常地址的投递。
+        var ideaId = await CreateIdeaAsync(client, "会改的想法");
+        var updated = await PatchJsonAsync(client, $"/api/ideas/{ideaId}", new { content = "改过的想法" });
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+
+        // 它必须很快落地 —— 远快于 30 秒的退避。
+        var delivery = await WaitForDeliveryAsync(client, goodWebhookId, IsDelivered, TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, delivery.GetProperty("attempts").GetInt32());
+        Assert.Single(await ReadDeliveriesAsync(client, goodWebhookId));
+    }
+
     /// <summary>投递成功 → 记 delivered，attempts == 1（只试了一次就成功）。</summary>
     [Fact]
     public async Task Successful_delivery_records_delivered_with_attempts_one()
@@ -363,6 +423,66 @@ public sealed class WebhookDeliveryTests
         Assert.Equal("failed", after.GetProperty("status").GetString());
         Assert.Equal(originalError, after.GetProperty("lastError").GetString());
         Assert.Equal(1, after.GetProperty("attempts").GetInt32());
+    }
+
+    /// <summary>
+    /// 投递队列满时：这次投递**看得见** —— 投递记录里有一条 failed，原因写明「队列已满」。
+    /// </summary>
+    /// <remarks>
+    /// 旧实现满了就只记一条日志：页面上既没有投递记录、也没有任何提示，
+    /// 用户完全不知道这次事件没投出去（看到的仍然是「还没有投递记录。」）。
+    /// <para>
+    /// 队列怎么塞满的：worker 的队列容量是
+    /// <see cref="WebhookDeliveryWorker.QueueCapacity"/>，并发位是 8。
+    /// 目标端点把请求全卡住 → 8 个并发位全占住 → 队列只进不出，
+    /// 塞满之后下一次入队必然失败（不用真造 1000 条业务事件出来）。
+    /// </para>
+    /// <para>
+    /// 被投的这个 webhook 故意也指着那个卡住的端点：
+    /// 万一它排上了队，记录会停在「投递中」，
+    /// 断言「failed」才拦得住这条测试的退化。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task A_delivery_that_cannot_be_queued_leaves_a_failed_record()
+    {
+        using var blockingEndpoint = new FakeEndpoint
+        {
+            // 收到请求就不回：worker 的 8 个并发位全卡在这儿，队列只进不出。
+            OnRequestAsync = _ => Task.Delay(Timeout.Infinite)
+        };
+        using var factory = new TestAppFactory(webhookTimeoutSeconds: 3600);
+        using var client = factory.CreateClient();
+
+        // 这次要投递的 webhook：订阅 idea.created。
+        var webhookId = await CreateWebhookAsync(client, blockingEndpoint.Url, ["idea.created"]);
+        // 填充队列用的 webhook：订阅别的事件类型，不跟着这次事件走。
+        var fillerWebhookId = await CreateWebhookAsync(client, blockingEndpoint.Url, ["idea.updated"]);
+
+        // 把投递队列塞满。
+        var worker = factory.Services.GetRequiredService<WebhookDeliveryWorker>();
+        var filler = factory.Services.GetRequiredService<WebhookRepository>().Get(fillerWebhookId)!;
+        FillDeliveryQueue(worker, filler);
+
+        // 等 worker 的 8 个并发位全卡在目标端点上：队列不会再被消费，「满」是稳的。
+        await blockingEndpoint.WaitForRequestsAsync(8, TimeSpan.FromSeconds(30));
+
+        // 再塞一次：这一次队列确实是满的。
+        FillDeliveryQueue(worker, filler);
+
+        // 触发一次投递：队列满 → 排不上队。
+        await client.PostAsJsonAsync("/api/ideas", new { content = "排不上队的想法" });
+
+        // 但这次投递**看得见**：投递记录里有一条 failed，原因写明「队列已满」。
+        var delivery = await WaitForDeliveryAsync(client, webhookId, IsFailed, TimeSpan.FromSeconds(20));
+
+        Assert.Contains(
+            "队列已满",
+            delivery.GetProperty("lastError").GetString(),
+            StringComparison.Ordinal);
+
+        // 一次 HTTP 都没发出去：尝试次数是 0（不是「试了一次还没成功」）。
+        Assert.Equal(0, delivery.GetProperty("attempts").GetInt32());
     }
 
     /// <summary>
@@ -1151,6 +1271,11 @@ public sealed class WebhookDeliveryTests
     /// 一直塞到塞不进去为止（队列容量是 <see cref="WebhookDeliveryWorker.QueueCapacity"/>）。
     /// 目标端点把请求全卡住 → worker 的 8 个并发位全被占住 → 队列不会再被消费，
     /// 「满」这个状态是稳的。
+    /// <para>
+    /// 最后那一次塞不进去的入队会走生产路径的「队列已满」分支：
+    /// 给**填充用的那个** webhook 记一条 failed 的记录。
+    /// 断言都落在别的 webhook 上，这条记录不影响它们。
+    /// </para>
     /// </remarks>
     private static void FillDeliveryQueue(WebhookDeliveryWorker worker, Webhook webhook)
     {

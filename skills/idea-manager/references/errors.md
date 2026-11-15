@@ -57,7 +57,7 @@
 | `skill_not_distributed` | 服务端没有分发 skill 内容（分发副本的路径没配、目录不存在或缺少入口文件） | 部署漏了分发目录 |
 | `webhook_not_found` | webhook 不存在 | 重新拉列表 |
 | `unsupported_media_type` | 请求的 Content-Type 不是 application/json | 带上 `Content-Type: application/json` 再发 |
-| `delivery_queue_full` | 投递队列已满，请稍后重试 | 稍后重试；事件路径的队列满是静默丢弃 + 日志，不会返回 503 |
+| `delivery_queue_full` | 投递队列已满，请稍后重试 | 稍后重试；**只有手动重投**会返回这个码，事件路径（自动投递）不返回 503 —— 它丢掉这次投递并记一条 failed 的投递记录，页面「投递记录」里能看到失败原因 |
 
 另有 500 的 `internal_error`：服务端兜底码，含义是「未预期的异常，看服务端日志」，
 agent 侧只需当成「重试或报错」，不必分支处理。

@@ -104,6 +104,10 @@ webhook 的 `url` 里可能有凭据（Telegram 的 bot token 就在 URL 的路�
 - `POST /api/webhooks/{id}/deliveries/{deliveryId}/retry` 重投一条记录。
   它**重发记录里已渲染的 payload**，不按当前模板重新渲染 —— 改了模板也不会影响重投的内容。
   队列满时是 503 `delivery_queue_full`（这次没排上，稍后再试）。
+- 事件路径（自动投递）队列满了**不返回错误码**：这次投递被丢掉，
+  但会留下**一条 failed 的投递记录**（`attempts` 为 0，`lastError` 说明队列已满）——
+  拿 `GET /api/webhooks/{id}/deliveries` 就能看到这次事件没投出去。
+  手动重投队列满时**不动**原来那一行（上次失败的原因要留着）。
 
 ## 一个完整的例子
 

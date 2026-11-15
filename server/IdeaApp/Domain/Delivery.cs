@@ -15,7 +15,13 @@ public static class DeliveryStatuses
     /// <summary>投递成功。</summary>
     public const string Delivered = "delivered";
 
-    /// <summary>投递失败：重试到上限仍未成功（死信）。</summary>
+    /// <summary>
+    /// 投递失败：重试到上限仍未成功（死信），**或者压根没投出去**（投递队列已满）。
+    /// </summary>
+    /// <remarks>
+    /// 队列满时也是一种 failed：那次投递确实没发生，
+    /// 用户在投递记录里得看得见（否则页面上与「没投递过」一模一样）。
+    /// </remarks>
     public const string Failed = "failed";
 }
 
@@ -30,6 +36,7 @@ public static class DeliveryStatuses
 /// <para>
 /// <see cref="Attempts"/> 的口径是**总尝试次数（含首次）**：首次投递记 1，
 /// 失败重试继续累加。手动重投也在这同一行上累加。
+/// <b>一次 HTTP 都没发出去</b>的记录（队列满，这次投递被丢弃）是 0。
 /// </para>
 /// </remarks>
 public sealed record DeliveryRecord(string Id, string WebhookId, string EventId, string EventType,

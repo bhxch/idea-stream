@@ -47,7 +47,45 @@ public sealed class DeliveryRepository(SqliteDatabase db)
     /// 投递还没成功之前它就是「投递中」。
     /// </para>
     /// </remarks>
-    public DeliveryRecord Insert(WebhookDeliveryJob job)
+    public DeliveryRecord Insert(WebhookDeliveryJob job) =>
+        InsertCore(job, DeliveryStatuses.Pending, attempts: 0, lastError: null);
+
+    /// <summary>
+    /// 记一条**压根没投出去**的投递记录（队列满了 → 这次投递被丢弃）。
+    /// </summary>
+    /// <param name="job">这次没能排上队的投递。</param>
+    /// <param name="lastError">失败原因（说明「投递队列已满」）。</param>
+    /// <remarks>
+    /// <para>
+    /// 队列满时如果什么都不记，用户在页面上看到的仍然是「还没有投递记录。」——
+    /// 完全看不出这次事件没投出去。给它记一条 failed 的记录，
+    /// 用户在投递记录里就能看到「这次没投出去，原因是队列已满」。
+    /// </para>
+    /// <para>
+    /// <b>attempts 是 0</b>：一次 HTTP 都没发出去，
+    /// 不能记成「试过一次还没成功」。
+    /// </para>
+    /// <para>
+    /// 同一个 (webhook, 事件) 已经有行时**不动那一行**（<c>INSERT OR IGNORE</c>）：
+    /// 那一行上可能有别的投递在途或是别的失败原因，
+    /// 不能被这条「队列已满」改判（投递记录只往里加、不整行覆盖）。
+    /// </para>
+    /// </remarks>
+    public DeliveryRecord InsertFailed(WebhookDeliveryJob job, string lastError) =>
+        InsertCore(job, DeliveryStatuses.Failed, attempts: 0, lastError);
+
+    /// <summary>
+    /// 插一行投递记录（<c>INSERT OR IGNORE</c>），再读回那一行。
+    /// </summary>
+    /// <param name="job">这次投递。</param>
+    /// <param name="status">新记录的状态。</param>
+    /// <param name="attempts">新记录的尝试次数。</param>
+    /// <param name="lastError">新记录的错误原因（没有就填 null）。</param>
+    private DeliveryRecord InsertCore(
+        WebhookDeliveryJob job,
+        string status,
+        int attempts,
+        string? lastError)
     {
         var now = DateTimeOffset.UtcNow;
         var id = MonotonicGuid.NewUuid7().ToString("N");
@@ -65,9 +103,9 @@ public sealed class DeliveryRepository(SqliteDatabase db)
             command.Parameters.AddWithValue("$eventId", job.Event.Id);
             command.Parameters.AddWithValue("$eventType", job.Event.Type);
             command.Parameters.AddWithValue("$payload", job.Payload);
-            command.Parameters.AddWithValue("$status", DeliveryStatuses.Pending);
-            command.Parameters.AddWithValue("$attempts", 0);
-            command.Parameters.AddWithValue("$lastError", DBNull.Value);
+            command.Parameters.AddWithValue("$status", status);
+            command.Parameters.AddWithValue("$attempts", attempts);
+            command.Parameters.AddWithValue("$lastError", (object?)lastError ?? DBNull.Value);
             command.Parameters.AddWithValue("$createdAt", SqliteDatabase.FormatTimestamp(now));
             command.Parameters.AddWithValue("$updatedAt", SqliteDatabase.FormatTimestamp(now));
             command.ExecuteNonQuery();

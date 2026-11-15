@@ -78,7 +78,10 @@ public sealed class DeliveryService(
         // 还是原来的 failed + 原来的 last_error，用户看得到上次失败的原因。
         // （反过来先置 pending 的话，清掉的 last_error 就找不回来了：
         //   入队失败还原成 failed 时，那条记录会**没有错误原因**。）
-        if (!worker.Enqueue(job))
+        //
+        // 用的是 EnqueueRedelivery 而不是 Enqueue：手动重投的那一行**已经存在**了，
+        // 队列满时不能把它改成「队列已满」—— 那会把上次失败的原因抹掉。
+        if (!worker.EnqueueRedelivery(job))
         {
             throw new ApiException(503, "delivery_queue_full", "投递队列已满，请稍后重试");
         }
