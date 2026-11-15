@@ -161,6 +161,30 @@ test.describe('回收站 /trash', () => {
     await expect(entry.getByText(project.name)).toBeVisible();
   });
 
+  test('恢复项目 / 恢复想法成功都给出 info 提示', async ({ page, seed }) => {
+    // 提示会攒着（过几秒才自动消失），这里取**最后**一条 ——
+    // 直接用整组定位器会撞 Playwright 的 strict mode（匹配到多条）。
+    const infoToast = page.locator('[role="status"] .toast--info').last();
+
+    // 一条被单独删掉的想法（顶层条目）与一个被删掉的项目（容器条目）。
+    const idea = await seed.idea('要恢复的想法');
+    const project = await seed.project('要恢复的项目');
+
+    await page.goto('/');
+    await deleteIdeaInUi(page, idea.id);
+    await page.goto('/projects');
+    await deleteProjectInUi(page, project.id);
+    await page.goto('/trash');
+
+    // 恢复一条想法
+    await trashEntry(page, '要恢复的想法').getByRole('button', { name: '恢复', exact: true }).click();
+    await expect(infoToast).toContainText('想法已恢复');
+
+    // 恢复项目
+    await trashEntry(page, '要恢复的项目').getByRole('button', { name: '恢复项目' }).click();
+    await expect(infoToast).toContainText('项目已恢复');
+  });
+
   // ── 恢复 ────────────────────────────────────────────────────────────────
 
   test('恢复：想法回到原项目', async ({ page, seed, api }) => {
