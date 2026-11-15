@@ -36,13 +36,16 @@ public static class IdeaEndpoints
              string? q, string? limit, string? offset, IdeaService service) =>
                 ApiResults.Run(() =>
                 {
-                    var query = IdeaService.ParseQuery(projectId, status, tags, tagMode, q, limit, offset);
+                    // 分页参数在这里解析（非法 → 400 invalid_pagination），
+                    // 解析好的数字直接给 List —— 同一份规则不必解析两遍。
+                    var (query, pageLimit, pageOffset) =
+                        IdeaService.ParseQuery(projectId, status, tags, tagMode, q, limit, offset);
 
                     // 关键词：trim 后为空 = 没有关键词（不过滤）。
                     var keyword = IdeaService.ParseKeyword(q);
 
                     return Results.Json(
-                        service.List(query, keyword, limit, offset).ToList(),
+                        service.List(query, keyword, pageLimit, pageOffset).ToList(),
                         IdeaJsonContext.Default.ListIdeaDto);
                 }))
             .Produces<List<IdeaDto>>(StatusCodes.Status200OK)

@@ -386,6 +386,26 @@ public sealed class SearchEndpointTests
     }
 
     /// <summary>
+    /// 分页参数与过滤参数**都**非法时，报分页的那个。
+    /// </summary>
+    /// <remarks>
+    /// 顺序是定下来的：服务层先判分页、再判状态/标签。
+    /// 报哪个不能看谁先炸 —— agent 拿到的是一个**稳定**的错误码才好处理。
+    /// </remarks>
+    [Fact]
+    public async Task Get_ideas_with_invalid_pagination_and_status_reports_invalid_pagination()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/ideas?limit=abc&status=bogus");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_pagination",
+            (await ReadProblemAsync(response)).GetProperty("code").GetString());
+    }
+
+    /// <summary>
     /// 非数字的 limit → 400 <c>invalid_pagination</c>，而且**带 code**。
     /// </summary>
     /// <remarks>

@@ -39,7 +39,7 @@ public sealed class IdeaService(
     /// </remarks>
     public IReadOnlyList<IdeaDto> List(IdeaQuery query)
     {
-        return List(query, null, null, null);
+        return List(query, null, null, 0);
     }
 
     /// <summary>
@@ -51,19 +51,24 @@ public sealed class IdeaService(
     /// 中文等价于子串（标点与空白不挡路），英文是词级。
     /// 切不出词元的串按「没有关键词」处理（见 <see cref="ParseKeyword"/>）。
     /// </param>
-    /// <param name="limit">单页最多几条（字符串）；null = 不限。</param>
-    /// <param name="offset">已经翻过多少条（从**最新**一端数，字符串）。</param>
+    /// <param name="pageLimit">单页最多几条；null = 不限。</param>
+    /// <param name="pageOffset">已经翻过多少条（从**最新**一端数）。</param>
     /// <remarks>
     /// <para>
-    /// 分页参数是**字符串**：自己解析、自己判范围，非法一律 400
+    /// 分页参数是**解析好的数字**：解析在 <see cref="ParseQuery"/> 里做
+    /// （那里的规则只有一份，见 <see cref="ParsePagination"/>），
+    /// 切片要的就是数字，不必再解析一遍。
+    /// </para>
+    /// <para>
+    /// 请求参数本身是**字符串**：自己解析、自己判范围，非法一律 400
     /// <c>invalid_pagination</c>。不能绑成 <c>int?</c> —— 实测（跑真实应用）
     /// 绑 <c>int?</c> 时 <c>?limit=abc</c> 在参数绑定阶段失败后，
     /// 框架**只设一个 400 状态码就返回**：空 body、没有 code，
     /// 进不了 <see cref="ApiException"/> 的统一出口。
     /// </para>
     /// <para>
-    /// 给了 <paramref name="limit"/> 就**不再报 <c>too_many_ideas</c>**：
-    /// 明确要了一页，不该被顶回来。没给 limit 才是「给我全部」，
+    /// 给了 <paramref name="pageLimit"/> 就**不再报 <c>too_many_ideas</c>**：
+    /// 明确要了一页，不该被顶回来。没给 limit（= null）才是「给我全部」，
     /// 超上限就该明说。
     /// </para>
     /// <para>
@@ -71,7 +76,7 @@ public sealed class IdeaService(
     /// 前端按「返回条数 == limit+1」判定没更多，后面的命中就永远看不到了。
     /// </para>
     /// </remarks>
-    public IReadOnlyList<IdeaDto> List(IdeaQuery query, string? keyword, string? limit, string? offset)
+    public IReadOnlyList<IdeaDto> List(IdeaQuery query, string? keyword, int? pageLimit, int pageOffset)
     {
         // 关键词在这里再归一化一次：直接调本方法的人（不经 ParseKeyword）
         // 传的可能是「切不出词元」的串 —— 那不是关键词。
@@ -79,10 +84,6 @@ public sealed class IdeaService(
         // 服务层与仓储层各判一次的话，纯标点查询的响应里每条想法都会多出
         // 一个空的 "matches": []，而不带 q 的响应没有这个键。
         var effectiveKeyword = ParseKeyword(keyword);
-
-        // 分页参数在这里也要解析一次（切片要的是数字）：规则只有一份，
-        // 见 ParsePagination。
-        var (pageLimit, pageOffset) = ParsePagination(limit, offset);
 
         var ideas = repo.List(query, effectiveKeyword);
 
@@ -141,13 +142,18 @@ public sealed class IdeaService(
     /// </param>
     /// <param name="limit">单页最多几条（字符串）；范围 1..1000，非法 → 400。</param>
     /// <param name="offset">已经翻过多少条（从最新一端数，字符串）。</param>
+    /// <returns>
+    /// 查询条件 + **解析好的**分页参数（<c>Limit</c> 为 null = 不限）。
+    /// 分页的解析结果一并返回：切片要的是数字，端点拿到直接用 ——
+    /// 同一份规则（<see cref="ParsePagination"/>）只解析一次，不必解析两遍再扔掉一遍。
+    /// </returns>
     /// <remarks>
     /// 放在服务层而不是 <see cref="IdeaQuery"/> 那边：查询规格（<see cref="IdeaQuery"/>）
     /// 与匹配判定（<see cref="IdeaFilter"/>）是纯领域概念，留在 <c>Domain</c> 层，
     /// 不依赖应用层；而「不认识的过滤值要收敛成 400」这件事要用
     /// <see cref="ApiException"/>（应用层），因此解析留在这一层。
     /// </remarks>
-    public static IdeaQuery ParseQuery(
+    public static (IdeaQuery Query, int? Limit, int Offset) ParseQuery(
         string? projectId,
         string? status,
         string? tags,
@@ -158,13 +164,13 @@ public sealed class IdeaService(
     {
         // 分页参数先判：不是数字、越界、offset 单独给 —— 一律 400 invalid_pagination。
         // 「没给 limit」与「limit 给错了」是两件事，不能混成一件。
-        ParsePagination(limit, offset);
+        var (pageLimit, pageOffset) = ParsePagination(limit, offset);
 
-        return new IdeaQuery(
+        return (new IdeaQuery(
             NormalizeParameter(projectId),
             ParseStatus(status),
             ParseTags(tags),
-            ParseTagMode(tagMode));
+            ParseTagMode(tagMode)), pageLimit, pageOffset);
     }
 
     /// <summary>
