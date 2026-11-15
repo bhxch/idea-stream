@@ -17,19 +17,32 @@ public static class IdeaEndpoints
     public static IEndpointRouteBuilder MapIdeaEndpoints(this IEndpointRouteBuilder app)
     {
         // 列表：裸数组，排序恒为 updated_at ASC, id ASC（最老的在顶、最新的在底）。
-        // 可按项目 / 状态 / 标签过滤；命中数超上限时返回 400（不静默截断）。
+        // 可按项目 / 状态 / 标签过滤；q 走全文索引（语义是「词元相邻」：
+        // 中文等价于子串，英文是词级）；limit/offset 是往回翻历史的分页
+        // （offset 从最新一端数）。
+        // 不给 limit 时命中数超上限返回 400（不静默截断）；给了 limit 就只给那一页。
         app.MapGet("/api/ideas",
-            (string? projectId, string? status, string? tags, string? tagMode, IdeaService service) =>
+            // limit / offset 绑成 int?（不是 string?）：契约里它们是 integer，
+            // 而 limit=abc 这种非数字值在进端点之前就绑定失败，
+            // 由框架统一回 invalid_request_body（不是 invalid_pagination）。
+            (string? projectId, string? status, string? tags, string? tagMode,
+             string? q, int? limit, int? offset, IdeaService service) =>
                 ApiResults.Run(() =>
                 {
-                    var query = IdeaService.ParseQuery(projectId, status, tags, tagMode);
+                    var query = IdeaService.ParseQuery(projectId, status, tags, tagMode, q, limit, offset);
 
-                    return Results.Json(service.List(query).ToList(), IdeaJsonContext.Default.ListIdeaDto);
+                    // 关键词：trim 后为空 = 没有关键词（不过滤）。
+                    var keyword = IdeaService.ParseKeyword(q);
+
+                    return Results.Json(
+                        service.List(query, keyword, limit, offset).ToList(),
+                        IdeaJsonContext.Default.ListIdeaDto);
                 }))
             .Produces<List<IdeaDto>>(StatusCodes.Status200OK)
             .ProducesApiProblem(
                 StatusCodes.Status400BadRequest,
                 "too_many_ideas",
+                "invalid_pagination",
                 "invalid_status",
                 "invalid_tag_mode");
 

@@ -19,6 +19,10 @@ namespace IdeaApp.Contracts;
 /// </remarks>
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(IdeaDto))]
+// 命中位置（带关键词的列表响应里出现）：数组包装类型也要登记，
+// 少登记一个，AOT 产物下列表端点直接 500。
+[JsonSerializable(typeof(SearchMatch))]
+[JsonSerializable(typeof(SearchMatch[]))]
 [JsonSerializable(typeof(ProjectDto))]
 [JsonSerializable(typeof(TagDto))]
 [JsonSerializable(typeof(WebhookDto))]

@@ -38,19 +38,71 @@ public sealed class IdeaService(
     /// </remarks>
     public IReadOnlyList<IdeaDto> List(IdeaQuery query)
     {
-        var ideas = repo.List(query);
+        return List(query, null, null, null);
+    }
 
-        var limit = options.Value.Api.MaxIdeasPerResponse;
-        if (ideas.Count > limit)
+    /// <summary>
+    /// 按查询条件列出想法。给了 <paramref name="limit"/> 就只返回那一页（往回翻历史）。
+    /// </summary>
+    /// <param name="query">项目 / 状态 / 标签的过滤条件。</param>
+    /// <param name="keyword">
+    /// 关键词（null = 不过滤）。走全文索引：语义是「词元相邻」——
+    /// 中文等价于子串（标点与空白不挡路），英文是词级。
+    /// </param>
+    /// <param name="limit">单页最多几条；null = 不限。</param>
+    /// <param name="offset">已经翻过多少条（从**最新**一端数）。</param>
+    /// <remarks>
+    /// <para>
+    /// 分页参数的**合法性**由 <see cref="ParseQuery"/> 判（越界 → 400
+    /// <c>invalid_pagination</c>）：请求参数在一个入口里收齐。
+    /// </para>
+    /// <para>
+    /// 给了 <paramref name="limit"/> 就**不再报 <c>too_many_ideas</c>**：
+    /// 明确要了一页，不该被顶回来。没给 limit 才是「给我全部」，
+    /// 超上限就该明说。
+    /// </para>
+    /// <para>
+    /// 切片在**内存标签过滤之后**：SQL 层切出来的一页在内存过滤后可能只剩零星几条，
+    /// 前端按「返回条数 == limit+1」判定没更多，后面的命中就永远看不到了。
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<IdeaDto> List(IdeaQuery query, string? keyword, int? limit, int? offset)
+    {
+        var ideas = repo.List(query, keyword);
+
+        IReadOnlyList<Idea> page;
+
+        if (limit is null)
         {
-            throw new ApiException(400, "too_many_ideas",
-                $"命中 {ideas.Count} 条想法，超过单次返回上限 {limit}，请收窄过滤条件");
+            var max = options.Value.Api.MaxIdeasPerResponse;
+
+            if (ideas.Count > max)
+            {
+                throw new ApiException(400, "too_many_ideas",
+                    $"命中 {ideas.Count} 条想法，超过单次返回上限 {max}，请收窄过滤条件");
+            }
+
+            page = ideas;
+        }
+        else
+        {
+            // 往回翻历史：offset 从**最新**一端数。
+            // ideas 是 updated_at ASC —— 最老的在 [0]，最新的在 [Count-1]。
+            var end = Math.Max(0, ideas.Count - Math.Max(0, offset ?? 0));
+            var start = Math.Max(0, end - limit.Value);
+            page = ideas.Skip(start).Take(end - start).ToList();
         }
 
-        var result = new List<IdeaDto>(ideas.Count);
-        foreach (var idea in ideas)
+        // 命中位置只在这一条路径上算：别的路径（创建/更新/合并……）共用 ToDto，
+        // 它们不带 matches。
+        var matches = keyword is null ? null : BuildMatches(page, keyword);
+
+        var result = new List<IdeaDto>(page.Count);
+        foreach (var idea in page)
         {
-            result.Add(ToDto(idea));
+            var dto = ToDto(idea);
+
+            result.Add(matches is null ? dto : dto with { Matches = matches[idea.Id] });
         }
 
         return result;
@@ -59,19 +111,59 @@ public sealed class IdeaService(
     /// <summary>
     /// 把 HTTP 查询参数翻译成查询条件。
     /// </summary>
+    /// <param name="projectId">项目 id；空串 = 不限项目。</param>
+    /// <param name="status">all / open / done；不认识的值 400。</param>
+    /// <param name="tags">逗号分隔的标签名。</param>
+    /// <param name="tagMode">or / and；不认识的值 400。</param>
+    /// <param name="q">
+    /// 关键词。它**不进** <see cref="IdeaQuery"/>：关键词走全文索引，
+    /// 语义与 <see cref="IdeaFilter"/> 的集合判定不是一回事，混在一起会互相误杀。
+    /// <para>
+    /// 归一化（trim 后为空 = 没有关键词）由 <see cref="ParseKeyword"/> 负责：
+    /// 本方法只返回**查询条件**，带不出关键词，所以归一化与取值分成两步。
+    /// </para>
+    /// </param>
+    /// <param name="limit">单页最多几条；范围 1..1000，越界 400。</param>
+    /// <param name="offset">已经翻过多少条（从最新一端数）。</param>
     /// <remarks>
     /// 放在服务层而不是 <see cref="IdeaQuery"/> 那边：查询规格（<see cref="IdeaQuery"/>）
     /// 与匹配判定（<see cref="IdeaFilter"/>）是纯领域概念，留在 <c>Domain</c> 层，
     /// 不依赖应用层；而「不认识的过滤值要收敛成 400」这件事要用
     /// <see cref="ApiException"/>（应用层），因此解析留在这一层。
     /// </remarks>
-    public static IdeaQuery ParseQuery(string? projectId, string? status, string? tags, string? tagMode)
+    public static IdeaQuery ParseQuery(
+        string? projectId,
+        string? status,
+        string? tags,
+        string? tagMode,
+        string? q,
+        int? limit,
+        int? offset)
     {
+        // 分页参数先判：越界必须 400 ——「没给 limit」与「limit 给错了」是两件事。
+        ValidatePagination(limit, offset);
+
         return new IdeaQuery(
             NormalizeParameter(projectId),
             ParseStatus(status),
             ParseTags(tags),
             ParseTagMode(tagMode));
+    }
+
+    /// <summary>
+    /// 关键词归一化：trim 后为空 = 没有关键词（不过滤）。
+    /// </summary>
+    /// <param name="q">用户给的查询串。</param>
+    /// <returns>归一化后的关键词；没有关键词时返回 null。</returns>
+    /// <remarks>
+    /// **不做大小写折叠**：切词时自己转小写（见 <see cref="TextTokenizer"/>），
+    /// 索引侧与查询侧的口径才一致。
+    /// </remarks>
+    public static string? ParseKeyword(string? q)
+    {
+        var trimmed = q?.Trim();
+
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
     }
 
     /// <summary>新建想法。<paramref name="projectId"/> 为空时落到内置收件箱。</summary>
@@ -794,6 +886,113 @@ public sealed class IdeaService(
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 分页参数的合法性：越界就 400（<c>invalid_pagination</c>）。
+    /// </summary>
+    /// <param name="limit">单页最多几条；null = 不限。</param>
+    /// <param name="offset">已经翻过多少条（从最新一端数）；null = 0。</param>
+    /// <remarks>
+    /// 「没给 limit」与「limit 给错了」是两件事：没给是「给我全部」
+    /// （超上限报 <c>too_many_ideas</c>），给错了就得明说，
+    /// 不能默默当成「没给」。
+    /// <para>
+    /// <c>offset</c> 单独给没有意义：翻历史必须知道翻多宽，
+    /// 否则客户端说不清自己要的是哪一段。
+    /// </para>
+    /// </remarks>
+    private static void ValidatePagination(int? limit, int? offset)
+    {
+        if (limit is < 1 or > 1000)
+        {
+            throw new ApiException(400, "invalid_pagination",
+                $"limit 必须在 1..1000 之间，收到：{limit}");
+        }
+
+        if (offset is < 0)
+        {
+            throw new ApiException(400, "invalid_pagination",
+                $"offset 不能是负数，收到：{offset}");
+        }
+
+        if (offset > 0 && limit is null)
+        {
+            throw new ApiException(400, "invalid_pagination",
+                "offset 必须与 limit 一起给（offset 单独给没有意义）");
+        }
+    }
+
+    /// <summary>
+    /// 算这一页每条想法的命中位置（想法 id → 命中区间）。
+    /// </summary>
+    /// <param name="page">这一页的想法（已经过滤过、切片过）。</param>
+    /// <param name="keyword">归一化后的关键词。</param>
+    /// <remarks>
+    /// 四个字段各算一遍：标题、正文、标签名、项目名 ——
+    /// 它们都是索引里的列，命中了任何一列都算命中。
+    /// <para>
+    /// ⚠️ <b>同一个查询可能产出重复或重叠的区间</b>
+    /// （见 <see cref="TextTokenizer.FindMatches"/>）：前端渲染高亮时自己合并，
+    /// 服务端原样给出 —— 合并口径放在渲染那一侧只有一份。
+    /// </para>
+    /// </remarks>
+    private Dictionary<string, SearchMatch[]> BuildMatches(IReadOnlyList<Idea> page, string keyword)
+    {
+        // 项目名按项目 id 缓存：同一页里通常只有 1~5 个不同项目，
+        // 逐条查库的话一页就是几十次往返。
+        var projectNames = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        var result = new Dictionary<string, SearchMatch[]>(StringComparer.Ordinal);
+
+        foreach (var idea in page)
+        {
+            var matches = new List<SearchMatch>();
+
+            AddMatches(matches, "title", idea.Title, keyword);
+            AddMatches(matches, "content", idea.Content, keyword);
+
+            // 标签列的「完整字符串」是**用空格连起来的标签名** ——
+            // 与索引里那一列的文本一样，偏移才对得上。
+            AddMatches(matches, "tags", string.Join(" ", idea.Tags), keyword);
+
+            AddMatches(matches, "project", ProjectNameOf(idea.ProjectId, projectNames), keyword);
+
+            result[idea.Id] = matches.ToArray();
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 项目名（按项目 id 缓存）。项目不存在时返回空串 ——
+    /// 与索引里那一列的写法一致（见 <see cref="Infrastructure.SearchIndex"/>）。
+    /// </summary>
+    private string ProjectNameOf(string projectId, Dictionary<string, string> cache)
+    {
+        if (cache.TryGetValue(projectId, out var cached))
+        {
+            return cached;
+        }
+
+        var name = projects.Get(projectId)?.Name ?? string.Empty;
+        cache[projectId] = name;
+
+        return name;
+    }
+
+    /// <summary>把某个字段里的命中位置收进结果里。</summary>
+    private static void AddMatches(List<SearchMatch> matches, string field, string? text, string keyword)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        foreach (var match in TextTokenizer.FindMatches(text, keyword))
+        {
+            matches.Add(new SearchMatch(field, match.Start, match.Length));
+        }
     }
 
     /// <summary>

@@ -84,7 +84,7 @@ public sealed class IdeaRepository(SqliteDatabase db)
     /// 列出未删除的想法，按 <c>updated_at ASC, id ASC</c> 排序（最老的在顶、最新的在底）。
     /// </summary>
     /// <remarks>
-    /// 这是不带过滤条件的那个重载，等价于 <see cref="List(IdeaQuery)"/> 传
+    /// 这是不带过滤条件的那个重载，等价于 <see cref="List(IdeaQuery, string?)"/> 传
     /// <see cref="IdeaQuery.Everything"/>。
     /// <para>
     /// 排序是全序：<c>updated_at</c> 相同时按 <c>id ASC</c> 兜底，同一批数据的顺序永远一致。
@@ -95,30 +95,44 @@ public sealed class IdeaRepository(SqliteDatabase db)
     /// </remarks>
     public IReadOnlyList<Idea> List()
     {
-        return List(IdeaQuery.Everything);
+        return List(IdeaQuery.Everything, null);
     }
 
     /// <summary>
     /// 按查询条件列出想法，按 <c>updated_at ASC, id ASC</c> 排序（最老的在顶、最新的在底）。
     /// </summary>
+    /// <param name="query">项目 / 状态 / 标签的过滤条件。</param>
+    /// <param name="keyword">
+    /// 关键词。走全文索引过滤（见 <see cref="BuildFilter"/>）；
+    /// null 或「切不出词元」（全是标点）等于不过滤。
+    /// </param>
     /// <remarks>
-    /// 一次 SQL 取候选集（项目 + 未删 + 状态），再在内存里用
+    /// 一次 SQL 取候选集（项目 + 未删 + 状态 + 关键词），再在内存里用
     /// <see cref="IdeaFilter.Matches"/> 判标签 —— 标签是「想法的标签集合」与
     /// 「选中的标签集合」的关系，交给内存判比拼 SQL 简单得多。
+    /// <para>
+    /// <b>SQL 里不带 LIMIT / OFFSET</b>：切片在内存做（见 IdeaService.List）。
+    /// 标签过滤也在内存里 —— 先切页再过滤的话，那一页会被滤掉一部分，
+    /// 后面还有命中却永远看不到。
+    /// </para>
     /// </remarks>
-    public IReadOnlyList<Idea> List(IdeaQuery query)
+    public IReadOnlyList<Idea> List(IdeaQuery query, string? keyword)
     {
         return Query((connection, transaction) =>
         {
-            var (where, parameters) = BuildFilter(query);
+            var (where, parameters) = BuildFilter(query, keyword);
 
             var ideas = new List<Idea>();
 
             using (var command = connection.CreateCommand())
             {
                 command.Transaction = transaction;
+                // 表起别名 i：关键词条件里写的是 i.rowid，
+                // 它要与标签查询（FROM idea i JOIN …）**共用同一份 WHERE**。
+                // 别名会顶掉表名（SQLite 里别名生效后原表名不再认），
+                // 所以两边统一用别名 i。
                 command.CommandText =
-                    $"SELECT {SelectColumns} FROM idea WHERE {where} ORDER BY updated_at ASC, id ASC;";
+                    $"SELECT {SelectColumns} FROM idea i WHERE {where} ORDER BY updated_at ASC, id ASC;";
 
                 foreach (var (name, value) in parameters)
                 {
@@ -285,7 +299,20 @@ public sealed class IdeaRepository(SqliteDatabase db)
     /// 把查询条件翻译成 SQL 的 WHERE 子句与参数。
     /// 候选集与候选集的标签用同一份 WHERE，保证两边口径一致。
     /// </summary>
-    private static (string Where, Dictionary<string, object> Parameters) BuildFilter(IdeaQuery query)
+    /// <param name="query">项目 / 状态 / 标签的过滤条件。</param>
+    /// <param name="keyword">关键词；null 或切不出词元时不过滤。</param>
+    /// <remarks>
+    /// 关键词条件写成**子查询**：<c>idea_fts</c> 不在标签查询的 FROM 里，
+    /// 直接把 MATCH 写进 WHERE 会报「no such column」。
+    /// <para>
+    /// <c>i.rowid</c> 用别名限定：主查询与标签查询的 FROM 都是 <c>idea i</c>，
+    /// 裸 <c>rowid</c> 在标签查询里是 ambiguous（三张表都有 rowid），
+    /// 而表名在有别名时又不认（别名会顶掉表名）。
+    /// </para>
+    /// </remarks>
+    private static (string Where, Dictionary<string, object> Parameters) BuildFilter(
+        IdeaQuery query,
+        string? keyword)
     {
         var where = new StringBuilder("deleted_at IS NULL");
         var parameters = new Dictionary<string, object>(StringComparer.Ordinal);
@@ -304,6 +331,16 @@ public sealed class IdeaRepository(SqliteDatabase db)
             case IdeaStatusFilter.Done:
                 where.Append(" AND done = 1");
                 break;
+        }
+
+        // 关键词：MATCH 表达式由分词器生成（段内是短语查询、段间是 AND）。
+        // 切不出词元（全是标点或空白）= 没有关键词 = 不过滤。
+        var match = keyword is null ? null : TextTokenizer.BuildMatchExpression(keyword);
+
+        if (match is not null)
+        {
+            where.Append(" AND i.rowid IN (SELECT rowid FROM idea_fts WHERE idea_fts MATCH $match)");
+            parameters["$match"] = match;
         }
 
         return (where.ToString(), parameters);
