@@ -163,6 +163,10 @@
   | `Tokenize("项目，温度！")` | 同上（**全角与半角一样**） |
   | `Tokenize("👍 咖啡")` | `["咖", "啡"]`（emoji 是 Symbol，丢弃） |
   | `Tokenize("...")` | 空 |
+  | `Tokenize("a-b")` | `["a", "b"]` |
+  | `Tokenize("咖 啡")` | `["咖", "啡"]`（空白是分隔符） |
+  | `Tokenize("a\u0301b")`（组合锐音符 U+0301） | `["a", "b"]`（`Mn` 不是 `L*`/`N*`，丢弃） |
+  | `Tokenize("a\u200Db")`（零宽连接符 U+200D） | `["a", "b"]`（`Cf` 丢弃） |
   | `Analyze("咖啡，水温")` | `[(咖,0,1), (啡,1,1), (水,3,1), (温,4,1)]` |
   | `BuildMatchExpression("咖啡")` | `"咖 啡"`（含两侧双引号） |
   | `BuildMatchExpression("咖啡 水温")` | `"咖 啡" AND "水 温"` |
@@ -175,6 +179,7 @@
   | `FindMatches("咖啡的水温", "咖啡水温")` | 空（「的」是汉字词元，挡路） |
   | `FindMatches("咖啡水温", "咖啡 水温")` | `[(0,2), (2,2)]`（两个查询段各出一处） |
   | `FindMatches("Hello world", "hello")` | `[(0,5)]`；`FindMatches("Hello world", "hel")` | 空（英文词级） |
+  | `FindMatches("Hello520", "hello")` | 空（英文数字合并成一个 token） |
   | `FindMatches("第一行\n第二行咖啡", "咖啡")` | `[(7,2)]`（偏移跨行要算对） |
 
   测 `BuildMatchExpression` 时注意：**返回的字符串两侧带双引号**，断言要写全。
@@ -189,14 +194,18 @@
   在 `server/IdeaApp/Domain/TextTokenizer.cs` 里实现上面四个方法。实现要点（规格 §7.1 有完整版）：
 
   - **遍历单位是 Unicode 标量值**：`text.EnumerateRunes()`。不能用 `char` 逐个遍历 —— emoji 是代理对，会被切成两半。
-  - 判定用 `Rune.IsPunctuation` / `Rune.IsSymbol` / `Rune.IsWhiteSpace`（`InvariantGlobalization=true` 下也可用，不依赖 ICU）。
+  - **token 字符的判定：Unicode 一般类别以 `L` 或 `N` 开头的才是 token 字符**（`UppercaseLetter`/`LowercaseLetter`/`TitlecaseLetter`/`ModifierLetter`/`OtherLetter`/`DecimalDigitNumber`/`LetterNumber`/`OtherNumber`），**其余一律当分隔符丢弃** —— 标点、符号、`Cf`（零宽连接符、变体选择符）、`Cc`（控制字符）、`Mn`（组合记号）等等全都丢。
+    - ⚠️ **这条边界是量出来的，不是猜的**：FTS5 的 `unicode61` 也是按「`L*`/`N*` 是 token 字符、其余是分隔符」划分的（实测：`中`/`é`/`ʰ`/`0`/`①`/`〇` 是 token 字符；`，`/`—`/`$`/`→`/`😀`/ZWJ/变体选择符/C1 控制字符 都是分隔符）。我们保留的字符集合是 unicode61 的**子集** → 我们保留下来的每个字符 unicode61 也会保留 → 「FTS 命中了但算不出高亮区间」这一类偏差**彻底不存在**。
+    - 判定用 `Rune.GetUnicodeCategory(rune)`（`InvariantGlobalization=true` 下可用，不依赖 ICU）。
   - ⚠️ **`Rune.IsAsciiLetterOrDigit` 不存在** —— ASCII 字母数字要自己按 `rune.Value` 的码位区间判断（`'a'..'z'` / `'A'..'Z'` / `'0'..'9'`）。
   - 转小写用 `rune.ToString().ToLowerInvariant()` —— 不能用 `(char)rune`（emoji 会溢出）。
+  - **段切分用同一套规则**（按 `Rune.IsWhiteSpace`），不要另用一套 `char.IsWhiteSpace` 判定 —— 两套规则迟早漂移。
   - `Analyze` 在切词的同时累加 **UTF-16 code unit** 偏移：每个词元记下它在原文里的起始位置与长度（一个 rune 可能是 2 个 code unit）。
   - `BuildMatchExpression`：按空白切段 → 每段 `Tokenize` → 全空的段跳过 → 每段包成 `"tok1 tok2"` → 用 `" AND "` 连接。**返回 null 当且仅当所有段都空**。
   - `FindMatches`：把查询按空白切段，每段得到一个词元序列；在 `Analyze(text)` 的结果里找出该序列的**所有连续出现**，每次出现产出一个 `TextMatch`（起点 = 首个词元的 `Start`，长度 = 末个词元的 `Start + Length - 首个词元的 `Start`）。
   - 词元序列的比较**大小写不敏感**（切词时已经转小写，两边都是小写，直接比即可）。
   - 查询里某个段在原文里找不到 → 该段不产出命中（不抛异常）。
+  - `FindMatches` 的 XML doc 里要写明：**同一查询可能产出重复或重叠的区间**（`咖啡 咖啡` 会产出两处一样的；`哈哈哈哈` 搜 `哈哈` 会产出自重叠的区间）—— **调用方需自行合并**。这是给下游（T4 的 `matches`、T9 的前端渲染）的契约，不能只留在实现者的口头说明里。
 
 - [ ] **Step 4: 跑测试确认它通过**
 
@@ -308,17 +317,17 @@
   -- （external content 表会用本表的 tokenize 去处理原文，中文会整段成一个 token）。
   CREATE VIRTUAL TABLE IF NOT EXISTS idea_fts USING fts5(
       title, content, tags, project,
-      tokenize = 'unicode61'
+      tokenize = 'unicode61 remove_diacritics 0'
   );
 
   CREATE VIRTUAL TABLE IF NOT EXISTS project_fts USING fts5(
       name,
-      tokenize = 'unicode61'
+      tokenize = 'unicode61 remove_diacritics 0'
   );
 
   CREATE VIRTUAL TABLE IF NOT EXISTS tag_fts USING fts5(
       name,
-      tokenize = 'unicode61'
+      tokenize = 'unicode61 remove_diacritics 0'
   );
 
   -- 索引元信息。key = 'index.version'，value = 当前版本号。
@@ -328,6 +337,8 @@
       value TEXT NOT NULL
   );
   ```
+
+  ⚠️ **`remove_diacritics 0` 是必须的，不能省**：unicode61 **默认会折叠变音符**（实测：`MATCH 'arger'` 能命中索引里的 `ärger`）。而分词器**保留**变音符 —— 不关掉的话，搜「arger」会命中「Ärger」那条，但服务端按自己的规则算不出高亮区间，又变成规格 §12.2 明令要避免的「搜得到却高亮不出来」。关掉之后 unicode61 与分词器的口径完全一致。
 
 - [ ] **Step 4: 实现 `SearchIndex`**
 
