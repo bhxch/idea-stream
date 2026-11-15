@@ -154,17 +154,19 @@
 3. **其余的 token 字符逐字成一个 token**。`世界` → `世`、`界`。
 4. **空白**是分隔符，不产生 token。
 
-> **第 1 条的边界是量出来的，不是猜的。** FTS5 的 `unicode61` 也是按「`L*`/`N*` 是 token 字符、其余是分隔符」划分的 —— 实测：`中`(Lo)、`é`(Ll)、`ʰ`(Lm)、`0`(Nd)、`①`(No)、`〇`(Nl) 是 token 字符；`，`(Po)、`—`(Pd)、`$`(Sc)、`→`(Sm)、`😀`(So)、ZWJ(Cf)、变体选择符(Cf)、C1 控制字符(Cc) 都是分隔符。
+> **第 1 条的边界是量出来的，不是猜的。** FTS5 的 `unicode61` 划 token 字符的依据与「一般类别以 `L` 或 `N` 开头」**基本一致** —— 实测：`中`(Lo)、`é`(Ll)、`ʰ`(Lm)、`0`(Nd)、`①`(No)、`〇`(Nl) 是 token 字符；`，`(Po)、`—`(Pd)、`$`(Sc)、`→`(Sm)、`😀`(So)、ZWJ(Cf)、变体选择符(Cf)、C1 控制字符(Cc) 都是分隔符。
 >
-> **我们保留的字符集合是 unicode61 的子集** → 我们保留下来的每个字符 unicode61 也会保留 → 「FTS 命中了、但算不出高亮区间」这一类偏差**彻底不存在**。规格 §12.2 的那句承诺靠这条成立。
+> **我们保留的字符集合基本是 unicode61 的子集** → 「FTS 命中了、但算不出高亮区间」这一类偏差基本不会发生。规格 §12.2 的那句承诺靠这条成立。
 >
-> 反过来（unicode61 保留、我们丢弃的字符，比如 `Mn` 组合记号）不影响：我们把它从索引文本里丢掉了，unicode61 根本看不到它。
+> **两处分叉，方向分别是安全的与可忽略的**：
+> - unicode61 把 `Mn`（组合记号）当**词内附加符**保留，而**我们丢弃** —— 我们丢掉的字符 unicode61 根本看不到（索引文本里已经没有它），不影响一致性。
+> - unicode61 把 **21 个 `Lo` 码点**（New Tai Lue 元音符号 `U+19B0..U+19C0`、`U+19C8`、`U+19C9`；Vedic 符号 `U+1CF2`、`U+1CF3`）当**分隔符**，而 .NET 判它们是 `Lo`（我们保留）—— **只有这 21 个码点上仍可能出现「FTS 命中却算不出高亮」**。它们冷门到不会有人输入，认了。
 
 **遍历单位是 Unicode 标量值（rune），不是 UTF-16 code unit** —— 否则 emoji（代理对）会被切成两个半截 token。
 
 **实现要点**（`InvariantGlobalization=true` 下全部可用，不依赖 ICU）：
 
-- 遍历用 `string.EnumerateRunes()`；判断用 `Rune.IsPunctuation` / `Rune.IsSymbol` / `Rune.IsWhiteSpace`。
+- 遍历用 `string.EnumerateRunes()`；判定用 `Rune.GetUnicodeCategory(rune)`（看一般类别是不是 `L*`/`N*`）。
 - ⚠️ **`Rune.IsAsciiLetterOrDigit` 不存在**（.NET 没有这个 API）。ASCII 字母数字要自己按 `rune.Value` 的码位区间判断（`'a'..'z'` / `'A'..'Z'` / `'0'..'9'`）。
 - 转小写用 `rune.ToString().ToLowerInvariant()`（不能用 `(char)rune`，emoji 会溢出）。
 
