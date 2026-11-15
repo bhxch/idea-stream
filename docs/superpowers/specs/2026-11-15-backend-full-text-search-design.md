@@ -30,7 +30,7 @@
 | G3 | 两个端点：`GET /api/ideas?q=`（页面筛）、`GET /api/search?q=`（agent 全库找东西） |
 | G4 | 过滤条件下沉：项目 / 状态 / 标签 / AND-OR 模式 / 关键词**一次请求**拿最终结果 |
 | G5 | 命中位置回传：字符偏移，前端渲染 `<mark>` |
-| G6 | 分页：agent 端点带完整分页信息；页面端点支持可选 `limit`/`offset`，前端**无限滚动 + 近底预加载** |
+| G6 | 分页：agent 端点带完整分页信息；页面端点支持可选 `limit`/`offset`（**往回翻历史**），前端**无限滚动 + 提前预加载** |
 | G7 | 契约同步：OpenAPI 快照、skill 说明书、覆盖矩阵跟上 |
 
 ## 3. 非目标
@@ -466,9 +466,29 @@ FTS5 每次写入产生一个 Segment，段多了查询会变慢。SQLite 提供
 |---|---|---|---|
 | `q` | string | 空 | 关键词。trim 后为空 = 不过滤 |
 | `limit` | int? | 不给 | 最多返回几条。范围 1..1000，越界 → 400 `invalid_pagination` |
-| `offset` | int? | 0 | 跳过前几条。`offset > 0` 而 `limit` 缺省 → 400 `invalid_pagination`（`offset` 单独给没有意义） |
+| `offset` | int? | 0 | **往回翻**时已经翻过多少条（从**最新**一端数）。`offset > 0` 而 `limit` 缺省 → 400 `invalid_pagination`（`offset` 单独给没有意义） |
 
 **响应形状不变：仍是裸数组 `IdeaDto[]`。** 不破坏现有契约、e2e 与 skill 文档。
+
+#### 分页的方向：往回翻历史（聊天软件模型）
+
+这个应用的列表是**聊天软件式**的：`HomePage.vue:193` 的注释写着「打开页面就看到最新的一条（列表是从上往下长的，底部才是当下）」，加载完就滚到底。
+
+所以分页必须**往回翻**：
+
+| 请求 | 返回 |
+|---|---|
+| `?limit=100` | **最新**的 100 条，按 `updated_at ASC` 排列（页内最老在顶、最新在底） |
+| `?limit=100&offset=100` | 跳过最新的 100 条，取接下来的 100 条（**更旧的**） |
+| `?limit=100&offset=200` | 再往旧 100 条 |
+
+前端因此是：首次取最新一页 → 渲染 → **滚到底**；用户往上翻 → 取更旧的一页 → **prepend** 到列表顶部。
+
+> **`offset` 的统一规则**：「跳过该端点自己的排序里的前 N 条」。
+> - `/api/ideas`：分页取的是**最新的** N 条（从 ASC 数组的尾部往回数），`offset` 就是「跳过最新的 N 条」；返回给客户端的数组仍是 `updated_at ASC`（页内最老在顶）。
+> - `/api/search`：排序是「最相关在前」，`offset` 就是「跳过最相关的前 N 条」。
+>
+> ⚠️ **两个端点的 `offset` 含义不同**（一个是往回翻历史，一个是翻相关度页）。skill 说明书里要把这两个端点分开写清楚，别让 agent 混用。
 
 #### `too_many_ideas` 什么时候还报
 
@@ -479,23 +499,35 @@ FTS5 每次写入产生一个 Segment，段多了查询会变慢。SQLite 提供
 
 > 这两条不冲突：不传 `limit` 是「给我全部」，超上限就该明说；传了 `limit` 是「给我一页」，给了就一定给到。
 
-#### 分页切片发生在哪一步
+#### 切片发生在哪一步
 
 **在内存标签过滤之后。** 完整的数据流：
 
 ```
-SQL：WHERE deleted_at IS NULL AND project_id = ? AND (done = ?) 
+SQL：WHERE deleted_at IS NULL AND project_id = ? AND (done = ?)
      AND idea.rowid IN (SELECT rowid FROM idea_fts WHERE idea_fts MATCH $q)
-     → 候选集（不加分页参数）
+     ORDER BY updated_at ASC, id ASC          ← 不带 limit/offset
+     → 候选集（全部）
 批量：ReadTagNamesOfCandidates(同一份 WHERE) → 候选集的标签
-内存：IdeaFilter.Matches(idea, query) → 过滤标签 → 最终命中集
-切片：最终命中集[offset .. offset+limit]
+内存：IdeaFilter.Matches(idea, query) → 过滤标签 → 最终命中集（ASC）
+切片：见下
 ```
 
 **为什么不在 SQL 层切片**：标签过滤在内存（`IdeaFilter` 那套纯函数不动，§13.1），SQL 层切出来的一页在内存过滤后可能只剩零星几条 —— 前端按「返回条数 == limit+1」判定「没更多」，后面的命中就永远看不到了。
 
-**代价**：服务端要把**全部候选**加载进内存再切页。数据量是几百到几千条，可以接受。
+**切片算法**（候选集已经是 ASC，最老的在数组头部）：
 
+```csharp
+var items = allMatched;            // ASC：最老在 [0]，最新在 [Count-1]
+var end   = items.Count - offset;  // 排除「最新的 offset 条」
+var start = Math.Max(0, end - limit);
+var page  = items.Skip(start).Take(end - start).ToList();   // 仍是 ASC
+```
+
+**代价**：服务端要把**全部候选**加载进内存再切页。
+
+> 这**不是新增的代价** —— 今天的 `IdeaService.List` 就是先把 `repo.List(query)` 的全部结果读进内存，再检查 `too_many_ideas`（`IdeaService.cs:41-48`）。分页模式只是把「读全部」的结果切一刀。
+>
 > `/api/search` 更是必须如此：按 `bm25()` 排序要算**全部**命中项的得分才能定序（§6.3 引的微信原文：「分段需要对结果排序，排序就要遍历所有结果，分段查询并不能降低搜索耗时」）。分页在那里省的是**传输与 agent 的上下文**，不是检索。
 
 #### 「还有没有更多」
@@ -503,6 +535,8 @@ SQL：WHERE deleted_at IS NULL AND project_id = ? AND (done = ?)
 客户端请求 `limit + 1` 条，多出来那条说明还有下一页。服务端不做额外提示。
 
 > 之所以不把响应改成包装对象：主规格 §13.5 与 skill 说明书都按裸数组写的，改形状会波及一大片消费者，而分页信息对 `/api/ideas` 来说只有「还有没有更多」这一个用途，`limit+1` 足够。`/api/search` 是新端点，才带完整的分页信息（§11.3）。
+>
+> 往上翻的终止条件：返回的条数少于 `limit` → 没有更旧的了。
 
 ### 11.2 DTO 的变化
 
@@ -548,8 +582,10 @@ public sealed record IdeaDto(
 |---|---|---|---|
 | `q` | string | **必填** | 关键词。缺失或 trim 后为空 → 400 `invalid_search_query` |
 | `limit` | int | 20 | 每类结果最多几条。范围 1..100，越界 400 |
-| `offset` | int | 0 | 每类结果从第几条开始。三类统一应用同一个 offset |
+| `offset` | int | 0 | **跳过最相关的前 N 条**。三类统一应用同一个 offset |
 | `includeTrash` | bool | **true** | 是否包含回收站里的条目 |
+
+> ⚠️ **`offset` 的含义与 `/api/ideas` 不同**：这里是「翻相关度页」（从最相关一端数），`/api/ideas` 是「往回翻历史」（从最新一端数）。见 §11.1 的说明。
 
 **响应**：
 
@@ -684,14 +720,36 @@ GET /api/ideas?projectId=...&status=...&tags=...&tagMode=...&q=...
 - **防抖 250ms**（我的定）。
 - **输入即过滤的手感不变**（e2e `ideas.spec.ts:588` 依赖这个：填完关键词不用回车就该看到结果）。
 
-### 13.3 无限滚动 + 近底预加载
+### 13.3 无限滚动 + 往回翻历史（聊天软件模型）
 
-用户明确要求：**不是滚到底才加载，是在快到底时就要预加载**。
+用户明确要求两件事：**默认视图也走无限滚动**，以及**「类似聊天软件的那种，默认在最下边，往上翻才是历史」**。
 
-- 列表底部放一个哨兵元素，用 `IntersectionObserver` 观察，`rootMargin: '400px'`（我的定）—— 距离底部还有 400px 就触发下一页加载。
-- **分页只在有关键词时启用**（我的定）：默认视图（无关键词）保持今天「一次拉全部」的行为，不引入分页。理由是默认视图用户要看全部，分页会让人误以为「就这么多了」；而有关键词时结果通常已被缩小，分页是为了兜住「命中特别多」的极端情况。
-- 触发下一页时：`offset = 已加载条数`，`limit` 同上一页。
-- 加载中要有 loading 态，且要防止重复触发。
+现状已经是聊天软件式的（`HomePage.vue:193-200`：加载完 `scrollToBottom()`，底部是当下）。所以分页方向是**往回翻**：
+
+- **初次加载** → `GET /api/ideas?...&limit=100`（最新一页）→ 渲染 → **滚到底部**（沿用现有的 `scrollToBottom()`）。
+- **用户往上翻** → 接近**顶部**时预加载更旧的一页 → `GET /api/ideas?...&limit=100&offset=<已加载条数>` → 返回更旧的 → **prepend** 到列表顶部。
+- **往下滚没有更多可加载**（底部就是当下）；新内容靠 SSE 进来。
+
+**预加载的实现**：
+
+- 列表**顶部**放一个哨兵元素，用 `IntersectionObserver` 观察，`rootMargin: '400px 0px 0px 0px'`（我的定）—— 距离顶部还有 400px 就发请求，不等用户真的翻到顶。
+- 这就是用户说的「在快到底时就要预加载」的聊天版：**列表遍历方向的尽头是顶部**，预加载要提前在到达之前发生。
+- 加载中要有 loading 态，且要防止重复触发（哨兵在加载完成前先摘掉）。
+
+**prepend 之后必须修正滚动位置**：内容插到顶部会把用户正在看的内容往下推，视觉上会跳。标准做法：
+
+```js
+const before = container.scrollHeight;
+list.value = [...older, ...list.value];
+await nextTick();
+container.scrollTop += container.scrollHeight - before;   // 把视口钉在原来那条上
+```
+
+**搜索视图用同一套模型**：搜索结果按时间序（§11.4），最新的命中在最下边，往上翻加载更旧的命中。
+
+**「还有没有更旧的」怎么判**：请求 `limit + 1` 条，多出来那条说明还有（§11.1）。收到后把多出来那条丢掉，`已加载条数 += limit`。
+
+> **F11 定位合并结果不受影响**：合并结果是最新的 → 一定在第一页（最新一页）里 → 定位正常。
 
 ### 13.4 前端的数据流
 
@@ -715,14 +773,18 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 
 ### 13.5 过滤条件变化与 SSE 的重拉
 
-**过滤条件变化**（关键词、状态、标签、模式、项目）→ **防抖 250ms** → 重新 `GET /api/ideas`（带全部条件）→ **整表替换** `ideas.value`。
+**过滤条件变化**（关键词、状态、标签、模式、项目）→ **防抖 250ms** → 重新 `GET /api/ideas`（带全部条件，`limit=一页`、`offset=0`）→ **整表替换** `ideas.value` → **滚到底部**（条件变了，命中集合也变了，之前的浏览深度没有意义）。
 
 **SSE 事件到达**：
 
 1. **立即**用近似判断决定这条要不要进列表（`applyEvent` 用 `activeFilter`）—— 多端同步的即时性保住。
 2. 同时**防抖 250ms** 重新拉一次服务端结果，用权威结果覆盖本地列表。
 
-**重拉时必须保留已加载的页数**：请求 `limit = 已加载条数 + 一页`。否则用户滚到第 3 页时，列表被替换成第 1 页，滚动位置就跳了。
+**SSE 触发的重拉必须保留已加载的深度**：请求 `offset=0` + `limit = 已加载条数 + 一页`。
+
+- 因为 `/api/ideas` 的分页是「从最新一端数」（§11.1），「最新的 N 条」正好就是用户当前看到的那一批（可能多出刚到的新条目，它们在最底下）。
+- 如果只拉一页，用户往上翻了三页历史，重拉后历史就没了 —— 视口会突然跳回最新那批。
+- 返回的数组仍是 ASC（最老在顶），所以视口里那几条的位置不变 ✓
 
 **代价（用户已知并接受）**：英文上前后端语义不同（前端按子串、后端按词级），个别条目会**先出现再被收回**。中文上只有标点/空白分隔那种窄边界会有这个现象。
 
@@ -794,7 +856,7 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 | 项目名命中 | 搜项目名能命中该项目下的想法 |
 | 多词 AND | 两段都出现才算命中；不相邻也命中 |
 | 相关度 | `/api/search` 里标题命中的排在正文命中的前面 |
-| 分页 | `limit`/`offset` 正确；`hasMore` 正确；`total` 不受分页影响 |
+| 分页 | `limit`/`offset` 正确；`hasMore` 正确；`total` 不受分页影响；**往回翻**：`offset=0` 是最新的一页，`offset=100` 是更旧的一页，且两页不重叠 |
 | 回收站 | `/api/search` 默认含回收站并标 `trashed`；`includeTrash=false` 不含；`/api/ideas?q=` 不含 |
 | 索引同步 | 写入 / 改正文 / 改标签 / 改项目名 / 软删 / 恢复 / 硬删后，索引与业务数据一致（**每条写路径都要有断言**） |
 | 硬删 + rowid 复用 | 硬删后新插入的想法，索引不串行 |
@@ -819,7 +881,7 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 
 - 标签名 / 标题 / 项目名能搜到想法
 - 搜索结果带高亮
-- 有关键词时列表分页，滚到接近底部自动加载下一页
+- 默认视图也是分页的：打开页面停在**最底下**（最新一条可见），往上翻到接近顶部时自动加载更旧的一页，且视口不跳
 - `/api/search` 返回三类分组
 
 `web/e2e/COVERAGE.md` 的用例计数与概览表同步更新。
@@ -866,7 +928,7 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 2. **`ReadTagNamesOfCandidates` 是否要避开重复的 FTS 匹配**（§9.4 的注释）：先按现有写法实现，实测慢再优化。
 3. **`total` 的算法**：两次查询（COUNT 一次、取页一次）还是窗口函数 `COUNT(*) OVER()`。默认两次查询 —— 更稳。
 4. **`project_fts` / `tag_fts` 的 rowid 取法**：用 `SELECT rowid` 还是别的，只要映射稳定。
-5. **前端无限滚动的具体实现**：`IntersectionObserver` 的 `rootMargin` 取值（本文档给了 400px 的建议值）、loading 态的呈现方式、哨兵元素插在列表的哪个位置。
+5. **前端往回翻的具体实现**：`IntersectionObserver` 的 `rootMargin` 取值（本文档给了顶部 400px 的建议值）、loading 态的呈现方式、哨兵元素插在列表的哪个位置、prepend 后修正 `scrollTop` 的具体写法。
 6. **前端高亮的组件拆分**：切分逻辑放 `lib/` 还是组件内。
 7. **前端「搜索中」的状态呈现**：加不加 loading 指示、还是让旧列表留在屏幕上直到新结果到达。
 
@@ -884,8 +946,8 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 | SSE 与过滤下沉 | **甲**：前端保留近似判断 + 防抖 250ms 重拉后端权威结果 | 用户拍板 |
 | 命中位置的表示 | **甲**：返回字符偏移 `matches: [{field,start,length}]`，前端渲染 `<mark>`，不用 `v-html` | 用户拍板 |
 | 分页 | `/api/search` 完整分页（`limit`/`offset`/`total`/`hasMore`）；`/api/ideas` 加可选 `limit`/`offset`，响应形状不变 | 用户提的需求 + 我的定 |
-| 前端分页交互 | **乙**：无限滚动，且**近底预加载**（不是滚到底才加载） | 用户拍板 + 明确补充 |
-| 分页启用的时机 | 只在有关键词时启用；默认视图保持一次拉全部 | 我的定 |
+| 前端分页交互 | **无限滚动**，方向是**往回翻历史**（聊天软件模型：默认停在最下边，往上翻加载更旧的），且**提前预加载**（不等翻到顶） | 用户拍板 + 明确补充（第二轮追加：默认视图也走无限滚动、聊天软件式） |
+| 分页启用的时机 | **默认视图也启用**（不是只有搜索时） | 用户拍板（第二轮追加） |
 | 中文分词 | 逐字切 + `unicode61` 短语查询；不用 `trigram`（2 字词查不了） | 我的定（基于实测） |
 | 索引结构 | 四个 FTS5 虚表 + 一张 `search_meta` 表；不用 external content | 我的定 |
 | 项目名 / 标签名 | 进想法的索引（`project` / `tags` 列） | 我的定（用户未反对） |
@@ -893,7 +955,8 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 | 标点处理 | **半角与全角一律丢弃**（`Rune.IsPunctuation` / `Rune.IsSymbol`），当作分隔符 | 我的定（评审补出全角标点这个坑） |
 | 遍历单位 | Unicode 标量值（rune），不是 UTF-16 code unit | 我的定 |
 | 关键词条件的 SQL 形态 | `idea.rowid IN (SELECT rowid FROM idea_fts WHERE idea_fts MATCH $q)` —— 子查询而非 JOIN，为的是让主查询与标签查询共用同一份 WHERE | 我的定（评审补出 JOIN 形式与现有 `BuildFilter` 不兼容） |
-| 分页切片位置 | **内存标签过滤之后**（SQL 不带 LIMIT） | 我的定 |
+| 分页切片位置 | **内存标签过滤之后**（SQL 不带 LIMIT，与今天的 `IdeaService.List` 一致 —— 它本来就把全部结果读进内存再检查上限） | 我的定 |
+| 分页方向 | **往回翻历史**：`offset` 从**最新**一端数（`/api/ideas`）；`/api/search` 的 `offset` 从**最相关**一端数 | 用户拍板（聊天软件模型）+ 我的定 |
 | `too_many_ideas` | 不传 `limit` 时照旧报；传了 `limit` 就不报 | 我的定 |
 | `limit` / `offset` 的类型 | `int?`（OpenAPI 里是 `integer`）；非数字由框架给 `invalid_request_body`，`invalid_pagination` 只管越界 | 我的定 |
 | `trashed` 标志的位置 | `IdeaDto.trashed` / `ProjectDto.trashed` 两个可选字段，不新增 DTO 类型 | 我的定 |
