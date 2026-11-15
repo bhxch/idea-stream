@@ -2472,6 +2472,8 @@ describe('HomePage', () => {
 
     // 哨兵必须在列表**前面**：往回翻的方向是上（底部是当下，新内容靠 SSE
     // 送过来）。放到底部的话，触发的是「快到最新」而不是「快到最旧」。
+    // （首屏那条「加载中…」提示这时已经不在了 —— 列表加载完之后它就没了，
+    // 所以哨兵就是 `.home__scroll` 的第一个元素。）
     expect(scroller.firstElementChild).toBe(sentinel);
     const list = scroller.querySelector('.list');
     expect(list, '找不到消息流列表').not.toBeNull();
