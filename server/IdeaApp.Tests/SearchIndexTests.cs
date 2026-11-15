@@ -112,20 +112,61 @@ public sealed class SearchIndexTests : IDisposable
         SearchIndexInitializer.EnsureIndexed(Database);
         var backfilled = ReadIdeaFtsTags(RowIdOfIdea("i1"));
 
-        // 增量写路径：同样的内容、同样顺序的标签名。
+        // 回填写出的文本（顺带钉住「标签名排序后拼」的约定）。
+        Assert.Equal("咖 啡 手 冲", backfilled);
+
+        using var connection = Database.Open();
+
+        // 先用**另一份内容**做一次增量写：它必须真的把行改掉。
+        //
+        // 这一步不能省：只比「回填的文本 vs 增量写之后的文本」的话，
+        // 「增量写被忽略、行根本没变」也会让断言通过 —— 那样这条用例
+        // 就分不清「增量写真的发生了且文本相同」与「增量写没生效」。
+        SearchIndex.UpsertIdea(connection, null, "i1", null, "别的内容", new[] { "茶" }, "工作");
+        Assert.Equal("茶", ReadIdeaFtsTags(RowIdOfIdea("i1")));
+
+        // 再用与回填**完全相同**的数据做一次增量写：产物必须与回填逐字节相同。
         //
         // ⚠️ 标签顺序要跟回填一致：回填里标签名是**按名称排序**后拼的
         // （显式 ORDER BY name COLLATE NOCASE —— group_concat 自己不保序），
         // 增量写这条路也得按同样的顺序拼，否则同一份数据会写出两种文本。
-        using var connection = Database.Open();
         SearchIndex.UpsertIdea(
             connection, null, "i1", null, "手冲记录", new[] { "咖啡", "手冲" }, "工作");
 
-        // 回填写出的文本（顺带钉住「标签名排序后拼」的约定）。
-        Assert.Equal("咖 啡 手 冲", backfilled);
-
-        // 增量写之后，两条路径的产物完全一样。
         Assert.Equal(backfilled, ReadIdeaFtsTags(RowIdOfIdea("i1")));
+    }
+
+    [Fact]
+    public async Task EnsureIndexed_skips_the_rebuild_when_another_instance_rebuilt_it_meanwhile()
+    {
+        InsertProject("p1", "工作");
+        InsertIdea("i1", "p1", null, "手冲记录");
+        SetIndexVersion("0");
+
+        // 模拟「另一个实例」：占住写锁，在锁里把版本改成当前值，
+        // 并往索引表里塞一行哨兵。
+        //
+        // 哨兵就是观察点：重建会先 DELETE FROM idea_fts，
+        // 哨兵活下来 = 后来者**没有**重建。
+        using var blocker = Database.Open();
+        using var blockerTransaction = blocker.BeginTransaction();
+        Exec(blocker, "INSERT OR REPLACE INTO search_meta(key, value) VALUES ('index.version', '1');", blockerTransaction);
+        Exec(blocker, "INSERT INTO idea_fts(rowid, title, content, tags, project) VALUES (999999, '哨兵', '', '', '');", blockerTransaction);
+
+        // 过一会儿才提交：让后来者卡在 BEGIN IMMEDIATE 上（它拿不到写锁）。
+        var releaser = Task.Run(() =>
+        {
+            Thread.Sleep(500);
+            blockerTransaction.Commit();
+        });
+
+        // 版本对不上 → 本来会想重建；但另一个实例刚好重建过了 → 必须 no-op。
+        SearchIndexInitializer.EnsureIndexed(Database);
+
+        await releaser;
+
+        // 哨兵还在 = 重建没有发生。
+        Assert.Equal(new[] { 999999L }, IdeaFtsRowIds());
     }
 
     [Fact]
@@ -329,6 +370,32 @@ public sealed class SearchIndexTests : IDisposable
         }
 
         return rowIds;
+    }
+
+    /// <summary>读 idea_fts 的全部 rowid。</summary>
+    private IReadOnlyList<long> IdeaFtsRowIds()
+    {
+        using var connection = Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT rowid FROM idea_fts ORDER BY rowid;";
+
+        var rowIds = new List<long>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rowIds.Add(reader.GetInt64(0));
+        }
+
+        return rowIds;
+    }
+
+    /// <summary>在指定连接（可选事务）上执行一条语句。</summary>
+    private static void Exec(SqliteConnection connection, string sql, SqliteTransaction? transaction = null)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        command.ExecuteNonQuery();
     }
 
     private static string Now() => SqliteDatabase.FormatTimestamp(DateTimeOffset.UtcNow);

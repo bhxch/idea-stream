@@ -19,12 +19,12 @@ namespace IdeaApp.Infrastructure;
 /// 索引行与业务行靠 rowid 一一对应，删除时才能精确删掉对应的那一行。
 ///
 /// <strong>事务</strong>：索引写必须与业务写在<strong>同一个事务</strong>里（规格 §10.1）。
-/// Microsoft.Data.Sqlite 的实测行为（10.0.14 / SQLite 3.53.3）：
-/// 连接上有 pending transaction 时，命令若<strong>不设置</strong> Transaction 属性，会隐式加入该事务
-/// （不会漏到事务外）；但<strong>显式</strong>赋 null 会抛 InvalidOperationException
-/// （"Execute requires the command to have a transaction object..."）。
-/// 所以这里一律显式写 <c>command.Transaction = transaction;</c>：
-/// 传对了语义与隐式加入一致，传错了（该传 null 却连着有事务）立刻炸，不会静默走偏。
+/// 这里一律显式写 <c>command.Transaction = transaction;</c> ——
+/// 不显式写的话，命令到底会不会落在事务里取决于它是什么时候被创建的
+/// （<c>CreateCommand</c> 会把连接上**当时**的 pending transaction 复制过去），
+/// 这种隐式行为不值得依赖。
+/// 显式写的好处是两头都稳：传对了语义与隐式加入一致；
+/// 传错了（该传 null 却连着有事务）立刻抛 InvalidOperationException，不会静默走偏。
 /// </summary>
 public static class SearchIndex
 {

@@ -24,6 +24,10 @@ public static class SearchIndexInitializer
     /// 半截的索引比没有索引更糟。
     /// </para>
     /// <para>
+    /// 版本号读**两次**：事务外读一次（版本对得上时不该占写锁），
+    /// 拿到写锁后再在事务内读一次（期间别的实例可能已经重建过了）。
+    /// </para>
+    /// <para>
     /// 失败时异常里带着**失败阶段**与**库路径**：起不来的原因不应该让人对着
     /// 「应用起不来」猜（规格 §10.4）。
     /// </para>
@@ -32,17 +36,33 @@ public static class SearchIndexInitializer
     {
         using var connection = db.Open();
 
-        // 版本对得上 = 索引已经是当前分词规则下的那一份，什么都不做。
-        if (ReadVersion(connection) == SearchIndex.CurrentVersion)
-        {
-            return;
-        }
-
-        using var transaction = connection.BeginTransaction();
-
-        var phase = "清空索引";
+        var phase = "读取索引版本";
         try
         {
+            // 事务外先读一次：版本对得上就**什么都不做**，也不占写锁 ——
+            // 每次启动都 BEGIN IMMEDIATE 会跟正在跑的实例抢锁。
+            if (ReadVersion(connection) == SearchIndex.CurrentVersion)
+            {
+                return;
+            }
+
+            // BEGIN IMMEDIATE：拿写锁。Microsoft.Data.Sqlite 的 BeginTransaction()
+            // 发的就是 BEGIN IMMEDIATE（实测：它持有写锁时另一个连接写会
+            // 「database is locked」；BeginTransaction(deferred: true) 才是 deferred）。
+            //
+            // 两个实例同时启动时，后来者会卡在这里（Microsoft.Data.Sqlite 的
+            // 默认超时 30 秒），等先到的那位提交后继续往下走。
+            using var transaction = connection.BeginTransaction();
+
+            // 拿到写锁之后再读一次版本号：**期间别的实例可能已经重建过了**。
+            // 已是当前值 → 别的实例刚干完 → 直接 no-op（事务随 using 回滚），
+            // 不会重复重建一遍。
+            if (ReadVersion(connection, transaction) == SearchIndex.CurrentVersion)
+            {
+                return;
+            }
+
+            phase = "清空索引";
             ClearIndex(connection, transaction);
 
             phase = "写入标签索引";
@@ -66,6 +86,8 @@ public static class SearchIndexInitializer
 
             phase = "写入索引版本";
             WriteVersion(connection, transaction);
+
+            transaction.Commit();
         }
         catch (Exception ex)
         {
@@ -73,14 +95,13 @@ public static class SearchIndexInitializer
             throw new InvalidOperationException(
                 $"全文索引重建失败（阶段：{phase}；库：{db.DatabasePath}）：{ex.Message}", ex);
         }
-
-        transaction.Commit();
     }
 
     /// <summary>读当前索引版本；没有记录时返回 null（= 从没建过索引）。</summary>
-    private static string? ReadVersion(SqliteConnection connection)
+    private static string? ReadVersion(SqliteConnection connection, SqliteTransaction? transaction = null)
     {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "SELECT value FROM search_meta WHERE key = 'index.version';";
         return command.ExecuteScalar() as string;
     }
