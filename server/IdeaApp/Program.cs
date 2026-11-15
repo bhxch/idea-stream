@@ -204,6 +204,10 @@ app.UseExceptionHandler();
 // 首次启动即建库建表并写入内置收件箱。
 app.Services.GetRequiredService<SqliteDatabase>().Initialize();
 
+// 老库没有全文索引，靠索引版本号在启动时整体回填一次（版本对得上就什么都不做）。
+// 回填失败直接让启动失败：索引与业务数据不一致时搜索给的是**错结果**，那比起不来危险得多。
+SearchIndexInitializer.EnsureIndexed(app.Services.GetRequiredService<SqliteDatabase>());
+
 app.MapHealthEndpoints();
 app.MapProjectEndpoints();
 app.MapSettingsEndpoints();

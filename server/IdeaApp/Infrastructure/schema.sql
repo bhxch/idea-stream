@@ -73,3 +73,28 @@ CREATE TABLE IF NOT EXISTS setting (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- 想法的全文索引。四列对应四个可检索字段：标题、正文、标签名、项目名。
+-- 存的是**切分后**的词元串，不是原文 —— 所以不能用 external content 表
+-- （external content 表会用本表的 tokenize 去处理原文，中文会整段成一个 token）。
+CREATE VIRTUAL TABLE IF NOT EXISTS idea_fts USING fts5(
+    title, content, tags, project,
+    tokenize = 'unicode61 remove_diacritics 0'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS project_fts USING fts5(
+    name,
+    tokenize = 'unicode61 remove_diacritics 0'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS tag_fts USING fts5(
+    name,
+    tokenize = 'unicode61 remove_diacritics 0'
+);
+
+-- 索引元信息。key = 'index.version'，value = 当前版本号。
+-- 版本号变了就整体重建索引 —— 分词规则改了、或老库还没建索引，都靠它。
+CREATE TABLE IF NOT EXISTS search_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);

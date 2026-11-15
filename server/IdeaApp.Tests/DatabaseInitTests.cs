@@ -46,7 +46,9 @@ public sealed class DatabaseInitTests : IDisposable
 
         foreach (var table in new[]
                  {
-                     "project", "idea", "tag", "idea_tag", "webhook", "webhook_delivery", "setting"
+                     "project", "idea", "tag", "idea_tag", "webhook", "webhook_delivery", "setting",
+                     // 全文索引：三张 FTS5 虚表 + 一张索引版本表。
+                     "idea_fts", "project_fts", "tag_fts", "search_meta"
                  })
         {
             Assert.Contains(table, objects);
