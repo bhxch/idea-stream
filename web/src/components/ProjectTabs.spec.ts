@@ -147,18 +147,20 @@ describe('ProjectTabs', () => {
   it('项目名元素带稳定的 data-testid（用例不用靠 class 定位）', () => {
     const wrapper = mountTabs();
 
-    expect(wrapper.get('[data-testid="project-name-all"]').text()).toBe('全部');
-    expect(wrapper.get('[data-testid="project-name-project-1"]').text()).toBe('老项目');
-    expect(wrapper.get('[data-testid="project-name-project-2"]').text()).toBe('新项目');
+    expect(wrapper.get('[data-testid="project-tabs-name-all"]').text()).toBe('全部');
+    expect(wrapper.get('[data-testid="project-tabs-name-project-1"]').text()).toBe('老项目');
+    expect(wrapper.get('[data-testid="project-tabs-name-project-2"]').text()).toBe('新项目');
   });
 
-  it('Tab 条 nav 有稳定的 aria-label="项目"（不随排序方式变）', () => {
+  it('Tab 条 nav 有稳定的 aria-label="项目切换"（不随排序方式变）', () => {
     const recent = mountTabs({ mode: 'recent' });
     const manual = mountTabs({ mode: 'manual' });
 
-    // 与宽屏侧栏的 nav[aria-label="项目"] 一致，窄屏下也能按同一个名字定位。
-    expect(recent.get('nav').attributes('aria-label')).toBe('项目');
-    expect(manual.get('nav').attributes('aria-label')).toBe('项目');
+    // 与宽屏侧栏的 nav[aria-label="项目"] **刻意不同名**：两套导航同时在 DOM 里
+    // （一套用 CSS 隐藏），同名会让读屏听到两个同名地标，也让按 nav[aria-label=项目]
+    // 定位的选择器同时命中两处（Playwright strict mode 直接报撞车）。
+    expect(recent.get('nav').attributes('aria-label')).toBe('项目切换');
+    expect(manual.get('nav').attributes('aria-label')).toBe('项目切换');
   });
 
   it('渐隐带只盖住「文字到容器右边缘」的空隙，不盖住还看得清的字', async () => {

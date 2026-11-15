@@ -180,7 +180,7 @@ watch(
 </script>
 
 <template>
-  <nav class="project-tabs" aria-label="项目" :title="mode === 'recent' ? '按最近活动排序' : '按手动顺序排序'">
+  <nav class="project-tabs" aria-label="项目切换" :title="mode === 'recent' ? '按最近活动排序' : '按手动顺序排序'">
     <!--
       项目多的时候横向滑动，不换行：换行会把内容区挤没。
       is-scrollable：右边还有 Tab 没露出来；is-fading：右边缘真的在渐隐
@@ -201,7 +201,7 @@ watch(
           data-project-id="all"
           @click="emit('select', null)"
         >
-          <span class="project-tab__name" data-testid="project-name-all">全部</span>
+          <span class="project-tab__name" data-testid="project-tabs-name-all">全部</span>
           <span class="project-tab__count">{{ totalCount }}</span>
         </button>
       </li>
@@ -215,7 +215,7 @@ watch(
           :data-project-id="project.id"
           @click="emit('select', project.id)"
         >
-          <span class="project-tab__name" :data-testid="`project-name-${project.id}`">{{ project.name }}</span>
+          <span class="project-tab__name" :data-testid="`project-tabs-name-${project.id}`">{{ project.name }}</span>
           <span class="project-tab__count">{{ project.ideaCount }}</span>
         </button>
       </li>

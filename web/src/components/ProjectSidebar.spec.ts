@@ -102,14 +102,16 @@ describe('ProjectSidebar', () => {
   it('项目名元素带稳定的 data-testid（用例不用靠 class 定位）', () => {
     const wrapper = mountSidebar();
 
-    expect(wrapper.get('[data-testid="project-name-all"]').text()).toBe('全部项目');
-    expect(wrapper.get('[data-testid="project-name-project-1"]').text()).toBe('老项目');
-    expect(wrapper.get('[data-testid="project-name-project-3"]').text()).toBe('第三个项目');
+    expect(wrapper.get('[data-testid="project-sidebar-name-all"]').text()).toBe('全部项目');
+    expect(wrapper.get('[data-testid="project-sidebar-name-project-1"]').text()).toBe('老项目');
+    expect(wrapper.get('[data-testid="project-sidebar-name-project-3"]').text()).toBe('第三个项目');
   });
 
-  it('侧栏 nav 有 aria-label="项目"（跟窄屏 Tab 条一致）', () => {
+  it('侧栏 nav 有 aria-label="项目"（与窄屏 Tab 条刻意不同名）', () => {
     const wrapper = mountSidebar();
 
+    // 窄屏 Tab 条那个是「项目切换」：两套导航同时在 DOM 里（一套用 CSS 隐藏），
+    // 同名会让读屏听到两个同名地标，也会让选择器同时命中两处。
     expect(wrapper.get('nav').attributes('aria-label')).toBe('项目');
   });
 

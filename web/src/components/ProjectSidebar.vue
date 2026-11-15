@@ -119,7 +119,7 @@ function toggleMode(): void {
           data-project-id="all"
           @click="emit('select', null)"
         >
-          <span class="project-sidebar__name" data-testid="project-name-all">全部项目</span>
+          <span class="project-sidebar__name" data-testid="project-sidebar-name-all">全部项目</span>
           <span class="project-sidebar__count">{{ totalCount }}</span>
         </button>
       </li>
@@ -143,7 +143,7 @@ function toggleMode(): void {
           @dragend="onDragEnd"
           @click="emit('select', project.id)"
         >
-          <span class="project-sidebar__name" :data-testid="`project-name-${project.id}`">{{ project.name }}</span>
+          <span class="project-sidebar__name" :data-testid="`project-sidebar-name-${project.id}`">{{ project.name }}</span>
           <span class="project-sidebar__count">{{ project.ideaCount }}</span>
           <span v-if="project.lastActivityAt" class="project-sidebar__activity">
             {{ formatRelativeTime(project.lastActivityAt) }}
