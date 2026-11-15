@@ -137,6 +137,8 @@ public sealed class JsonSerializationTests
             typeof(TrashEntryDto),
             typeof(HealthResponse),
             typeof(WebhookTemplateDto),
+            // 命中位置（IdeaDto 的嵌套类型）：带关键词的列表响应里出现。
+            typeof(SearchMatch),
             // 数组包装
             typeof(IdeaDto[]),
             typeof(ProjectDto[]),
@@ -144,6 +146,7 @@ public sealed class JsonSerializationTests
             typeof(WebhookDto[]),
             typeof(DeliveryDto[]),
             typeof(TrashEntryDto[]),
+            typeof(SearchMatch[]),
             // List 包装
             typeof(List<IdeaDto>),
             typeof(List<ProjectDto>),

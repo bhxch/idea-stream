@@ -44,7 +44,11 @@ public static class IdeaEndpoints
                 "too_many_ideas",
                 "invalid_pagination",
                 "invalid_status",
-                "invalid_tag_mode");
+                "invalid_tag_mode",
+                // limit / offset 绑成 int? 的代价：?limit=abc 这种非数字值
+                // 在进端点之前就绑定失败，框架统一回 invalid_request_body ——
+                // 这个码本端点真会返回，契约里就得写得出它（agent 照契约分支处理）。
+                "invalid_request_body");
 
         app.MapPost("/api/ideas", (CreateIdeaRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.Create(

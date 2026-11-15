@@ -194,6 +194,13 @@ echo "==> GET /api/ideas?status=open&tagMode=and"
 check_endpoint "/api/ideas?status=open&tagMode=and" "200" \
     'root.ValueKind == JsonValueKind.Array'
 
+echo "==> GET /api/ideas?q=咖啡&limit=2"
+# 带关键词与分页的同一个端点：q 走全文索引（idea_fts 的 MATCH 在 AOT 下一样要走真实的
+# SQLite 互操作），matches 是 IdeaDto 的嵌套类型（SearchMatch）——
+# JsonContext 白名单里少登记它，这个端点在 AOT 产物下就是 500。
+check_endpoint "/api/ideas?q=%E5%92%96%E5%95%A1&limit=2" "200" \
+    'root.ValueKind == JsonValueKind.Array'
+
 echo "==> GET /api/tags"
 # 返回静态类型 List<TagDto>（裸数组）。
 check_endpoint "/api/tags" "200" \

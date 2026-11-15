@@ -48,6 +48,7 @@ public sealed class IdeaService(
     /// <param name="keyword">
     /// 关键词（null = 不过滤）。走全文索引：语义是「词元相邻」——
     /// 中文等价于子串（标点与空白不挡路），英文是词级。
+    /// 切不出词元的串按「没有关键词」处理（见 <see cref="ParseKeyword"/>）。
     /// </param>
     /// <param name="limit">单页最多几条；null = 不限。</param>
     /// <param name="offset">已经翻过多少条（从**最新**一端数）。</param>
@@ -68,7 +69,14 @@ public sealed class IdeaService(
     /// </remarks>
     public IReadOnlyList<IdeaDto> List(IdeaQuery query, string? keyword, int? limit, int? offset)
     {
-        var ideas = repo.List(query, keyword);
+        // 关键词在这里再归一化一次：直接调本方法的人（不经 ParseKeyword）
+        // 传的可能是「切不出词元」的串 —— 那不是关键词。
+        // 归一化只有一个口径（ParseKeyword），null 一路传下去：
+        // 服务层与仓储层各判一次的话，纯标点查询的响应里每条想法都会多出
+        // 一个空的 "matches": []，而不带 q 的响应没有这个键。
+        var effectiveKeyword = ParseKeyword(keyword);
+
+        var ideas = repo.List(query, effectiveKeyword);
 
         IReadOnlyList<Idea> page;
 
@@ -95,7 +103,7 @@ public sealed class IdeaService(
 
         // 命中位置只在这一条路径上算：别的路径（创建/更新/合并……）共用 ToDto，
         // 它们不带 matches。
-        var matches = keyword is null ? null : BuildMatches(page, keyword);
+        var matches = effectiveKeyword is null ? null : BuildMatches(page, effectiveKeyword);
 
         var result = new List<IdeaDto>(page.Count);
         foreach (var idea in page)
@@ -151,19 +159,34 @@ public sealed class IdeaService(
     }
 
     /// <summary>
-    /// 关键词归一化：trim 后为空 = 没有关键词（不过滤）。
+    /// 关键词归一化：没有「可搜的内容」就是没有关键词。
     /// </summary>
     /// <param name="q">用户给的查询串。</param>
     /// <returns>归一化后的关键词；没有关键词时返回 null。</returns>
     /// <remarks>
+    /// 两种情况算「没有关键词」：trim 后为空；切不出词元（全是标点或空白 ——
+    /// 索引里存的就是词元串，切不出词元的查询搜不到任何东西）。
+    /// <para>
+    /// 归一化只在这里做一次：服务层与仓储层各判一次的话，纯标点查询的响应里
+    /// 每条想法都会多出一个空的 <c>"matches": []</c>，而不带 q 的响应没有这个键 ——
+    /// 同一语义两种响应形状，而键的存在与否本应是「这次是不是搜索」的信号。
+    /// </para>
+    /// <para>
     /// **不做大小写折叠**：切词时自己转小写（见 <see cref="TextTokenizer"/>），
     /// 索引侧与查询侧的口径才一致。
+    /// </para>
     /// </remarks>
     public static string? ParseKeyword(string? q)
     {
         var trimmed = q?.Trim();
 
-        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return null;
+        }
+
+        // 切不出词元 = 搜不到任何东西 = 等于没给关键词。
+        return TextTokenizer.BuildMatchExpression(trimmed) is null ? null : trimmed;
     }
 
     /// <summary>新建想法。<paramref name="projectId"/> 为空时落到内置收件箱。</summary>

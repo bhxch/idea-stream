@@ -175,9 +175,21 @@ public sealed class SearchEndpointTests
         var first = await CreateIdeaAsync(client, "第一条");
         var second = await CreateIdeaAsync(client, "第二条");
 
-        var ids = await ReadIdsAsync(await client.GetAsync("/api/ideas?q=..."));
+        var response = await client.GetAsync("/api/ideas?q=...");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        var ids = document.RootElement.EnumerateArray()
+            .Select(element => element.GetProperty("id").GetString()!)
+            .ToArray();
 
         Assert.Equal(new[] { first, second }, ids);
+
+        // 纯标点 = 没有关键词：响应形状与**不带 q** 时一样（没有 matches 键）。
+        // 服务层与仓储层各判一次的话，这里会多出一个空的 "matches": [] ——
+        // 同一语义两种响应形状。
+        Assert.False(document.RootElement[0].TryGetProperty("matches", out _));
     }
 
     /// <summary>查询只有空白 = 没有关键词 = 不过滤：返回全部。</summary>
@@ -272,16 +284,24 @@ public sealed class SearchEndpointTests
         using var factory = new TestAppFactory();
         using var client = factory.CreateClient();
 
-        await CreateIdeaAsync(client, "没有标签的");
+        // 三条带标签的先建。
         var tagged = new List<string>();
         for (var i = 0; i < 3; i++)
         {
             tagged.Add(await CreateIdeaAsync(client, $"带标签的第{i + 1}条", tags: new[] { "咖啡" }));
         }
 
+        // **没有标签的那条最后建**（= 最新的一条）。
+        // 先切页再过滤的话，「最新 2 条」是 [t3, 无标签]，内存过滤后只剩 1 条 ——
+        // 下面的断言会红。
+        // 无标签那条若建在最老的一端，它天然落在「最新 2 条」之外，
+        // 这条测试对它想守的顺序就不敏感了。
+        await CreateIdeaAsync(client, "没有标签的");
+
         var page = await ReadIdsAsync(await client.GetAsync("/api/ideas?tags=咖啡&limit=2"));
 
-        Assert.Equal(2, page.Length);
+        // 过滤后剩 [t1, t2, t3]，取最新 2 条 → [t2, t3]（页内仍是升序）。
+        Assert.Equal(new[] { tagged[1], tagged[2] }, page);
     }
 
     /// <summary>命中位置要给得出：偏移切出来的正好是命中词。</summary>
@@ -324,7 +344,11 @@ public sealed class SearchEndpointTests
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
+        // matches 与 trashed 都得省掉：
+        // 少了任何一个的属性级 JsonIgnore，响应就会多出那个键 ——
+        // 「不带关键词的响应与今天逐字节一样」这条约束就破了。
         Assert.False(document.RootElement[0].TryGetProperty("matches", out _));
+        Assert.False(document.RootElement[0].TryGetProperty("trashed", out _));
     }
 
     /// <summary>分页参数越界一律 400（invalid_pagination）。</summary>
@@ -356,6 +380,28 @@ public sealed class SearchEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("invalid_pagination",
             (await ReadProblemAsync(response)).GetProperty("code").GetString());
+    }
+
+    /// <summary>
+    /// 非数字的 limit 在进端点**之前**就被框架拒了：400。
+    /// </summary>
+    /// <remarks>
+    /// 契约里给本端点的 400 声明了 <c>invalid_request_body</c>（应用层对「绑定失败」的
+    /// 既定错误码），但**查询串**这条路目前拿不到它：框架对查询串绑定失败只设一个
+    /// 状态码就返回（响应体是空的、没有 code），
+    /// 只有请求体绑定失败才会抛 BadHttpRequestException 进
+    /// <c>ApiExceptionHandler</c>。同样的缺口在 <c>/api/webhooks?unmask=</c> 上
+    /// 早就存在，不是本任务引入的。
+    /// </remarks>
+    [Fact]
+    public async Task Get_ideas_with_non_numeric_limit_returns_400()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/ideas?limit=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     /// <summary>建一条想法并返回它的 id。</summary>

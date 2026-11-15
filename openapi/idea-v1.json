@@ -468,7 +468,7 @@
             }
           },
           "400": {
-            "description": "请求失败（400）。响应体是 RFC 9457 的 ProblemDetails：扩展字段 code 是稳定的机器可读错误码，detail 是给人看的说明。本端点可能出现的 code：too_many_ideas（命中数超过单次返回上限，请收窄过滤条件）、invalid_pagination（limit 或 offset 超出允许范围）、invalid_status（status 参数只支持 all / open / done）、invalid_tag_mode（tagMode 参数只支持 or / and）。",
+            "description": "请求失败（400）。响应体是 RFC 9457 的 ProblemDetails：扩展字段 code 是稳定的机器可读错误码，detail 是给人看的说明。本端点可能出现的 code：too_many_ideas（命中数超过单次返回上限，请收窄过滤条件）、invalid_pagination（limit 或 offset 超出允许范围）、invalid_status（status 参数只支持 all / open / done）、invalid_tag_mode（tagMode 参数只支持 or / and）、invalid_request_body（请求体不是合法的 JSON（模型绑定阶段的失败））。",
             "content": {
               "application/problem+json": {
                 "schema": {
