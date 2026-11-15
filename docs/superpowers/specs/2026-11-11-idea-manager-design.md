@@ -444,7 +444,7 @@ public interface IEventHandler
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/ideas` | 查询，**不分页**，返回全部命中项的裸数组。参数：`projectId`（可空 = 全部）、`status`（`all`/`open`/`done`）、`tags`（逗号分隔）、`tagMode`（`or`/`and`）。命中数超过 `Api:MaxIdeasPerResponse`（默认 2000）时返回 400，提示收窄条件 |
+| GET | `/api/ideas` | 查询，返回命中项的裸数组。参数：`projectId`（可空 = 全部）、`status`（`all`/`open`/`done`）、`tags`（逗号分隔）、`tagMode`（`or`/`and`）。`limit`/`offset` **可选**：给了 `limit` 就只给那一页（往回翻历史，见 `specs/2026-11-15-backend-full-text-search-design.md` §11）；不给 `limit` 时命中数超过 `Api:MaxIdeasPerResponse`（默认 2000）返回 400，提示收窄条件 |
 | POST | `/api/ideas` | 创建 `{ projectId, content, title?, tags? }` |
 | PATCH | `/api/ideas/{id}` | 改 `{ title?, content? }` |
 | PUT | `/api/ideas/{id}/tags` | **覆盖式**设置标签，body `{ tags: [...] }` |
@@ -453,7 +453,7 @@ public interface IEventHandler
 | POST | `/api/ideas/{id}/restore` | 从回收站恢复 |
 
 
-> **不分页的理由**：排序恒为 `updated_at ASC`（新的在下），翻页方向天然别扭；而这是个个人工具，命中数通常在几百条量级，一次全量返回既简单又让 agent 解析省事。超过硬上限时要求收窄条件，而不是静默截断。
+> **默认不分页的理由**：排序恒为 `updated_at ASC`（新的在下），翻页方向天然别扭；而这是个个人工具，命中数通常在几百条量级，一次全量返回既简单又让 agent 解析省事。超过硬上限时要求收窄条件，而不是静默截断。后来还是加了**可选**分页（`limit`/`offset`，往回翻历史的无限滚动），见 `specs/2026-11-15-backend-full-text-search-design.md` §11。
 
 ### 13.3 批量
 
@@ -737,7 +737,7 @@ ProblemDetails，顶层带机器可读的 `code`，按 `code` 分支。
 
 | 决定 | 理由 |
 |---|---|
-| 列表接口**不分页**，全量返回裸数组，超过 2000 条返回 400 | 排序恒为 `updated_at ASC` 与「页码从哪一端翻」天然矛盾；个人工具量级不需要分页 |
+| 列表接口**默认不分页**（`limit` 缺省 = 全量返回裸数组，超过 2000 条返回 400）；`limit`/`offset` **可选**，给了就翻页（往回翻历史），见 `specs/2026-11-15-backend-full-text-search-design.md` §11 | 排序恒为 `updated_at ASC` 与「页码从哪一端翻」天然矛盾；个人工具量级不需要分页 —— 后来还是加了可选分页（无限滚动、往回翻历史） |
 | SSE **恒定全量推送**，过滤由**服务端**做（增量条目仍由前端近似判断 + 防抖重拉） | AND/OR 偏好存在各设备 `localStorage` —— 现在随请求发给服务端（`tagMode` 参数）；见 `specs/2026-11-15-backend-full-text-search-design.md` §13.1、§13.4 |
 | 事件**不参与** SQLite 事务，提交成功后才投递 | `Channel` 无法随事务回滚，否则产生幽灵事件 |
 | 事件总线**扇出**：每个 handler 一条独立通道 | `Channels` 是竞争消费，共读一条通道会各拿一半事件 |
