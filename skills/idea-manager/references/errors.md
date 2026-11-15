@@ -34,7 +34,7 @@
 | `invalid_content` | 想法正文为空或全是空白 | 补上正文再提交 |
 | `invalid_event_type` | 订阅的事件名不在已知事件类型里 | 用 `webhooks.md` 里那组事件名 |
 | `invalid_merge_selection` | 合并至少需要两条想法 | 至少选两条 |
-| `invalid_pagination` | limit / offset 超出允许范围 | 换小一点的 limit；offset 必须配 limit 一起给 |
+| `invalid_pagination` | limit / offset 不是整数，或超出允许范围 | limit 传 1..1000 的整数；offset 传非负整数，且必须配 limit 一起给 |
 | `invalid_project_name` | 项目名称为空或全是空白 | 补上名字 |
 | `invalid_reorder_ids` | 重排请求没有给出任何项目 id | 别发空的 reorder |
 | `invalid_request_body` | 请求体不是合法的 JSON（模型绑定阶段的失败） | 检查发出去的 body 是不是一个 JSON 文档 |

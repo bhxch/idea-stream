@@ -22,11 +22,18 @@ public static class IdeaEndpoints
         // （offset 从最新一端数）。
         // 不给 limit 时命中数超上限返回 400（不静默截断）；给了 limit 就只给那一页。
         app.MapGet("/api/ideas",
-            // limit / offset 绑成 int?（不是 string?）：契约里它们是 integer，
-            // 而 limit=abc 这种非数字值在进端点之前就绑定失败，
-            // 由框架统一回 invalid_request_body（不是 invalid_pagination）。
+            // limit / offset 绑成 string?（不是 int?）：自己解析、自己判范围，
+            // 非法一律 400 invalid_pagination（detail 说清楚收到的是什么）。
+            //
+            // 为什么不绑 int?：实测（跑真实应用）绑 int? 时 ?limit=abc 在参数绑定
+            // 阶段失败后，框架**只设一个 400 状态码就返回** —— 空 body、没有 code，
+            // 进不了 ApiExceptionHandler。agent 拿到的就是一个空响应。
+            // 这个应用里既有的查询参数（status / tagMode）也都是 string? + 自己解析
+            // + 自己的错误码 —— 跟它们一致。
+            //
+            // 代价：契约里这两个参数的 schema 是 string 而不是 integer。
             (string? projectId, string? status, string? tags, string? tagMode,
-             string? q, int? limit, int? offset, IdeaService service) =>
+             string? q, string? limit, string? offset, IdeaService service) =>
                 ApiResults.Run(() =>
                 {
                     var query = IdeaService.ParseQuery(projectId, status, tags, tagMode, q, limit, offset);
@@ -39,16 +46,15 @@ public static class IdeaEndpoints
                         IdeaJsonContext.Default.ListIdeaDto);
                 }))
             .Produces<List<IdeaDto>>(StatusCodes.Status200OK)
+            // ⚠️ 这里**不**声明 invalid_request_body：那是**请求体**绑定失败的码，
+            // 而 GET /api/ideas 没有请求体、查询串绑定失败又拿不到它（见上）。
+            // 声明一个真不会返回的码，契约就不准了。
             .ProducesApiProblem(
                 StatusCodes.Status400BadRequest,
                 "too_many_ideas",
                 "invalid_pagination",
                 "invalid_status",
-                "invalid_tag_mode",
-                // limit / offset 绑成 int? 的代价：?limit=abc 这种非数字值
-                // 在进端点之前就绑定失败，框架统一回 invalid_request_body ——
-                // 这个码本端点真会返回，契约里就得写得出它（agent 照契约分支处理）。
-                "invalid_request_body");
+                "invalid_tag_mode");
 
         app.MapPost("/api/ideas", (CreateIdeaRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(service.Create(

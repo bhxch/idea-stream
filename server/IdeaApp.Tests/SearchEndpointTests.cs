@@ -383,18 +383,20 @@ public sealed class SearchEndpointTests
     }
 
     /// <summary>
-    /// 非数字的 limit 在进端点**之前**就被框架拒了：400。
+    /// 非数字的 limit → 400 <c>invalid_pagination</c>，而且**带 code**。
     /// </summary>
     /// <remarks>
-    /// 契约里给本端点的 400 声明了 <c>invalid_request_body</c>（应用层对「绑定失败」的
-    /// 既定错误码），但**查询串**这条路目前拿不到它：框架对查询串绑定失败只设一个
-    /// 状态码就返回（响应体是空的、没有 code），
-    /// 只有请求体绑定失败才会抛 BadHttpRequestException 进
-    /// <c>ApiExceptionHandler</c>。同样的缺口在 <c>/api/webhooks?unmask=</c> 上
-    /// 早就存在，不是本任务引入的。
+    /// 实测（跑真实应用）：这两个参数绑成 <c>int?</c> 时，<c>?limit=abc</c>
+    /// 在参数绑定阶段失败后，框架**只设一个 400 状态码就返回** ——
+    /// 空 body、没有 code，进不了 <c>ApiExceptionHandler</c>。
+    /// agent 拿到的就是一个空响应，连「是哪儿错了」都读不出来。
+    /// <para>
+    /// 现在绑的是 <c>string?</c>，由服务层自己解析、自己判范围 ——
+    /// 非法一律 <c>invalid_pagination</c> 并带说得清楚的 detail。
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task Get_ideas_with_non_numeric_limit_returns_400()
+    public async Task Get_ideas_with_non_numeric_limit_returns_400_code_invalid_pagination()
     {
         using var factory = new TestAppFactory();
         using var client = factory.CreateClient();
@@ -402,6 +404,29 @@ public sealed class SearchEndpointTests
         var response = await client.GetAsync("/api/ideas?limit=abc");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("invalid_pagination", problem.GetProperty("code").GetString());
+
+        // detail 说清楚收到的是什么。
+        Assert.Contains("limit", problem.GetProperty("detail").GetString()!);
+    }
+
+    /// <summary>offset 同理：不是数字也是 <c>invalid_pagination</c>。</summary>
+    [Fact]
+    public async Task Get_ideas_with_non_numeric_offset_returns_400_code_invalid_pagination()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/ideas?offset=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("invalid_pagination", problem.GetProperty("code").GetString());
+
+        Assert.Contains("offset", problem.GetProperty("detail").GetString()!);
     }
 
     /// <summary>建一条想法并返回它的 id。</summary>
@@ -448,7 +473,14 @@ public sealed class SearchEndpointTests
     {
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
 
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+
+        // body 不能是空的：框架对「查询串绑定失败」只设一个 400 状态码就返回，
+        // 响应体是空的、没有 code —— agent 连「是哪儿错了」都读不出来。
+        // 这条断言给那个坑守着。
+        Assert.NotEmpty(body);
+
+        using var document = JsonDocument.Parse(body);
 
         // JsonElement 在文档释放后失效，复制一份出去。
         return document.RootElement.Clone();

@@ -1,3 +1,4 @@
+using System.Globalization;
 using IdeaApp.Contracts;
 using IdeaApp.Domain;
 using IdeaApp.Infrastructure;
@@ -50,12 +51,15 @@ public sealed class IdeaService(
     /// 中文等价于子串（标点与空白不挡路），英文是词级。
     /// 切不出词元的串按「没有关键词」处理（见 <see cref="ParseKeyword"/>）。
     /// </param>
-    /// <param name="limit">单页最多几条；null = 不限。</param>
-    /// <param name="offset">已经翻过多少条（从**最新**一端数）。</param>
+    /// <param name="limit">单页最多几条（字符串）；null = 不限。</param>
+    /// <param name="offset">已经翻过多少条（从**最新**一端数，字符串）。</param>
     /// <remarks>
     /// <para>
-    /// 分页参数的**合法性**由 <see cref="ParseQuery"/> 判（越界 → 400
-    /// <c>invalid_pagination</c>）：请求参数在一个入口里收齐。
+    /// 分页参数是**字符串**：自己解析、自己判范围，非法一律 400
+    /// <c>invalid_pagination</c>。不能绑成 <c>int?</c> —— 实测（跑真实应用）
+    /// 绑 <c>int?</c> 时 <c>?limit=abc</c> 在参数绑定阶段失败后，
+    /// 框架**只设一个 400 状态码就返回**：空 body、没有 code，
+    /// 进不了 <see cref="ApiException"/> 的统一出口。
     /// </para>
     /// <para>
     /// 给了 <paramref name="limit"/> 就**不再报 <c>too_many_ideas</c>**：
@@ -67,7 +71,7 @@ public sealed class IdeaService(
     /// 前端按「返回条数 == limit+1」判定没更多，后面的命中就永远看不到了。
     /// </para>
     /// </remarks>
-    public IReadOnlyList<IdeaDto> List(IdeaQuery query, string? keyword, int? limit, int? offset)
+    public IReadOnlyList<IdeaDto> List(IdeaQuery query, string? keyword, string? limit, string? offset)
     {
         // 关键词在这里再归一化一次：直接调本方法的人（不经 ParseKeyword）
         // 传的可能是「切不出词元」的串 —— 那不是关键词。
@@ -76,11 +80,15 @@ public sealed class IdeaService(
         // 一个空的 "matches": []，而不带 q 的响应没有这个键。
         var effectiveKeyword = ParseKeyword(keyword);
 
+        // 分页参数在这里也要解析一次（切片要的是数字）：规则只有一份，
+        // 见 ParsePagination。
+        var (pageLimit, pageOffset) = ParsePagination(limit, offset);
+
         var ideas = repo.List(query, effectiveKeyword);
 
         IReadOnlyList<Idea> page;
 
-        if (limit is null)
+        if (pageLimit is null)
         {
             var max = options.Value.Api.MaxIdeasPerResponse;
 
@@ -96,8 +104,8 @@ public sealed class IdeaService(
         {
             // 往回翻历史：offset 从**最新**一端数。
             // ideas 是 updated_at ASC —— 最老的在 [0]，最新的在 [Count-1]。
-            var end = Math.Max(0, ideas.Count - Math.Max(0, offset ?? 0));
-            var start = Math.Max(0, end - limit.Value);
+            var end = Math.Max(0, ideas.Count - pageOffset);
+            var start = Math.Max(0, end - pageLimit.Value);
             page = ideas.Skip(start).Take(end - start).ToList();
         }
 
@@ -131,8 +139,8 @@ public sealed class IdeaService(
     /// 本方法只返回**查询条件**，带不出关键词，所以归一化与取值分成两步。
     /// </para>
     /// </param>
-    /// <param name="limit">单页最多几条；范围 1..1000，越界 400。</param>
-    /// <param name="offset">已经翻过多少条（从最新一端数）。</param>
+    /// <param name="limit">单页最多几条（字符串）；范围 1..1000，非法 → 400。</param>
+    /// <param name="offset">已经翻过多少条（从最新一端数，字符串）。</param>
     /// <remarks>
     /// 放在服务层而不是 <see cref="IdeaQuery"/> 那边：查询规格（<see cref="IdeaQuery"/>）
     /// 与匹配判定（<see cref="IdeaFilter"/>）是纯领域概念，留在 <c>Domain</c> 层，
@@ -145,11 +153,12 @@ public sealed class IdeaService(
         string? tags,
         string? tagMode,
         string? q,
-        int? limit,
-        int? offset)
+        string? limit,
+        string? offset)
     {
-        // 分页参数先判：越界必须 400 ——「没给 limit」与「limit 给错了」是两件事。
-        ValidatePagination(limit, offset);
+        // 分页参数先判：不是数字、越界、offset 单独给 —— 一律 400 invalid_pagination。
+        // 「没给 limit」与「limit 给错了」是两件事，不能混成一件。
+        ParsePagination(limit, offset);
 
         return new IdeaQuery(
             NormalizeParameter(projectId),
@@ -912,38 +921,83 @@ public sealed class IdeaService(
     }
 
     /// <summary>
-    /// 分页参数的合法性：越界就 400（<c>invalid_pagination</c>）。
+    /// 解析并校验分页参数。规则**只有这一份**。
     /// </summary>
-    /// <param name="limit">单页最多几条；null = 不限。</param>
-    /// <param name="offset">已经翻过多少条（从最新一端数）；null = 0。</param>
+    /// <param name="limit">单页最多几条（字符串）；null / 空串 = 不限。</param>
+    /// <param name="offset">已经翻过多少条（从最新一端数，字符串）；null / 空串 = 0。</param>
+    /// <returns>解析后的 (limit, offset)。</returns>
     /// <remarks>
+    /// 三种非法情形一律 400 <c>invalid_pagination</c>，detail 说清楚收到的是什么：
+    /// 不是数字、<c>limit</c> 不在 1..1000、<c>offset</c> 为负、
+    /// 以及 <c>offset &gt; 0</c> 而 <c>limit</c> 缺省（翻历史必须知道翻多宽）。
+    /// <para>
+    /// 为什么自己解析而不绑成 <c>int?</c>：绑 <c>int?</c> 时 <c>?limit=abc</c>
+    /// 在参数绑定阶段失败，框架**只设一个 400 状态码就返回** ——
+    /// 空 body、没有 code，进不了统一出口（<see cref="ApiException"/>）。
+    /// agent 拿到的就是一个空响应，连「是哪儿错了」都读不出来。
+    /// 这个应用里既有的查询参数（<c>status</c> / <c>tagMode</c>）也都是
+    /// <c>string?</c> + 自己解析 + 自己的错误码 —— 跟它们一致。
+    /// </para>
+    /// <para>
     /// 「没给 limit」与「limit 给错了」是两件事：没给是「给我全部」
     /// （超上限报 <c>too_many_ideas</c>），给错了就得明说，
     /// 不能默默当成「没给」。
-    /// <para>
-    /// <c>offset</c> 单独给没有意义：翻历史必须知道翻多宽，
-    /// 否则客户端说不清自己要的是哪一段。
     /// </para>
     /// </remarks>
-    private static void ValidatePagination(int? limit, int? offset)
+    private static (int? Limit, int Offset) ParsePagination(string? limit, string? offset)
     {
-        if (limit is < 1 or > 1000)
+        var parsedLimit = ParsePageNumber(limit, "limit");
+        var parsedOffset = ParsePageNumber(offset, "offset") ?? 0;
+
+        if (parsedLimit is < 1 or > 1000)
         {
             throw new ApiException(400, "invalid_pagination",
                 $"limit 必须在 1..1000 之间，收到：{limit}");
         }
 
-        if (offset is < 0)
+        if (parsedOffset < 0)
         {
             throw new ApiException(400, "invalid_pagination",
                 $"offset 不能是负数，收到：{offset}");
         }
 
-        if (offset > 0 && limit is null)
+        if (parsedOffset > 0 && parsedLimit is null)
         {
             throw new ApiException(400, "invalid_pagination",
                 "offset 必须与 limit 一起给（offset 单独给没有意义）");
         }
+
+        return (parsedLimit, parsedOffset);
+    }
+
+    /// <summary>
+    /// 解析一个分页数字。空（null / 空串 / 全是空白）= 没给；
+    /// 不是数字 → 400 <c>invalid_pagination</c>。
+    /// </summary>
+    /// <param name="value">请求里的原始字符串。</param>
+    /// <param name="name">参数名（写进 detail，让调用方知道是哪个参数错了）。</param>
+    private static int? ParsePageNumber(string? value, string name)
+    {
+        var trimmed = value?.Trim();
+
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return null;
+        }
+
+        if (!long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+        {
+            throw new ApiException(400, "invalid_pagination",
+                $"{name} 必须是整数，收到：{value}");
+        }
+
+        // long 装得下的都先收下，范围判断交给调用方（limit 1..1000 / offset >= 0）。
+        if (parsed > int.MaxValue || parsed < int.MinValue)
+        {
+            throw new ApiException(400, "invalid_pagination", $"{name} 太大了，收到：{value}");
+        }
+
+        return (int)parsed;
     }
 
     /// <summary>
