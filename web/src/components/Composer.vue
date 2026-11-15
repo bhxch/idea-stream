@@ -70,30 +70,34 @@ function onKeydown(event: KeyboardEvent): void {
 </template>
 
 <style scoped>
+/*
+ * 输入区只是一行布局：输入框 + 「记下」按钮。
+ *
+ * 边框**只有一层**，就在输入框自己身上（.input）。
+ * 原来这里（.composer）与输入框各画一层同色边框，两者之间只隔 8px 内边距，
+ * 视觉上是「框里套框」—— 两层同色圆角框套在一起，谁也说不清哪层是输入框。
+ *
+ * 边框放在输入框上还有第二个好处：浏览器画的原生缩放手柄
+ * （textarea 右下角那两道斜线）落在输入框自己的右下角，读得出是「拖这里放大」。
+ * 边框若只留在 .composer 上，手柄就悬在输入框与按钮之间的空当里，
+ * 像按钮旁残留的坏字符。
+ */
 .composer {
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
 }
 
 /*
- * 输入框。
+ * 输入框：唯一的一层边框在这里。
  *
- * 原来这里把边框与底色抹掉（border: none; background: transparent），
- * 输入框整个融进 composer 的面板里 —— 浏览器画的原生缩放手柄
- * （textarea 右下角那两道斜线）就悬在「记下」按钮左边 8px 的地方，
- * 看着像按钮旁残留的坏字符，而不像「拖这里放大」。
- *
- * 保留全局表单控件的边框与底色（见 styles/base.css），
- * 手柄就落在输入框自己的右下角，读得出是缩放角。
+ * 边框与底色跟全局表单控件一致（见 styles/base.css），
+ * 这里再写一遍是为了让「就这一层边框」在组件里看得见、也测得到。
  */
 .input {
   flex: 1;
   resize: vertical;
+  border: 1px solid var(--border);
 }
 
 .input:focus {
