@@ -95,6 +95,55 @@ public sealed class SearchIndexTests : IDisposable
     }
 
     [Fact]
+    public void EnsureIndexed_writes_the_same_index_text_as_an_incremental_upsert()
+    {
+        // 两条路径写的是同一件事：老库回填与增量写必须产出**逐字节相同**的索引文本。
+        // 不然 Task 3 一引入增量写，两条路径立刻分叉（回填出来的行搜得到，
+        // 增量写出来的行搜不到，或者反过来），而且分叉点极难查。
+        InsertProject("p1", "工作");
+        InsertIdea("i1", "p1", null, "手冲记录");
+
+        // 标签**故意按与排序相反的顺序**插入：回填必须自己按名称排序
+        // （group_concat 自己不保序），不然写出来的文本就取决于插入顺序。
+        LinkTag("i1", InsertTag("手冲"));
+        LinkTag("i1", InsertTag("咖啡"));
+
+        // 回填路径。
+        SearchIndexInitializer.EnsureIndexed(Database);
+        var backfilled = ReadIdeaFtsTags(RowIdOfIdea("i1"));
+
+        // 增量写路径：同样的内容、同样顺序的标签名。
+        //
+        // ⚠️ 标签顺序要跟回填一致：回填里标签名是**按名称排序**后拼的
+        // （显式 ORDER BY name COLLATE NOCASE —— group_concat 自己不保序），
+        // 增量写这条路也得按同样的顺序拼，否则同一份数据会写出两种文本。
+        using var connection = Database.Open();
+        SearchIndex.UpsertIdea(
+            connection, null, "i1", null, "手冲记录", new[] { "咖啡", "手冲" }, "工作");
+
+        // 回填写出的文本（顺带钉住「标签名排序后拼」的约定）。
+        Assert.Equal("咖 啡 手 冲", backfilled);
+
+        // 增量写之后，两条路径的产物完全一样。
+        Assert.Equal(backfilled, ReadIdeaFtsTags(RowIdOfIdea("i1")));
+    }
+
+    [Fact]
+    public void EnsureIndexed_indexes_tags_with_the_tag_id_as_rowid()
+    {
+        InsertProject("p1", "工作");
+        InsertIdea("i1", "p1", null, "手冲记录");
+        var tagId = InsertTag("咖啡");
+        LinkTag("i1", tagId);
+
+        SearchIndexInitializer.EnsureIndexed(Database);
+
+        // tag_fts 的 rowid 必须等于 tag.id（规格 §8.1 的 rowid 映射）——
+        // 索引行与字典行靠它一一对应。
+        Assert.Equal(new[] { tagId }, TagFtsRowIds());
+    }
+
+    [Fact]
     public void UpsertIdea_makes_the_idea_findable()
     {
         InsertProject("p1", "工作");
@@ -244,6 +293,33 @@ public sealed class SearchIndexTests : IDisposable
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT rowid FROM idea_fts WHERE idea_fts MATCH $q;";
         command.Parameters.AddWithValue("$q", matchExpression);
+
+        var rowIds = new List<long>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rowIds.Add(reader.GetInt64(0));
+        }
+
+        return rowIds;
+    }
+
+    /// <summary>读 idea_fts 某行的 tags 列**原始文本**（不是 token 化的结果）。</summary>
+    private string ReadIdeaFtsTags(long rowId)
+    {
+        using var connection = Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT tags FROM idea_fts WHERE rowid = $rowId;";
+        command.Parameters.AddWithValue("$rowId", rowId);
+        return (string?)command.ExecuteScalar() ?? string.Empty;
+    }
+
+    /// <summary>读 tag_fts 的全部 rowid（规格 §8.1：它应当等于 tag.id）。</summary>
+    private IReadOnlyList<long> TagFtsRowIds()
+    {
+        using var connection = Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT rowid FROM tag_fts ORDER BY rowid;";
 
         var rowIds = new List<long>();
         using var reader = command.ExecuteReader();

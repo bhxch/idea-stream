@@ -206,7 +206,18 @@ app.Services.GetRequiredService<SqliteDatabase>().Initialize();
 
 // 老库没有全文索引，靠索引版本号在启动时整体回填一次（版本对得上就什么都不做）。
 // 回填失败直接让启动失败：索引与业务数据不一致时搜索给的是**错结果**，那比起不来危险得多。
-SearchIndexInitializer.EnsureIndexed(app.Services.GetRequiredService<SqliteDatabase>());
+var database = app.Services.GetRequiredService<SqliteDatabase>();
+try
+{
+    SearchIndexInitializer.EnsureIndexed(database);
+}
+catch (Exception ex)
+{
+    // 崩溃转储不是日志：运维要看到的是一条**带级别、带库路径**的日志，
+    // 而不是让人对着「应用起不来」猜（规格 §10.4）。
+    app.Logger.LogCritical(ex, "全文索引重建失败（库：{DatabasePath}），服务启动中止", database.DatabasePath);
+    throw;
+}
 
 app.MapHealthEndpoints();
 app.MapProjectEndpoints();

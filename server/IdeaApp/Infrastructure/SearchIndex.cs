@@ -18,9 +18,13 @@ namespace IdeaApp.Infrastructure;
 /// <c>tag_fts.rowid = tag.id</c>。这三张表都没有 <c>WITHOUT ROWID</c>，有隐式 rowid。
 /// 索引行与业务行靠 rowid 一一对应，删除时才能精确删掉对应的那一行。
 ///
-/// <strong>事务</strong>：索引写必须与业务写在<strong>同一个事务</strong>里（规格 §10.1），
-/// 所以连接上有活动事务时，务必把同一个事务传进来 ——
-/// 传 null 而连接上正有事务时，Microsoft.Data.Sqlite 会直接抛异常（而不是悄悄写在事务之外）。
+/// <strong>事务</strong>：索引写必须与业务写在<strong>同一个事务</strong>里（规格 §10.1）。
+/// Microsoft.Data.Sqlite 的实测行为（10.0.14 / SQLite 3.53.3）：
+/// 连接上有 pending transaction 时，命令若<strong>不设置</strong> Transaction 属性，会隐式加入该事务
+/// （不会漏到事务外）；但<strong>显式</strong>赋 null 会抛 InvalidOperationException
+/// （"Execute requires the command to have a transaction object..."）。
+/// 所以这里一律显式写 <c>command.Transaction = transaction;</c>：
+/// 传对了语义与隐式加入一致，传错了（该传 null 却连着有事务）立刻炸，不会静默走偏。
 /// </summary>
 public static class SearchIndex
 {
@@ -69,8 +73,12 @@ public static class SearchIndex
     /// 先删后插而不是 UPDATE：改动内容后不会残留旧 token —— UPDATE 只能改列，
     /// 而「先删干净再插新的」在语义上就是「这一行的索引就是当前内容」。
     /// <para>
-    /// 想法行不存在时**静默跳过**（不抛异常）：索引行是给业务行配套的，
-    /// 业务行没了就没有索引行可写；为这种顺序问题抛异常，反而会把整批写入打断。
+    /// ⚠️ <strong>调用方必须保证 idea 行已存在</strong>：本方法不做存在性断言，
+    /// idea 行不在时**静默跳过**（不抛异常、不记日志）。
+    /// 静默是有代价的 —— 「先调本方法、后插 idea 行」这种顺序错误会让索引**悄悄少一条**，
+    /// 没有任何异常、没有任何日志，搜索结果只是少了一行，很难查。
+    /// 索引行是给业务行配套的：业务行没了就没有索引行可写，
+    /// 为这种顺序问题抛异常反而会把整批写入打断。
     /// </para>
     /// </remarks>
     public static void UpsertIdea(
