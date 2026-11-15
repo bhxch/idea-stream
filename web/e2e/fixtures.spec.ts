@@ -54,3 +54,26 @@ test('复位：用例之间互不干扰（上一个用例造的数据看不见�
   expect(await api.listIdeas()).toEqual([]);
   expect((await api.listProjects()).map((p) => p.name)).toEqual(['收件箱']);
 });
+
+test('复位：项目删掉之后，它的项目级 webhook 不会变成孤儿', async ({ api, seed }) => {
+  const project = await seed.project('会被删掉的项目');
+  const webhook = await seed.webhook({
+    name: '项目级 webhook',
+    scope: 'project',
+    projectId: project.id,
+  });
+  // 项目级的 webhook 创建时就是**启用**的。
+  expect(webhook.enabled).toBe(true);
+
+  // 项目一软删就从 GET /api/projects 里消失了 —— 但 webhook 还在
+  // （GET /api/webhooks?projectId=<已删项目id> 仍然列得出来）。
+  await api.deleteProject(project.id);
+  expect((await api.listProjects()).map((p) => p.id)).not.toContain(project.id);
+  expect(await api.listWebhooks(project.id)).toHaveLength(1);
+
+  await api.reset();
+
+  // 复位之后那个 webhook 不在了：不然它会一直启用着，
+  // 每次复位都给死地址投递，把投递队列塞满。
+  expect(await api.listWebhooks(project.id)).toEqual([]);
+});

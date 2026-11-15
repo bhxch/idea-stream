@@ -129,7 +129,7 @@ export interface ListIdeasParams {
  * 应用 API 的薄封装。
  *
  * 全部走 Playwright 的 `request` 夹具 —— 它带着配置里的 baseURL
- * （http://127.0.0.1:5299），所以路径都写成 '/api/...'。
+ * （本轮的地址，端口每轮都可能是不同的），所以路径都写成 '/api/...'。
  */
 export class IdeaApi {
   constructor(private readonly request: APIRequestContext) {}
@@ -295,21 +295,26 @@ export class IdeaApi {
    * 把库恢复干净。走 API，不碰数据库文件。
    *
    * 顺序是有讲究的：
-   * 1. 先把回收站里的东西**恢复**回来 —— 回收站只进不出的坏处是
+   * 1. 先删 webhook（这个是真删）。**必须在删项目之前**：
+   *    项目一软删就不再出现在 `GET /api/projects` 里，只顺着活动项目查的话，
+   *    它的 webhook 会漏掉 —— 那些钩子一直启用着、越积越多，每次复位
+   *    都给死地址投递，把投递队列塞满（还会拖慢别的用例）。
+   *    放在最前面还有一层好处：后面的恢复/合并/删除都会发事件，
+   *    钩子先没了，那些事件就没有投递对象。
+   * 2. 再把回收站里的东西**恢复**回来 —— 回收站只进不出的坏处是
    *    「删过的东西会一直堆在那儿」，恢复一遍等于把上一轮的东西平账。
    *    恢复完之后所有项目、想法都回到活动状态。
-   * 2. 再清想法：同一个项目里的想法用合并**硬删**（行真的没了，标签链接
+   * 3. 再清想法：同一个项目里的想法用合并**硬删**（行真的没了，标签链接
    *    随外键级联清掉），只剩一条合并产物，把它清空标签后软删 ——
    *    残渣统一成标题为「e2e-reset」的一条，形态可预测。
-   * 3. 再删项目（收件箱除外）：项目的想法随项目一起进回收站。
-   * 4. webhook 全删（这个是真删）。
+   * 4. 再删项目（收件箱除外）：项目的想法随项目一起进回收站。
    * 5. 设置项复位成默认值。
    */
   async reset(): Promise<void> {
+    await this.clearWebhooks();
     await this.restoreTrash();
     await this.clearIdeas();
     await this.clearProjects();
-    await this.clearWebhooks();
     await this.setSetting('project.sort_mode', 'recent');
   }
 
@@ -382,13 +387,33 @@ export class IdeaApi {
     }
   }
 
-  /** 删掉所有 webhook（全局的与项目级的都要删）。 */
+  /**
+   * 删掉所有 webhook（全局的与项目级的都要删）。
+   *
+   * 项目级的要**按项目逐个查**：`GET /api/webhooks` 不带 projectId 时只回全局的。
+   * 而项目一软删就从 `GET /api/projects` 里消失了 —— 只顺着活动项目查的话，
+   * 被删项目的钩子会漏掉（它们还启用着，每次复位都往死地址投递）。
+   * 所以除了活动项目，**回收站里的项目**也要查一遍：
+   * `GET /api/webhooks?projectId=<已删项目id>` 仍然列得出来。
+   *
+   * 复位时它跑在「恢复回收站」**之前** —— 那时回收站里还留着上一轮删掉的项目，
+   * 它们的项目级钩子正在这一段里被清掉。
+   */
   private async clearWebhooks(): Promise<void> {
     for (const webhook of await this.listWebhooks()) {
       await this.deleteWebhook(webhook.id);
     }
+    const projectIds = new Set<string>();
     for (const project of await this.listProjects()) {
-      for (const webhook of await this.listWebhooks(project.id)) {
+      projectIds.add(project.id);
+    }
+    for (const entry of await this.listTrash()) {
+      if (entry.kind === 'project' && entry.project) {
+        projectIds.add(entry.project.id);
+      }
+    }
+    for (const projectId of projectIds) {
+      for (const webhook of await this.listWebhooks(projectId)) {
         await this.deleteWebhook(webhook.id);
       }
     }
