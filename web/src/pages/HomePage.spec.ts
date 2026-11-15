@@ -2431,6 +2431,36 @@ describe('HomePage', () => {
     wrapper.unmount();
   });
 
+  it('往回翻时请求期间到达的内容不算进视口的修正', async () => {
+    // 往回翻的这一页卡住：好在它卡着的时候别处来了一条。
+    const releaseOlder = mockPendingOlderIdeas();
+
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    // jsdom 不做布局：自己钉上滚动相关的高度（每条 300px，见 makeScrollable）。
+    const scroller = wrapper.get('.home__scroll').element as HTMLElement;
+    makeScrollable(scroller, 0);
+
+    triggerHistorySentinel();
+    await flushPromises();
+
+    // 请求还在飞的时候，列表底部多了一条（模拟 SSE 追加一条新内容）。
+    ideas.value = [
+      ...ideas.value,
+      { ...idea, id: 'idea-new', updatedAt: '2026-11-21T10:00:00Z' },
+    ];
+    await flushPromises();
+
+    releaseOlder();
+    await flushPromises();
+
+    // 视口的修正只该算「插到上面去的那一页」：请求期间到达的内容本来就在
+    // 下面，不该把视口推走 —— 算进去的话视口会偏一条的高度。
+    expect(scroller.scrollTop).toBe(PAGE_SIZE * 300);
+    wrapper.unmount();
+  });
+
   it('往回翻的哨兵在消息流的最上面，观察的是那个滚动容器', async () => {
     mockPagedIdeas(PAGE_SIZE + 1);
 

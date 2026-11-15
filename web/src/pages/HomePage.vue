@@ -941,9 +941,7 @@ async function loadOlder(): Promise<void> {
   if (loadingMore.value || !hasMore.value) {
     return;
   }
-  // prepend 之前先量一次内容高度：之后靠它算出「多了多少」，好把视口钉回原处。
   const container = scrollContainer.value;
-  const before = container?.scrollHeight ?? 0;
   // 过滤条件先记下来：等这一页的时候条件可能变（见下面）。
   const requestedFilter = activeFilter.value;
   let older: Idea[];
@@ -973,6 +971,14 @@ async function loadOlder(): Promise<void> {
     releaseOlderIdeas(older.length);
     return;
   }
+  // prepend 之前量一次内容高度：之后靠它算出「多了多少」，好把视口钉回原处。
+  //
+  // 量在**赋值之前**（而不是请求之前）：这一来一回期间到达的内容（SSE 在
+  // 底部追加的条目、加载提示的出现与消失）也得算进「之前的高度」—— 不然
+  // 差额里会多出那部分，视口就偏了。先 `await nextTick()` 把待渲染的改动
+  // 落进 DOM，量到的才是真的高度。
+  await nextTick();
+  const before = container?.scrollHeight ?? 0;
   ideas.value = [...older, ...ideas.value];
   // 必须等 DOM 更新完再量：重渲染之前量到的还是旧高度，补出来的位置是错的。
   await nextTick();
