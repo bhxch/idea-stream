@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { apiSend } from '../api/client';
 import type { Project } from '../api/types';
 import PageNav from '../components/PageNav.vue';
@@ -18,6 +18,22 @@ import type { ProjectSortMode } from '../stores/projects';
 
 /** 新建项目的输入框。 */
 const newName = ref('');
+
+/**
+ * 内置收件箱的项目 id。
+ *
+ * 后端初始化数据库时写死这一行（`SqliteDatabase` 里 `'inbox'` / 「收件箱」），
+ * 而且它删不掉（`ProjectService` 对 inbox 的删除直接抛 400 `inbox_not_deletable`）。
+ *
+ * 所以项目列表里**永远**至少有一项：判「空」不能看列表长度，
+ * 得看「除收件箱外还有没有别的项目」。
+ */
+const INBOX_PROJECT_ID = 'inbox';
+
+/** 除收件箱外还有几个项目（0 = 用户还没建过自己的项目）。 */
+const otherProjectCount = computed(
+  () => projects.value.filter((project) => project.id !== INBOX_PROJECT_ID).length,
+);
 
 /** 正在改名的项目 id（`null` 表示没在改名）。 */
 const editingId = ref<string | null>(null);
@@ -284,6 +300,20 @@ onMounted(() => {
             {{ formatRelativeTime(project.lastActivityAt) }}
           </span>
           <!--
+            进「项目级 webhook」页的入口。
+
+            那个页面（/projects/:id/webhooks）在应用里**没有别的入口** ——
+            只能手敲 URL 到。所以每个项目行都放一个。
+          -->
+          <RouterLink
+            class="projects__webhook"
+            :to="`/projects/${project.id}/webhooks`"
+            :title="`项目级 Webhook：${project.name}`"
+            aria-label="项目级 Webhook"
+          >
+            Webhook
+          </RouterLink>
+          <!--
             两个操作按钮是一组：窄屏换行时不能被拆开（「改名」留在上一行、
             「删除」孤零零掉到下一行左下角）。
           -->
@@ -317,7 +347,16 @@ onMounted(() => {
       </li>
     </ul>
 
-    <p v-if="projects.length === 0" class="projects__empty">还没有项目。</p>
+    <!--
+      空状态：**除收件箱外**还没有别的项目。
+
+      列表里永远有收件箱那一项（后端写死的，删不掉），
+      所以「列表长度为 0」这个判据是死代码 —— 用户建好第一个项目后
+      反而什么引导都看不到。
+    -->
+    <p v-if="otherProjectCount === 0" class="projects__empty">
+      还没有其它项目。在上面的输入框里新建一个吧。
+    </p>
   </main>
 </template>
 
@@ -422,6 +461,23 @@ onMounted(() => {
 .projects__count,
 .projects__activity {
   color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/*
+ * 项目级 webhook 页的入口（跟在这一行的信息后面，别跟「改名」「删除」挤在一起 ——
+ * 那两个按钮是一组，窄屏换行时不能被拆开）。
+ *
+ * 颜色用全局链接色（accent）—— 它是个链接，得看得出能点。
+ *
+ * 点按目标跟同一行里的按钮一样大（≥32×32，手机上才点得中）：
+ * 12px 的文字链接只有约 19px 高，手指点不中。
+ */
+.projects__webhook {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
   font-size: 12px;
   white-space: nowrap;
 }

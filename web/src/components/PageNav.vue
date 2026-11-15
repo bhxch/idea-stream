@@ -5,12 +5,17 @@ import { useRoute } from 'vue-router';
 const route = useRoute();
 
 /**
- * 当前在哪个管理页。
+ * 当前在哪个页面。
  *
  * 高亮自己算，不靠 `router-link-active`：那个是**前缀匹配**，
  * 项目级 webhook 页（/projects/:id/webhooks）会把「项目」也点亮，
  * 而「Webhook」反倒不亮 —— 与用户以为的正好相反。
+ *
+ * `aria-current` 也跟着高亮走（两处同一个判据）：
+ * vue-router 只在「完全匹配」时给链接加 `aria-current="page"`，
+ * 项目级 webhook 页上它一个都不加 —— 读屏软件就不知道当前在哪一页了。
  */
+const isHome = computed(() => route.path === '/');
 const isProjects = computed(() => route.path === '/projects');
 const isTrash = computed(() => route.path === '/trash');
 /** 项目级 webhook 页也算 webhook 页。 */
@@ -23,15 +28,43 @@ const isWebhooks = computed(() => route.path.endsWith('/webhooks'));
 
     这几个页面（项目管理 / 回收站 / webhook）之间没有别的入口，
     少了这排链接就只有一个页面能被别人找到。
+
+    第一个入口是「想法」—— 回主列表页（/）。
+    管理页之间跳得再顺，也得有一条路回想法列表：
+    不然进到 /projects、/trash、/webhooks 之后，
+    整页上就没有任何链接指回想法列表，只能靠浏览器后退。
   -->
   <nav class="page-nav" aria-label="管理">
-    <RouterLink class="page-nav__link" :class="{ 'is-active': isProjects }" to="/projects">
+    <RouterLink
+      class="page-nav__link page-nav__home"
+      :class="{ 'is-active': isHome }"
+      :aria-current="isHome ? 'page' : undefined"
+      to="/"
+    >
+      想法
+    </RouterLink>
+    <RouterLink
+      class="page-nav__link"
+      :class="{ 'is-active': isProjects }"
+      :aria-current="isProjects ? 'page' : undefined"
+      to="/projects"
+    >
       项目
     </RouterLink>
-    <RouterLink class="page-nav__link" :class="{ 'is-active': isTrash }" to="/trash">
+    <RouterLink
+      class="page-nav__link"
+      :class="{ 'is-active': isTrash }"
+      :aria-current="isTrash ? 'page' : undefined"
+      to="/trash"
+    >
       回收站
     </RouterLink>
-    <RouterLink class="page-nav__link" :class="{ 'is-active': isWebhooks }" to="/webhooks">
+    <RouterLink
+      class="page-nav__link"
+      :class="{ 'is-active': isWebhooks }"
+      :aria-current="isWebhooks ? 'page' : undefined"
+      to="/webhooks"
+    >
       Webhook
     </RouterLink>
   </nav>

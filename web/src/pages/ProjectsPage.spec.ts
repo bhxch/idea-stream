@@ -47,6 +47,22 @@ const projectList: Project[] = [
   },
 ];
 
+/**
+ * 内置收件箱。
+ *
+ * 后端初始化时写死的一行（`SqliteDatabase` 里 `'inbox'` / 「收件箱」），
+ * 而且删不掉 —— 所以项目列表里永远有它。
+ */
+const inboxProject: Project = {
+  id: 'inbox',
+  name: '收件箱',
+  sortOrder: 0,
+  ideaCount: 2,
+  lastActivityAt: null,
+  createdAt: '2026-11-01T10:00:00Z',
+  updatedAt: '2026-11-01T10:00:00Z',
+};
+
 /** 这一轮测试用的路由（页面里有跳转链接）。 */
 let router: Router;
 
@@ -291,5 +307,76 @@ describe('ProjectsPage', () => {
     expect(toastHost.findAll('.toast').at(-1)?.text()).toContain('内置收件箱不能删除');
     wrapper.unmount();
     toastHost.unmount();
+  });
+
+  it('每个项目行都有进项目级 webhook 页的链接', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const links = wrapper.findAll('.projects__webhook');
+    expect(links).toHaveLength(projectList.length);
+    expect(links.map((link) => link.attributes('href'))).toEqual(
+      projectList.map((project) => `/projects/${project.id}/webhooks`),
+    );
+    // 链接得说清自己是去 webhook 的（不然行里一堆字看不出这是干什么的）。
+    expect(links[0].attributes('aria-label')).toContain('Webhook');
+    expect(links[0].attributes('title')).toContain('Webhook');
+    wrapper.unmount();
+  });
+
+  it('点项目行里的 webhook 链接能到 /projects/<id>/webhooks', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('[data-project-id="project-1"] .projects__webhook').trigger('click');
+    await flushPromises();
+
+    expect(router.currentRoute.value.path).toBe('/projects/project-1/webhooks');
+    wrapper.unmount();
+  });
+
+  it('只有收件箱时给出空状态提示（列表永远不为空，判据得排除收件箱）', async () => {
+    apiGet.mockImplementation((path: string) => {
+      if (path === '/projects') {
+        return Promise.resolve([inboxProject]);
+      }
+      if (path === '/settings') {
+        return Promise.resolve({ 'project.sort_mode': 'recent' });
+      }
+      return Promise.resolve([]);
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.get('.projects__empty').text()).toContain('还没有其它项目');
+    wrapper.unmount();
+  });
+
+  it('有别的项目时不显示空状态提示', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    // 列表里都是用户自己建的项目（收件箱不算）。
+    expect(wrapper.find('.projects__empty').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('收件箱 + 别的项目：也不显示空状态提示', async () => {
+    apiGet.mockImplementation((path: string) => {
+      if (path === '/projects') {
+        return Promise.resolve([inboxProject, projectList[0]]);
+      }
+      if (path === '/settings') {
+        return Promise.resolve({ 'project.sort_mode': 'recent' });
+      }
+      return Promise.resolve([]);
+    });
+
+    const wrapper = mountPage();
+    await flushPromises();
+
+    expect(wrapper.find('.projects__empty').exists()).toBe(false);
+    wrapper.unmount();
   });
 });
