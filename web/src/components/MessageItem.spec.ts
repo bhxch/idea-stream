@@ -100,6 +100,40 @@ describe('MessageItem', () => {
     expect(wrapper.get('.body').text()).toBe('买咖啡机');
   });
 
+  it('关键词打在标签名上：命中的 chip 包 <mark>，没打的不包', () => {
+    // tags 字段的偏移基准 = 标签名按返回顺序用空格连接（「咖啡 烘焙」）：
+    // 「咖啡」落在 [0,2)，「烘焙」落在 [3,5)。
+    const wrapper = mountItem({
+      idea: {
+        ...idea,
+        title: '标题',
+        content: '正文',
+        tags: ['咖啡', '烘焙'],
+        matches: [{ field: 'tags', start: 0, length: 2 }],
+      },
+    });
+
+    const chips = wrapper.findAll('.chip');
+    expect(chips).toHaveLength(2);
+    expect(chips[0].find('mark').text()).toBe('咖啡');
+    expect(chips[1].find('mark').exists()).toBe(false);
+    expect(wrapper.get('.tags').text()).toBe('咖啡烘焙');
+  });
+
+  it('没有 tags 字段的命中时 chip 不包 <mark>', () => {
+    const wrapper = mountItem({
+      idea: {
+        ...idea,
+        title: '标题',
+        content: '正文',
+        tags: ['咖啡'],
+        matches: [{ field: 'content', start: 0, length: 2 }],
+      },
+    });
+
+    expect(wrapper.get('.chip').find('mark').exists()).toBe(false);
+  });
+
   it('重复或重叠的命中不会渲染出嵌套的 <mark>', () => {
     // 服务端允许给出重复或重叠的区间（契约里写明由前端合并）：
     // 不合并的话 <mark> 会嵌套起来。

@@ -200,6 +200,37 @@ export function trimSegments(segments: HighlightSegment[]): HighlightSegment[] {
   return result;
 }
 
+/**
+ * 判断每枚标签要不要标记（搜索的关键词打在标签名上）。
+ *
+ * 服务端的偏移基准是「所有标签名按返回顺序用空格连接」的那条串
+ * （server 端 `string.Join(" ", tags)`，顺序就是 `idea.tags` 的顺序 ——
+ * 两边都按名称排序），所以这里用同样的方式拼、同样的方式算每个标签的区间。
+ *
+ * 一个标签只要有**任何一段**命中区间落在它的字符范围内就算命中 ——
+ * 标签很短，按「整枚 chip 要不要标记」算就够了，不做片段级的高亮。
+ *
+ * ⚠️ 只看 **tags 字段**的命中：其它字段的偏移基准不同（相对各自字段原文），
+ * 混在一起会算错。
+ *
+ * @param tags 标签名列表（`idea.tags` 的顺序）。
+ * @param matches 同一条想法的全部命中区间（字段在这里过滤）。
+ */
+export function tagHitFlags(tags: string[], matches: SearchMatch[]): boolean[] {
+  const ranges = mergeRanges(matches.filter((match) => match.field === 'tags'));
+  const flags: boolean[] = [];
+  let cursor = 0;
+  for (const tag of tags) {
+    const start = cursor;
+    const end = start + tag.length;
+    // 空格分隔符不占标签的区间；命中区间也不会以空白开头或结尾（词元起、词元止），
+    // 所以「与标签区间有交集」就是「打在这个标签上」。
+    cursor = end + 1;
+    flags.push(ranges.some((range) => range.start < end && range.end > start));
+  }
+  return flags;
+}
+
 /** 一行的纯文本（把它的片段拼起来）。 */
 function lineText(line: HighlightLine): string {
   return line.segments.map((segment) => segment.text).join('');

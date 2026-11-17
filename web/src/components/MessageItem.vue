@@ -6,6 +6,7 @@ import {
   flattenLines,
   highlightLines,
   splitTitleAndBody,
+  tagHitFlags,
   trimSegments,
   type HighlightSegment,
 } from '../lib/highlight';
@@ -214,6 +215,14 @@ const titleSegments = computed(() => titleAndBody.value.title);
 
 /** 正文（渲染用）的片段。 */
 const bodySegments = computed(() => titleAndBody.value.body);
+
+/**
+ * 每枚标签 chip 要不要标记（关键词打在标签名上时，chips 是它的渲染面）。
+ *
+ * 「project」字段的命中在卡片上没有渲染面 —— 卡片不显示项目名，
+ * 那个字段留在 matches 里是为了接口自洽（设计文档 §12.3）。
+ */
+const tagHits = computed(() => tagHitFlags(props.idea.tags, matchesOf('tags')));
 
 /** 视觉标题（纯文本，给 aria-label 用）。 */
 const visualTitle = computed(() => titleSegments.value.map((segment) => segment.text).join(''));
@@ -618,7 +627,12 @@ function confirmDelete(): void {
       @update:value="onTagsChange"
     />
     <ul v-else-if="idea.tags.length > 0" class="tags">
-      <li v-for="tag in idea.tags" :key="tag" class="chip">{{ tag }}</li>
+      <!-- 关键词打在标签名上时，命中的 chip 也包 <mark>（与标题/正文同一套样式）。
+           按「整枚 chip」标，不做片段级 —— 标签很短，整枚看得清。 -->
+      <li v-for="(tag, index) in idea.tags" :key="tag" class="chip">
+        <mark v-if="tagHits[index]">{{ tag }}</mark>
+        <template v-else>{{ tag }}</template>
+      </li>
     </ul>
 
     <div class="actions">
@@ -747,7 +761,8 @@ function confirmDelete(): void {
  * 换成主题的强调色，亮暗两套主题下都看得清。
  */
 .title mark,
-.body mark {
+.body mark,
+.chip mark {
   background: var(--accent);
   color: var(--accent-fg);
   border-radius: 3px;

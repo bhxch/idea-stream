@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SearchMatch } from '../api/types';
-import { flattenLines, highlightLines, splitTitleAndBody, trimSegments } from './highlight';
+import { flattenLines, highlightLines, splitTitleAndBody, tagHitFlags, trimSegments } from './highlight';
 import type { HighlightSegment } from './highlight';
 
 /** 造一处命中（默认在正文里）。 */
@@ -66,6 +66,28 @@ describe('highlightLines', () => {
 
     expect(lines[0].segments).toEqual([{ text: '咖啡', marked: true }]);
     expect(lines[1].segments).toEqual([{ text: '水温', marked: true }]);
+  });
+});
+
+describe('tagHitFlags', () => {
+  it('偏移基准是「标签名按返回顺序用空格连接」的那条串', () => {
+    // 「咖啡」落在 [0,2)，「烘焙」落在 [3,5)：命中打在第二个上。
+    expect(tagHitFlags(['咖啡', '烘焙'], [match(3, 2, 'tags')])).toEqual([false, true]);
+  });
+
+  it('多个标签被同一段命中压住时各自都算命中', () => {
+    // 查询「咖 烘」不会发生（词元相邻），但一段命中跨过两个短标签是可能的
+    // （标签 a、b，命中区间压住它们之间的空格也是 server 给得出的形状）。
+    expect(tagHitFlags(['a', 'b'], [match(0, 3, 'tags')])).toEqual([true, true]);
+  });
+
+  it('其它字段的命中不算（偏移基准不同，不能混）', () => {
+    // content 字段里也有 [0,2)，但那是正文的坐标 —— 打在标签上的是 tags 字段。
+    expect(tagHitFlags(['咖啡'], [match(0, 2)])).toEqual([false]);
+  });
+
+  it('没有命中时全是 false', () => {
+    expect(tagHitFlags(['咖啡', '烘焙'], [])).toEqual([false, false]);
   });
 });
 
