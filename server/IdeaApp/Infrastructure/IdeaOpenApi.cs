@@ -40,7 +40,7 @@ public static class IdeaOpenApi
     {
         options.AddDocumentTransformer<OpenApiInfoTransformer>();
 
-        // 查询参数的 description / default 与 /api/search 的 q 必填标记。
+        // 参数的 description / default（**全库**的查询参数与路径参数）与 /api/search 的 q 必填标记。
         // 操作级 transformer：框架先生成每个操作（含参数），再在这里按路径改写。
         options.AddOperationTransformer<OpenApiQueryParameterTransformer>();
 

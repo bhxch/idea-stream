@@ -102,6 +102,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "项目 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -169,6 +170,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "项目 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -211,6 +213,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "项目 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -334,6 +337,7 @@
           {
             "name": "key",
             "in": "path",
+            "description": "设置项的键名（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -396,6 +400,7 @@
           {
             "name": "projectId",
             "in": "query",
+            "description": "项目 id：只列这个项目下的想法。不给或空串 = 不限项目（返回所有项目的想法）。服务端不校验项目是否存在：不存在的项目 id → 空列表（不是 404）。",
             "schema": {
               "type": "string"
             }
@@ -403,13 +408,16 @@
           {
             "name": "status",
             "in": "query",
+            "description": "状态过滤。取值 all / open / done，大小写不敏感；不给或空串 = all（不过滤，open = 未完成，done = 已完成）。不认识的值 → 400 invalid_status。",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "default": "all"
             }
           },
           {
             "name": "tags",
             "in": "query",
+            "description": "标签过滤：逗号分隔的标签名列表（如 tags=咖啡,手冲）。去掉每项的首尾空白、丢掉空项、按大小写不敏感去重。不给或空串 = 不按标签过滤。",
             "schema": {
               "type": "string"
             }
@@ -417,8 +425,10 @@
           {
             "name": "tagMode",
             "in": "query",
+            "description": "多个标签之间的关系：or（缺省，命中其中任意一个即可）/ and（必须同时命中全部），大小写不敏感。不认识的值 → 400 invalid_tag_mode。只有一个标签时两种模式等价。",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "default": "or"
             }
           },
           {
@@ -540,6 +550,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "想法 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -607,6 +618,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "想法 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -639,6 +651,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "想法 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -708,6 +721,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "想法 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -777,6 +791,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "想法 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -1160,6 +1175,7 @@
           {
             "name": "projectId",
             "in": "query",
+            "description": "当前项目 id。给了就先列该项目下**未删**想法用过的标签，再列全局其它标签；不给或空串 = 不区分项目，只列全局标签字典。项目不存在 → 只列全局标签。",
             "schema": {
               "type": "string"
             }
@@ -1167,8 +1183,10 @@
           {
             "name": "prefix",
             "in": "query",
+            "description": "标签名前缀，大小写不敏感匹配。给了就只列以它开头的标签；不给或空串 = 不过滤前缀（返回全部标签）。",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "default": ""
             }
           }
         ],
@@ -1259,6 +1277,7 @@
           {
             "name": "projectId",
             "in": "query",
+            "description": "只列绑定到该项目的 webhook（scope=project）；不给或空串 = 只列全局作用域的 webhook（scope=global）。",
             "schema": {
               "type": "string"
             }
@@ -1266,8 +1285,10 @@
           {
             "name": "unmask",
             "in": "query",
+            "description": "是否返回未遮蔽的凭据（url 的路径段与请求头的值）。缺省 = 遮蔽（凭据被替换成 ***）；只给 true 才给原值，false 与不给等价。",
             "schema": {
-              "type": "boolean"
+              "type": "boolean",
+              "default": false
             }
           }
         ],
@@ -1363,6 +1384,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "webhook 配置 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -1371,8 +1393,10 @@
           {
             "name": "unmask",
             "in": "query",
+            "description": "是否返回未遮蔽的凭据（url 的路径段与请求头的值）。缺省 = 遮蔽（凭据被替换成 ***）；只给 true 才给原值，false 与不给等价。",
             "schema": {
-              "type": "boolean"
+              "type": "boolean",
+              "default": false
             }
           }
         ],
@@ -1407,6 +1431,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "webhook 配置 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -1474,6 +1499,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "webhook 配置 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -1506,6 +1532,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "webhook 配置 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -1548,6 +1575,7 @@
           {
             "name": "id",
             "in": "path",
+            "description": "webhook 配置 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -1556,6 +1584,7 @@
           {
             "name": "deliveryId",
             "in": "path",
+            "description": "投递记录 id（URL 里的这一段）。",
             "required": true,
             "schema": {
               "type": "string"
@@ -1634,6 +1663,7 @@
           {
             "name": "path",
             "in": "path",
+            "description": "skill 分发副本里的相对文件路径（如 SKILL.md、references/errors.md）；路径穿越一律 404。",
             "required": true,
             "schema": {
               "type": "string"
@@ -1683,6 +1713,7 @@
           {
             "name": "rest",
             "in": "path",
+            "description": "/skill 下的路径（catch-all）：没有对应端点时回 404 skill_endpoint_not_found。",
             "required": true,
             "schema": {
               "type": "string"

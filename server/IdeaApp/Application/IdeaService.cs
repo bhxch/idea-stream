@@ -31,6 +31,32 @@ public sealed class IdeaService(
     }
 
     /// <summary>
+    /// 状态过滤参数的**缺省值**：不给（或给空串）= 不过滤。
+    /// </summary>
+    /// <remarks>
+    /// 它是常量而不是散在代码里的字面量：OpenAPI 契约里 <c>status</c> 的 default
+    /// 也要写这个值，两边从同一处取才不会漂（见 <c>OpenApiQueryParameterTransformer</c>）。
+    /// </remarks>
+    public const string DefaultStatus = "all";
+
+    /// <summary>
+    /// 标签匹配方式参数的**缺省值**：不给（或给空串）= OR（命中任意一个即可）。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="DefaultStatus"/> 同理：契约里的 default 与服务端的行为要对得上。
+    /// </remarks>
+    public const string DefaultTagMode = "or";
+
+    /// <summary>
+    /// 单页条数的上限（<c>limit</c> 的上界）。
+    /// </summary>
+    /// <remarks>
+    /// <c>limit</c> 的**缺省**是「全量」（没有默认值）；这里只是上界。
+    /// 契约里 <c>limit</c> 的取值范围写的就是这个上界。
+    /// </remarks>
+    public const int MaxLimit = 1000;
+
+    /// <summary>
     /// 按查询条件列出想法，按 <c>updated_at ASC, id ASC</c> 排序。
     /// </summary>
     /// <remarks>
@@ -140,7 +166,7 @@ public sealed class IdeaService(
     /// 本方法只返回**查询条件**，带不出关键词，所以归一化与取值分成两步。
     /// </para>
     /// </param>
-    /// <param name="limit">单页最多几条（字符串）；范围 1..1000，非法 → 400。</param>
+    /// <param name="limit">单页最多几条（字符串）；范围 1..<see cref="MaxLimit"/>，非法 → 400。</param>
     /// <param name="offset">已经翻过多少条（从最新一端数，字符串）。</param>
     /// <returns>
     /// 查询条件 + **解析好的**分页参数（<c>Limit</c> 为 null = 不限）。
@@ -858,7 +884,7 @@ public sealed class IdeaService(
         var normalized = NormalizeParameter(value);
 
         if (normalized is null
-            || string.Equals(normalized, "all", StringComparison.OrdinalIgnoreCase))
+            || string.Equals(normalized, DefaultStatus, StringComparison.OrdinalIgnoreCase))
         {
             return IdeaStatusFilter.All;
         }
@@ -882,7 +908,7 @@ public sealed class IdeaService(
         var normalized = NormalizeParameter(value);
 
         if (normalized is null
-            || string.Equals(normalized, "or", StringComparison.OrdinalIgnoreCase))
+            || string.Equals(normalized, DefaultTagMode, StringComparison.OrdinalIgnoreCase))
         {
             return TagMatchMode.Or;
         }
@@ -934,7 +960,7 @@ public sealed class IdeaService(
     /// <returns>解析后的 (limit, offset)。</returns>
     /// <remarks>
     /// 三种非法情形一律 400 <c>invalid_pagination</c>，detail 说清楚收到的是什么：
-    /// 不是数字、<c>limit</c> 不在 1..1000、<c>offset</c> 为负、
+    /// 不是数字、<c>limit</c> 不在 1..<see cref="MaxLimit"/>、<c>offset</c> 为负、
     /// 以及 <c>offset &gt; 0</c> 而 <c>limit</c> 缺省（翻历史必须知道翻多宽）。
     /// <para>
     /// 为什么自己解析而不绑成 <c>int?</c>：绑 <c>int?</c> 时 <c>?limit=abc</c>
@@ -955,10 +981,10 @@ public sealed class IdeaService(
         var parsedLimit = ParsePageNumber(limit, "limit");
         var parsedOffset = ParsePageNumber(offset, "offset") ?? 0;
 
-        if (parsedLimit is < 1 or > 1000)
+        if (parsedLimit is < 1 or > MaxLimit)
         {
             throw new ApiException(400, "invalid_pagination",
-                $"limit 必须在 1..1000 之间，收到：{limit}");
+                $"limit 必须在 1..{MaxLimit} 之间，收到：{limit}");
         }
 
         if (parsedOffset < 0)
@@ -997,7 +1023,7 @@ public sealed class IdeaService(
                 $"{name} 必须是整数，收到：{value}");
         }
 
-        // long 装得下的都先收下，范围判断交给调用方（limit 1..1000 / offset >= 0）。
+        // long 装得下的都先收下，范围判断交给调用方（limit 1..MaxLimit / offset >= 0）。
         if (parsed > int.MaxValue || parsed < int.MinValue)
         {
             throw new ApiException(400, "invalid_pagination", $"{name} 太大了，收到：{value}");

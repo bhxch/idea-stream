@@ -30,6 +30,17 @@ public sealed class SearchService(SearchRepository repository, ProjectRepository
     /// </remarks>
     public const int DefaultLimit = 20;
 
+    /// <summary>是否包含回收站里的条目（没给 <c>includeTrash</c> 时的默认值）。</summary>
+    /// <remarks>
+    /// 默认**包含**：它是「全库找东西」，东西被删进回收站不该凭空消失
+    /// （用户八成是想找回来）。每条结果都标 <c>trashed</c>，agent 一眼能看出这条是不是已经删了。
+    /// <para>
+    /// 它是常量而不是端点里的字面量：OpenAPI 契约里 <c>includeTrash</c> 的 default
+    /// 也要写这个值，两边从同一处取才不会漂（见 <c>OpenApiQueryParameterTransformer</c>）。
+    /// </para>
+    /// </remarks>
+    public const bool DefaultIncludeTrash = true;
+
     /// <summary>单页最多几条（的上限）。</summary>
     public const int MaxLimit = 100;
 

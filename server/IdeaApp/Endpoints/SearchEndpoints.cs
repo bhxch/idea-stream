@@ -37,7 +37,7 @@ public static class SearchEndpoints
                         q ?? string.Empty,
                         pageLimit,
                         pageOffset,
-                        includeTrash ?? true);
+                        includeTrash ?? SearchService.DefaultIncludeTrash);
 
                     return Results.Json(response, IdeaJsonContext.Default.SearchResponse);
                 }))

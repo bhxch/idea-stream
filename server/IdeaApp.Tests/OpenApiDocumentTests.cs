@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text.Json;
+using IdeaApp.Application;
 using IdeaApp.Contracts;
 using IdeaApp.Domain;
 using IdeaApp.Infrastructure;
@@ -434,5 +436,243 @@ public sealed class OpenApiDocumentTests
         Assert.True(File.Exists(path), $"找不到契约文件：{path}");
 
         return path;
+    }
+
+    // ── 参数的 description / default ────────────────────────────────────────
+
+    /// <summary>
+    /// 每个 <c>in: query</c> 的参数都必须有非空 description。
+    /// </summary>
+    /// <remarks>
+    /// 契约是给 agent 当接口手册用的：参数留白的地方，agent 只能靠试错去填
+    /// （「limit 到底是 1..1000 还是 1..100」「两个端点的 offset 方向是不是相反」，
+    /// 这些语义在契约里看不到）。
+    /// <para>
+    /// 运行期与快照**都**扫：只扫运行期的话，「改了 transformer 却忘了重新导出快照」
+    /// 会漏过去；只扫快照的话，「改了 transformer 并重新导出了快照」会漏过去
+    /// （那正是本组测试要防的那种漂移）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Every_query_parameter_has_a_description()
+    {
+        using var runtime = await RuntimeDocumentAsync();
+        using var committed = await CommittedDocumentAsync();
+
+        foreach (var (label, root) in new[] { ("运行期", runtime.RootElement), ("快照", committed.RootElement) })
+        {
+            foreach (var parameter in Parameters(root, "query"))
+            {
+                Assert.False(
+                    string.IsNullOrWhiteSpace(parameter.Description),
+                    $"{label}：{parameter.Path} {parameter.Method} 的查询参数 {parameter.Name} 没有 description");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 路径参数也要有 description（它们同样出现在契约里、同样会被 agent 读到）。
+    /// </summary>
+    [Fact]
+    public async Task Every_path_parameter_has_a_description()
+    {
+        using var runtime = await RuntimeDocumentAsync();
+        using var committed = await CommittedDocumentAsync();
+
+        foreach (var (label, root) in new[] { ("运行期", runtime.RootElement), ("快照", committed.RootElement) })
+        {
+            foreach (var parameter in Parameters(root, "path"))
+            {
+                Assert.False(
+                    string.IsNullOrWhiteSpace(parameter.Description),
+                    $"{label}：{parameter.Path} {parameter.Method} 的路径参数 {parameter.Name} 没有 description");
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>GET /api/search</c> 的参数声明要与服务端行为一致。
+    /// </summary>
+    /// <remarks>
+    /// 这条断言的是**具体值**，不是「快照 == 运行期」：
+    /// 只比对那两者的测试，改了 transformer 再重新导出快照照样绿 ——
+    /// 而契约与实际行为分叉，正是这份契约最要命的失败模式（agent 照着契约调，拿到的却是 400）。
+    /// </remarks>
+    [Fact]
+    public async Task Search_query_parameters_declare_the_servers_behaviour()
+    {
+        using var runtime = await RuntimeDocumentAsync();
+        var search = Operation(runtime.RootElement, "/api/search", "get");
+
+        // q：服务端把它绑成 string?（缺失不报绑定错），但服务层对缺失的 q 回 400
+        // invalid_search_query —— 契约必须说它必填。
+        var q = Parameter(search, "q");
+        Assert.True(q.Required, "q 在服务端是必填的（缺失 → 400 invalid_search_query）");
+        Assert.Null(q.Default);
+
+        // limit：缺省 = SearchService.DefaultLimit（服务端常量，不是抄来的字面量）。
+        var limit = Parameter(search, "limit");
+        Assert.Equal(
+            SearchService.DefaultLimit.ToString(CultureInfo.InvariantCulture),
+            limit.Default?.GetString());
+        Assert.Contains(
+            $"1..{SearchService.MaxLimit}",
+            limit.Description ?? string.Empty,
+            StringComparison.Ordinal);
+
+        // offset：缺省 0。
+        var offset = Parameter(search, "offset");
+        Assert.Equal("0", offset.Default?.GetString());
+
+        // includeTrash：缺省 true（服务端常量）。
+        var includeTrash = Parameter(search, "includeTrash");
+        Assert.Equal(SearchService.DefaultIncludeTrash, includeTrash.Default?.GetBoolean());
+    }
+
+    /// <summary>
+    /// <c>GET /api/ideas</c> 的参数声明要与服务端行为一致。
+    /// </summary>
+    [Fact]
+    public async Task Ideas_query_parameters_declare_the_servers_behaviour()
+    {
+        using var runtime = await RuntimeDocumentAsync();
+        var ideas = Operation(runtime.RootElement, "/api/ideas", "get");
+
+        // q 在这里是**可选**的（缺失 = 不过滤），别把它也标成必填。
+        Assert.False(Parameter(ideas, "q").Required);
+
+        // limit 不给 = 全量（没有默认值可写）；给了才有上界。
+        var limit = Parameter(ideas, "limit");
+        Assert.Null(limit.Default);
+        Assert.Contains(
+            $"1..{IdeaService.MaxLimit}",
+            limit.Description ?? string.Empty,
+            StringComparison.Ordinal);
+
+        // offset 缺省 0。
+        Assert.Equal("0", Parameter(ideas, "offset").Default?.GetString());
+
+        // status / tagMode 缺省值与服务端的解析一致。
+        Assert.Equal(IdeaService.DefaultStatus, Parameter(ideas, "status").Default?.GetString());
+        Assert.Equal(IdeaService.DefaultTagMode, Parameter(ideas, "tagMode").Default?.GetString());
+    }
+
+    /// <summary>运行期生成的文档（起一个真实宿主拿）。</summary>
+    private static async Task<JsonDocument> RuntimeDocumentAsync()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        // 触发宿主启动：文档要等端点进 ApiExplorer 之后才有内容。
+        using var response = await client.GetAsync("/api/health");
+        Assert.True(response.IsSuccessStatusCode);
+
+        var json = await OpenApiExporter.GenerateJsonAsync(factory.Services);
+
+        return JsonDocument.Parse(json);
+    }
+
+    /// <summary>提交进仓库的契约文件。</summary>
+    private static async Task<JsonDocument> CommittedDocumentAsync()
+    {
+        var committed = await File.ReadAllTextAsync(CommittedDocumentPath());
+
+        return JsonDocument.Parse(committed);
+    }
+
+    /// <summary>文档里的一个参数。</summary>
+    private sealed record DocumentParameter(
+        string Path,
+        string Method,
+        string Name,
+        string In,
+        string? Description,
+        bool Required,
+        JsonElement? Default);
+
+    /// <summary>
+    /// 扫出文档里的全部参数（可选按 <c>in</c> 过滤）。
+    /// </summary>
+    private static IEnumerable<DocumentParameter> Parameters(JsonElement root, string? location = null)
+    {
+        foreach (var path in root.GetProperty("paths").EnumerateObject())
+        {
+            foreach (var operation in path.Value.EnumerateObject())
+            {
+                // 路径项里除了各方法，还有路径级的 parameters（数组）——跳过。
+                if (operation.Value.ValueKind != JsonValueKind.Object
+                    || !operation.Value.TryGetProperty("parameters", out _))
+                {
+                    continue;
+                }
+
+                foreach (var parameter in OperationParameters(operation.Value))
+                {
+                    if (location is not null
+                        && !string.Equals(parameter.In, location, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    yield return parameter with { Path = path.Name, Method = operation.Name };
+                }
+            }
+        }
+    }
+
+    /// <summary>扫出一个操作里的参数。</summary>
+    private static IEnumerable<DocumentParameter> OperationParameters(JsonElement operation)
+    {
+        if (!operation.TryGetProperty("parameters", out var parameters))
+        {
+            yield break;
+        }
+
+        foreach (var parameter in parameters.EnumerateArray())
+        {
+            var description = parameter.TryGetProperty("description", out var text)
+                ? text.GetString()
+                : null;
+
+            var required = parameter.TryGetProperty("required", out var flag)
+                && flag.ValueKind == JsonValueKind.True;
+
+            JsonElement? defaultValue = null;
+            if (parameter.TryGetProperty("schema", out var schema)
+                && schema.TryGetProperty("default", out var declared))
+            {
+                defaultValue = declared.Clone();
+            }
+
+            yield return new DocumentParameter(
+                Path: string.Empty,
+                Method: string.Empty,
+                parameter.GetProperty("name").GetString() ?? string.Empty,
+                parameter.GetProperty("in").GetString() ?? string.Empty,
+                description,
+                required,
+                defaultValue);
+        }
+    }
+
+    /// <summary>取一个操作（路径 + 方法）。</summary>
+    private static JsonElement Operation(JsonElement root, string path, string method)
+    {
+        return root.GetProperty("paths").GetProperty(path).GetProperty(method);
+    }
+
+    /// <summary>取一个操作里的某个参数（按名字）。</summary>
+    private static DocumentParameter Parameter(JsonElement operation, string name)
+    {
+        foreach (var parameter in OperationParameters(operation))
+        {
+            if (string.Equals(parameter.Name, name, StringComparison.Ordinal))
+            {
+                return parameter;
+            }
+        }
+
+        Assert.Fail($"操作里没有参数 {name}");
+        throw new InvalidOperationException("Assert.Fail 之后不会走到这里");
     }
 }
