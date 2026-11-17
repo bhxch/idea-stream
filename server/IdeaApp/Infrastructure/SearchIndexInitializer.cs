@@ -78,11 +78,9 @@ public static class SearchIndexInitializer
             }
 
             phase = "写入想法索引";
-            foreach (var idea in ReadIdeas(connection, transaction))
-            {
-                SearchIndex.UpsertIdea(
-                    connection, transaction, idea.Id, idea.Title, idea.Content, idea.Tags, idea.ProjectName);
-            }
+            // 整批写入：一条读全（rowid 与排序后的标签名都在查询里）+ 分块多行 INSERT。
+            // 逐条 UpsertIdea 是每条四次往返，几千条想法就是上万条语句。
+            SearchIndex.InsertAllIdeaRows(connection, transaction);
 
             phase = "写入索引版本";
             WriteVersion(connection, transaction);
@@ -164,57 +162,6 @@ public static class SearchIndexInitializer
         return projects;
     }
 
-    /// <summary>读全部想法（连同标签名与项目名）。</summary>
-    private static List<IdeaRow> ReadIdeas(SqliteConnection connection, SqliteTransaction transaction)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-
-        // 一条 SQL 把三样凑齐：想法本身、它的标签名、它所属的项目名。
-        //
-        // ⚠️ 标签名要**显式排序**再拼：group_concat 不保证拼接顺序
-        // （实测会得到「zebra apple mango」这种顺序），顺序不稳的话
-        // 同一个库每次回填出来的索引文本都不一样。
-        command.CommandText =
-            "SELECT i.id, i.title, i.content, p.name, " +
-            "(SELECT group_concat(name, ' ') FROM (" +
-            "    SELECT t.name FROM idea_tag it JOIN tag t ON t.id = it.tag_id " +
-            "    WHERE it.idea_id = i.id ORDER BY t.name COLLATE NOCASE ASC, t.name ASC)) " +
-            "FROM idea i JOIN project p ON p.id = i.project_id " +
-            "ORDER BY i.rowid;";
-
-        var ideas = new List<IdeaRow>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            var tagText = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
-
-            // group_concat 用单个空格连接标签名，按空格切回标签名列表。
-            // 「按空格切开再按空格连回去」是恒等变换（分隔符还是空格），
-            // 所以索引里的词元串与直接切标签名原文完全一致。
-            var tags = tagText.Length == 0
-                ? Array.Empty<string>()
-                : tagText.Split(' ');
-
-            ideas.Add(new IdeaRow(
-                reader.GetString(0),
-                reader.IsDBNull(1) ? null : reader.GetString(1),
-                reader.GetString(2),
-                tags,
-                reader.GetString(3)));
-        }
-
-        return ideas;
-    }
-
     /// <summary>回填用的一条项目数据。</summary>
     private sealed record ProjectRow(string Id, string Name);
-
-    /// <summary>回填用的一条想法数据。</summary>
-    private sealed record IdeaRow(
-        string Id,
-        string? Title,
-        string Content,
-        IReadOnlyList<string> Tags,
-        string ProjectName);
 }

@@ -1,3 +1,4 @@
+using System.Text;
 using IdeaApp.Domain;
 using Microsoft.Data.Sqlite;
 
@@ -166,36 +167,82 @@ public static class SearchIndex
     /// ⚠️ <strong>调用方必须已经把项目行改成新名字</strong>：项目名从库里读
     /// （<c>p.name</c>），改名先行才能读到新的。
     /// </para>
-    /// <para>
-    /// 标签名在查询里显式排序后拼接，排序口径与仓储层读标签的那份一致
-    /// （<c>COLLATE NOCASE ASC</c>）—— 重建写出的索引文本必须与增量写写的逐字节一致，
-    /// 不然跨两个标签的短语查询会失灵。
-    /// </para>
     /// </remarks>
     public static void ReindexProjectIdeas(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         string projectId)
     {
-        // 先物化、后写入：读与写虽然在同一个连接上，但一边开着 reader 一边改表
-        // 不是值得依赖的行为，读全了再动索引表。
-        //
-        // 一条 SQL 把重写需要的四样凑齐：rowid（索引行靠它定位，直接从查询里拿，
-        // 省掉逐条 FindRowId 的往返）、标题、正文、排序后拼接的标签名、项目名。
+        // 先物化、后写入：一边开着 reader 一边改表不是值得依赖的行为。
+        var rows = LoadIdeaRows(connection, transaction, projectId);
+
+        // 旧索引行按同一个项目范围整体删掉 —— rowid 来自 idea 表，
+        // 范围与上面读到的完全一致（都不筛 deleted_at：软删的想法照样在索引里）。
+        Execute(
+            connection,
+            transaction,
+            "DELETE FROM idea_fts WHERE rowid IN (SELECT rowid FROM idea WHERE project_id = $projectId);",
+            ("$projectId", projectId));
+
+        InsertIdeaRows(connection, transaction, rows);
+    }
+
+    /// <summary>
+    /// 把**全部**想法的索引行整体写入（整体重建专用；调用方负责先清空 <c>idea_fts</c>）。
+    /// </summary>
+    /// <param name="connection">数据库连接。</param>
+    /// <param name="transaction">所在事务（可为 null = 不在事务里）。</param>
+    /// <remarks>
+    /// 回填（<see cref="SearchIndexInitializer"/>）用整批写入而不是逐条
+    /// <see cref="UpsertIdea"/>：逐条是「查 rowid + 删 + 插」四次往返，
+    /// 几千条想法就是上万条语句；整批是「一条读全 + 分块多行 INSERT」，
+    /// 行数再多也只有几十条语句。
+    /// <para>
+    /// rowid 与排序后拼接的标签名都从同一条查询里拿，排序口径与增量写一致 ——
+    /// 回填写出的索引文本必须与增量写写的逐字节一致，跨两个标签的短语查询才不失灵。
+    /// </para>
+    /// </remarks>
+    public static void InsertAllIdeaRows(SqliteConnection connection, SqliteTransaction? transaction)
+        => InsertIdeaRows(connection, transaction, LoadIdeaRows(connection, transaction, projectId: null));
+
+    /// <summary>
+    /// 从业务表里读出想法的索引行数据（一条 SQL 凑齐五样，rowid 直接从查询里拿）。
+    /// </summary>
+    /// <param name="projectId">限定项目；null = 全部想法。</param>
+    /// <remarks>
+    /// ⚠️ 标签名要**显式排序**再拼：group_concat 不保证拼接顺序
+    /// （实测会得到「zebra apple mango」这种顺序），顺序不稳的话
+    /// 同一份数据每次重建出来的索引文本都不一样。
+    /// 排序口径与仓储层读标签的那份一致（<c>COLLATE NOCASE ASC</c>）。
+    /// </remarks>
+    private static List<IdeaIndexRow> LoadIdeaRows(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string? projectId)
+    {
+        var sql =
+            "SELECT i.rowid, i.title, i.content, p.name, " +
+            "(SELECT group_concat(name, ' ') FROM (" +
+            "    SELECT t.name FROM idea_tag it JOIN tag t ON t.id = it.tag_id " +
+            "    WHERE it.idea_id = i.id ORDER BY t.name COLLATE NOCASE ASC, t.name ASC)) " +
+            "FROM idea i JOIN project p ON p.id = i.project_id";
+        if (projectId is not null)
+        {
+            sql += " WHERE i.project_id = $projectId";
+        }
+
+        sql += " ORDER BY i.rowid;";
+
         var rows = new List<IdeaIndexRow>();
 
         using (var command = connection.CreateCommand())
         {
             command.Transaction = transaction;
-            command.CommandText =
-                "SELECT i.rowid, i.title, i.content, p.name, " +
-                "(SELECT group_concat(name, ' ') FROM (" +
-                "    SELECT t.name FROM idea_tag it JOIN tag t ON t.id = it.tag_id " +
-                "    WHERE it.idea_id = i.id ORDER BY t.name COLLATE NOCASE ASC, t.name ASC)) " +
-                "FROM idea i JOIN project p ON p.id = i.project_id " +
-                "WHERE i.project_id = $projectId " +
-                "ORDER BY i.rowid;";
-            command.Parameters.AddWithValue("$projectId", projectId);
+            command.CommandText = sql;
+            if (projectId is not null)
+            {
+                command.Parameters.AddWithValue("$projectId", projectId);
+            }
 
             using var reader = command.ExecuteReader();
             while (reader.Read())
@@ -216,10 +263,50 @@ public static class SearchIndex
             }
         }
 
-        foreach (var row in rows)
+        return rows;
+    }
+
+    /// <summary>
+    /// 把一批想法索引行分块写入（多行 VALUES，块间参数数量有硬上限）。
+    /// </summary>
+    /// <remarks>
+    /// 每块 200 行 × 5 个参数 = 1000 个参数 —— 连 SQLite 老的变量上限（999）都放得下，
+    /// 不用碰编译选项；新默认（3.32+ 的 32766）更是绰绰有余。
+    /// </remarks>
+    private static void InsertIdeaRows(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        IReadOnlyList<IdeaIndexRow> rows)
+    {
+        const int chunkSize = 200;
+
+        for (var start = 0; start < rows.Count; start += chunkSize)
         {
-            Execute(connection, transaction, "DELETE FROM idea_fts WHERE rowid = $rowid;", ("$rowid", row.RowId));
-            InsertIdeaRow(connection, transaction, row.RowId, row.Title, row.Content, row.Tags, row.ProjectName);
+            var chunk = rows.Skip(start).Take(chunkSize).ToList();
+
+            var sql = new StringBuilder("INSERT INTO idea_fts(rowid, title, content, tags, project) VALUES ");
+            var parameters = new List<(string Name, object Value)>(chunk.Count * 5);
+
+            for (var i = 0; i < chunk.Count; i++)
+            {
+                var row = chunk[i];
+                if (i > 0)
+                {
+                    sql.Append(',');
+                }
+
+                sql.Append($"($r{i}, $t{i}, $c{i}, $g{i}, $p{i})");
+                parameters.Add(($"$r{i}", row.RowId));
+                parameters.Add(($"$t{i}", ToIndexText(row.Title)));
+                parameters.Add(($"$c{i}", ToIndexText(row.Content)));
+                // 标签名用空格连起来再切词：每个标签名都是独立的一段，
+                // 词元不会跨过标签边界（标签 "ab" 与 "cd" 连成 "abcd" 会被当成一个词元）。
+                parameters.Add(($"$g{i}", ToIndexText(string.Join(" ", row.Tags))));
+                parameters.Add(($"$p{i}", ToIndexText(row.ProjectName)));
+            }
+
+            sql.Append(';');
+            Execute(connection, transaction, sql.ToString(), parameters.ToArray());
         }
     }
 
