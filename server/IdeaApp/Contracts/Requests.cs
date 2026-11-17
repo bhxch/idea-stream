@@ -22,16 +22,15 @@ public sealed record ReorderProjectsRequest(string[]? Ids);
 /// <c>ProjectId</c> 缺省或为空串时落到内置收件箱；<c>Content</c> 缺省或全空白是非法正文
 /// （400 <c>invalid_content</c>）；<c>Tags</c> 缺省表示不带标签。
 /// </remarks>
-public sealed record CreateIdeaRequest(string? ProjectId, string? Content, string? Title, string[]? Tags);
+public sealed record CreateIdeaRequest(string? ProjectId, string? Content, string[]? Tags);
 
 /// <summary>
 /// 修改想法的请求体。
 /// </summary>
 /// <remarks>
-/// <c>Title</c> 为 null 表示**不改标题**，给字符串（含空串）表示改成那个标题；
-/// <c>Content</c> 为 null 表示不改正文。与出参语义不同：DTO 里 <c>"title": null</c> 是「无标题」。
+/// <c>Content</c> 为 null 表示不改正文。
 /// </remarks>
-public sealed record UpdateIdeaRequest(string? Title, string? Content);
+public sealed record UpdateIdeaRequest(string? Content);
 
 /// <summary>覆盖式设置标签的请求体：<c>tags</c> 缺省或为空表示清空标签。</summary>
 public sealed record SetTagsRequest(string[]? Tags);
@@ -60,10 +59,9 @@ public sealed record BulkDeleteRequest(string[]? Ids);
 /// 合并想法的请求体：<c>ids</c> 是要合并的想法 id（至少两条）。
 /// </summary>
 /// <remarks>
-/// <c>Content</c> 缺省时用源想法正文按 <c>updated_at</c> 升序拼接的结果；
-/// <c>Title</c> 缺省时用第一条源想法的标题。
+/// <c>Content</c> 缺省时用源想法正文按 <c>updated_at</c> 升序拼接的结果。
 /// </remarks>
-public sealed record MergeIdeasRequest(string[]? Ids, string? Content, string? Title);
+public sealed record MergeIdeasRequest(string[]? Ids, string? Content);
 
 /// <summary>
 /// 修改单个设置项的请求体。

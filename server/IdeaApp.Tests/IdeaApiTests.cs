@@ -27,7 +27,9 @@ public sealed class IdeaApiTests
         // 没给 projectId 就落到内置收件箱。
         Assert.Equal("inbox", root.GetProperty("projectId").GetString());
         Assert.Equal("第一条", root.GetProperty("content").GetString());
-        Assert.Equal(JsonValueKind.Null, root.GetProperty("title").ValueKind);
+
+        // 想法没有「标题」这个概念了：响应里没有 title 键（不是 null，是没有）。
+        Assert.False(root.TryGetProperty("title", out _));
 
         // 没给 tags 就是空数组，不是 null。
         var tags = root.GetProperty("tags");
@@ -40,6 +42,49 @@ public sealed class IdeaApiTests
         Assert.NotNull(id);
         Assert.Equal(32, id.Length);
         Assert.All(id, c => Assert.True(IsLowerHex(c), $"id 不是 32 位小写 hex：{id}"));
+    }
+
+    /// <summary>
+    /// 响应里不能有 <c>title</c> 键 —— 想法就是一段文字。
+    /// </summary>
+    [Fact]
+    public async Task Create_idea_returns_no_title_field()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/ideas", new { content = "只有正文" });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.False(document.RootElement.TryGetProperty("title", out _));
+    }
+
+    /// <summary>
+    /// 老客户端仍然会发 <c>title</c>：System.Text.Json 静默忽略未知成员，
+    /// 内容照常保存，响应里也不该冒出 title 键（不为单个字段加特例）。
+    /// </summary>
+    [Fact]
+    public async Task Create_idea_ignores_a_legacy_title_field()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/ideas", new
+        {
+            content = "正文",
+            title = "老客户端的标题"
+        });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+
+        Assert.Equal("正文", root.GetProperty("content").GetString());
+        Assert.False(root.TryGetProperty("title", out _));
     }
 
     [Fact]
@@ -295,51 +340,22 @@ public sealed class IdeaApiTests
     }
 
     /// <summary>
-    /// 入参 <c>title = null</c> 表示「不改标题」，与出参 <c>"title": null</c>（「无标题」）语义不同。
+    /// 正文不能被清空：<c>content = ""</c> 是 400（不是「改成空正文」）。
     /// </summary>
     [Fact]
-    public async Task Update_idea_with_null_title_keeps_existing_title()
+    public async Task Update_idea_with_empty_content_is_rejected()
     {
         using var factory = new TestAppFactory();
         using var client = factory.CreateClient();
 
-        var id = await CreateIdeaAsync(client, "正文");
+        var id = await CreateIdeaAsync(client, "原正文");
 
-        var titled = await client.PatchAsJsonAsync($"/api/ideas/{id}", new { title = "标题" });
-        Assert.Equal(HttpStatusCode.OK, titled.StatusCode);
-        Assert.Equal("标题", ReadIdea(await titled.Content.ReadAsStringAsync()).Title);
+        var response = await client.PatchAsJsonAsync($"/api/ideas/{id}", new { content = "" });
 
-        // 只给 content、不给 title → 标题保持不变。
-        var updated = await client.PatchAsJsonAsync($"/api/ideas/{id}", new { content = "新正文" });
-        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
-        var idea = ReadIdea(await updated.Content.ReadAsStringAsync());
-        Assert.Equal("标题", idea.Title);
-        Assert.Equal("新正文", idea.Content);
-    }
-
-    /// <summary>
-    /// 入参 <c>title = ""</c> 表示「把标题清空」（出参是 <c>"title": null</c>），
-    /// 与入参 <c>title = null</c>（「不修改标题」）不是一回事。
-    /// </summary>
-    [Fact]
-    public async Task Update_idea_with_empty_title_clears_title()
-    {
-        using var factory = new TestAppFactory();
-        using var client = factory.CreateClient();
-
-        var id = await CreateIdeaAsync(client, "正文");
-
-        var titled = await client.PatchAsJsonAsync($"/api/ideas/{id}", new { title = "标题" });
-        Assert.Equal(HttpStatusCode.OK, titled.StatusCode);
-        Assert.Equal("标题", ReadIdea(await titled.Content.ReadAsStringAsync()).Title);
-
-        var cleared = await client.PatchAsJsonAsync($"/api/ideas/{id}", new { title = "" });
-
-        Assert.Equal(HttpStatusCode.OK, cleared.StatusCode);
-
-        // 空标题 = 无标题，出参是 null（不是空串）。
-        Assert.Null(ReadIdea(await cleared.Content.ReadAsStringAsync()).Title);
+        var problem = await ReadProblemAsync(response);
+        Assert.Equal("invalid_content", problem.GetProperty("code").GetString());
     }
 
     /// <summary>
@@ -359,6 +375,33 @@ public sealed class IdeaApiTests
 
         var idea = ReadIdea(await response.Content.ReadAsStringAsync());
         Assert.Equal("原正文", idea.Content);
+    }
+
+    /// <summary>
+    /// 合并时请求体给了正文就用请求体的；响应里没有 title 键。
+    /// </summary>
+    [Fact]
+    public async Task Merge_request_body_overrides_content()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var first = await CreateIdeaAsync(client, "第一条");
+        var second = await CreateIdeaAsync(client, "第二条");
+
+        var response = await client.PostAsJsonAsync("/api/ideas/merge", new
+        {
+            ids = new[] { first, second },
+            content = "自己写的正文"
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = document.RootElement;
+
+        Assert.Equal("自己写的正文", root.GetProperty("content").GetString());
+        Assert.False(root.TryGetProperty("title", out _));
     }
 
     private static bool IsLowerHex(char c) => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -387,7 +430,6 @@ public sealed class IdeaApiTests
             .Select(element => new IdeaSummary(
                 Id: element.GetProperty("id").GetString()!,
                 ProjectId: element.GetProperty("projectId").GetString()!,
-                Title: element.GetProperty("title").GetString(),
                 Content: element.GetProperty("content").GetString()!,
                 Tags: element.GetProperty("tags").EnumerateArray()
                     .Select(tag => tag.GetString()!).ToArray(),
@@ -406,7 +448,6 @@ public sealed class IdeaApiTests
         return new IdeaSummary(
             Id: root.GetProperty("id").GetString()!,
             ProjectId: root.GetProperty("projectId").GetString()!,
-            Title: root.GetProperty("title").GetString(),
             Content: root.GetProperty("content").GetString()!,
             Tags: root.GetProperty("tags").EnumerateArray()
                 .Select(tag => tag.GetString()!).ToArray(),
@@ -468,7 +509,7 @@ public sealed class IdeaApiTests
         return connection;
     }
 
-    private sealed record IdeaSummary(string Id, string ProjectId, string? Title, string Content,
+    private sealed record IdeaSummary(string Id, string ProjectId, string Content,
                                      string[] Tags, bool Done,
                                      DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
 }

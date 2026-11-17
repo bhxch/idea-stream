@@ -28,7 +28,6 @@ public sealed class TemplateRendererTests
         Idea: new IdeaSnapshot(
             Id: IdeaId,
             ProjectId: "0198f0c0-0000-7000-8000-0000000000aa",
-            Title: "标题",
             Content: "正文",
             Tags: ["标签一", "标签二"],
             Done: done,

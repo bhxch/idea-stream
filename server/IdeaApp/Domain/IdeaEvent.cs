@@ -35,8 +35,9 @@ public sealed record ProjectSnapshot(string Id, string Name, int SortOrder)
 
 /// <summary>
 /// 想法的对外快照：想法去掉 <c>DeletedAt</c>、标签转成字符串数组。
+/// **没有标题** —— 想法就是一段文字。
 /// </summary>
-public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, string Content,
+public sealed record IdeaSnapshot(string Id, string ProjectId, string Content,
                                   string[] Tags, bool Done,
                                   DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt)
 {
@@ -44,7 +45,6 @@ public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, st
     public static IdeaSnapshot From(Idea idea) => new(
         idea.Id,
         idea.ProjectId,
-        idea.Title,
         idea.Content,
         idea.Tags.ToArray(),
         idea.Done,
@@ -66,15 +66,15 @@ public sealed record IdeaSnapshot(string Id, string ProjectId, string? Title, st
 /// 订阅端按「整条对象是新数据」处理；</item>
 /// <item>空数组：写了但值没变（如 <c>Update</c> 传了同样的正文），
 /// 数据本身仍然是最新的，别把这次更新跳过；</item>
-/// <item>非空数组：<b>这次操作写过的字段名</b>（如 <c>title</c>、<c>done</c>），
+/// <item>非空数组：<b>这次操作写过的字段名</b>（如 <c>done</c>、<c>tags</c>），
 /// 订阅端按这些字段更新本地数据。</item>
 /// </list>
 /// </para>
 /// <para>
 /// 非空数组里的字段名有<b>四种口径</b>，订阅端不要假设「列出来的就一定变了」：
 /// <list type="bullet">
-/// <item><c>Update</c>（改正文/标题）在事务里跟改前的值比对，
-/// <b>只列真正变了</b>的字段（两个都没变 → 空数组）；</item>
+/// <item><c>Update</c>（改正文）在事务里跟改前的值比对，
+/// <b>只列真正变了</b>的字段（没变 → 空数组）；</item>
 /// <item><c>SetTags</c> / <c>SetDone</c>（含它们的批量版本）<b>一律列该字段</b>
 /// （<c>["tags"]</c> / <c>["done"]</c>）—— 这两个操作本来就要重写数据，
 /// 值是否变化不影响「这个字段被写过」的事实；</item>
@@ -111,7 +111,7 @@ public static class EventTypes
     /// <summary>新建想法。</summary>
     public const string IdeaCreated = "idea.created";
 
-    /// <summary>想法被修改（改正文/标题、换标签、标记完成都算）。</summary>
+    /// <summary>想法被修改（改正文、换标签、标记完成都算）。</summary>
     public const string IdeaUpdated = "idea.updated";
 
     /// <summary>想法被移进回收站。</summary>

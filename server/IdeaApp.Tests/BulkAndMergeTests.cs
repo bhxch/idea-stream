@@ -469,34 +469,6 @@ public sealed class BulkAndMergeTests
     }
 
     [Fact]
-    public async Task Merge_result_takes_title_of_first_source()
-    {
-        using var factory = new TestAppFactory();
-        using var client = factory.CreateClient();
-
-        // 「第一条」= updated_at 最早的那条。
-        InsertIdea(factory.DatabasePath, "0198f0a1b2c3d4e5f60718293a4b5c01", "正文一",
-            title: "第一条的标题", stamp: "2026-01-01T10:00:00.0000000Z");
-        InsertIdea(factory.DatabasePath, "0198f0a1b2c3d4e5f60718293a4b5c02", "正文二",
-            title: "第二条的标题", stamp: "2026-01-01T11:00:00.0000000Z");
-
-        var response = await client.PostAsJsonAsync("/api/ideas/merge", new
-        {
-            ids = new[]
-            {
-                "0198f0a1b2c3d4e5f60718293a4b5c01",
-                "0198f0a1b2c3d4e5f60718293a4b5c02"
-            }
-        });
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-        var merged = ReadIdea(await response.Content.ReadAsStringAsync());
-
-        Assert.Equal("第一条的标题", merged.Title);
-    }
-
-    [Fact]
     public async Task Merge_hard_deletes_sources()
     {
         using var factory = new TestAppFactory();
@@ -615,21 +587,21 @@ public sealed class BulkAndMergeTests
     }
 
     /// <summary>
-    /// 请求体带了 content / title 时用请求体的（覆盖自动拼接与首条源的标题）。
+    /// 请求体带了 content 时用请求体的（覆盖自动拼接的结果）。
     /// </summary>
     /// <remarks>
     /// 补充测试：简报 Step 3 明确要求这个行为，但列出的 10 条测试没有覆盖它。
     /// </remarks>
     [Fact]
-    public async Task Merge_request_body_overrides_content_and_title()
+    public async Task Merge_request_body_overrides_content()
     {
         using var factory = new TestAppFactory();
         using var client = factory.CreateClient();
 
         InsertIdea(factory.DatabasePath, "0198f0a1b2c3d4e5f60718293a4b5c01", "第一条",
-            title: "第一条的标题", stamp: "2026-01-01T10:00:00.0000000Z");
+            stamp: "2026-01-01T10:00:00.0000000Z");
         InsertIdea(factory.DatabasePath, "0198f0a1b2c3d4e5f60718293a4b5c02", "第二条",
-            title: "第二条的标题", stamp: "2026-01-01T11:00:00.0000000Z");
+            stamp: "2026-01-01T11:00:00.0000000Z");
 
         var response = await client.PostAsJsonAsync("/api/ideas/merge", new
         {
@@ -638,8 +610,7 @@ public sealed class BulkAndMergeTests
                 "0198f0a1b2c3d4e5f60718293a4b5c01",
                 "0198f0a1b2c3d4e5f60718293a4b5c02"
             },
-            content = "自己写的合并正文",
-            title = "自己写的标题"
+            content = "自己写的合并正文"
         });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -647,7 +618,6 @@ public sealed class BulkAndMergeTests
         var merged = ReadIdea(await response.Content.ReadAsStringAsync());
 
         Assert.Equal("自己写的合并正文", merged.Content);
-        Assert.Equal("自己写的标题", merged.Title);
     }
 
     /// <summary>
@@ -733,7 +703,6 @@ public sealed class BulkAndMergeTests
             .Select(element => new IdeaSummary(
                 Id: element.GetProperty("id").GetString()!,
                 ProjectId: element.GetProperty("projectId").GetString()!,
-                Title: element.GetProperty("title").GetString(),
                 Content: element.GetProperty("content").GetString()!,
                 Tags: element.GetProperty("tags").EnumerateArray()
                     .Select(tag => tag.GetString()!).ToArray(),
@@ -752,7 +721,6 @@ public sealed class BulkAndMergeTests
         return new IdeaSummary(
             Id: root.GetProperty("id").GetString()!,
             ProjectId: root.GetProperty("projectId").GetString()!,
-            Title: root.GetProperty("title").GetString(),
             Content: root.GetProperty("content").GetString()!,
             Tags: root.GetProperty("tags").EnumerateArray()
                 .Select(tag => tag.GetString()!).ToArray(),
@@ -780,7 +748,6 @@ public sealed class BulkAndMergeTests
         string databasePath,
         string id,
         string content,
-        string? title = null,
         string[]? tags = null,
         string projectId = "inbox",
         string? stamp = null)
@@ -792,12 +759,13 @@ public sealed class BulkAndMergeTests
 
         using (var command = connection.CreateCommand())
         {
+            // title 这一列还在库里（业务表去标题列是 Task 3 的事），但它恒为 NULL：
+            // 对外契约已经没有「标题」这个概念了。
             command.CommandText =
                 "INSERT INTO idea(id, project_id, title, content, done, deleted_at, created_at, updated_at) " +
-                "VALUES ($id, $projectId, $title, $content, 0, NULL, $createdAt, $updatedAt);";
+                "VALUES ($id, $projectId, NULL, $content, 0, NULL, $createdAt, $updatedAt);";
             command.Parameters.AddWithValue("$id", id);
             command.Parameters.AddWithValue("$projectId", projectId);
-            command.Parameters.AddWithValue("$title", title is null ? (object)DBNull.Value : title);
             command.Parameters.AddWithValue("$content", content);
             command.Parameters.AddWithValue("$createdAt", createdAt);
             command.Parameters.AddWithValue("$updatedAt", updatedAt);
@@ -869,7 +837,7 @@ public sealed class BulkAndMergeTests
         command.ExecuteNonQuery();
     }
 
-    private sealed record IdeaSummary(string Id, string ProjectId, string? Title, string Content,
+    private sealed record IdeaSummary(string Id, string ProjectId, string Content,
                                      string[] Tags, bool Done,
                                      DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
 }

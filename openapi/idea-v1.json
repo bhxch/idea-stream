@@ -1813,7 +1813,6 @@
         "required": [
           "projectId",
           "content",
-          "title",
           "tags"
         ],
         "type": "object",
@@ -1825,12 +1824,6 @@
             ]
           },
           "content": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "title": {
             "type": [
               "null",
               "string"
@@ -1930,7 +1923,6 @@
         "required": [
           "id",
           "projectId",
-          "title",
           "content",
           "tags",
           "done",
@@ -1944,12 +1936,6 @@
           },
           "projectId": {
             "type": "string"
-          },
-          "title": {
-            "type": [
-              "null",
-              "string"
-            ]
           },
           "content": {
             "type": "string"
@@ -2043,7 +2029,7 @@
             "items": {
               "type": "string"
             },
-            "description": "这次操作写过的字段名。三态：null = 该事件类型没有「改了什么」的概念（订阅端按「整条对象是新数据」处理）；空数组 = 写了但值没变（数据本身仍然是最新的，别把这次更新跳过）；非空数组 = 这次写过的字段名（如 title、done、tags、name、sortOrder、deletedAt）。注意：SetTags / SetDone 与项目改名一律列该字段，不跟旧值比对。"
+            "description": "这次操作写过的字段名。三态：null = 该事件类型没有「改了什么」的概念（订阅端按「整条对象是新数据」处理）；空数组 = 写了但值没变（数据本身仍然是最新的，别把这次更新跳过）；非空数组 = 这次写过的字段名（如 done、tags、content、name、sortOrder、deletedAt）。注意：SetTags / SetDone 与项目改名一律列该字段，不跟旧值比对。"
           },
           "mergedFrom": {
             "type": [
@@ -2062,7 +2048,6 @@
         "required": [
           "id",
           "projectId",
-          "title",
           "content",
           "tags",
           "done",
@@ -2078,13 +2063,6 @@
           "projectId": {
             "type": "string",
             "description": "所属项目 id。"
-          },
-          "title": {
-            "type": [
-              "null",
-              "string"
-            ],
-            "description": "标题。可以是 null（未命名想法）——键一定在，值可能是 null。"
           },
           "content": {
             "type": "string",
@@ -2117,8 +2095,7 @@
       "MergeIdeasRequest": {
         "required": [
           "ids",
-          "content",
-          "title"
+          "content"
         ],
         "type": "object",
         "properties": {
@@ -2132,12 +2109,6 @@
             }
           },
           "content": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "title": {
             "type": [
               "null",
               "string"
@@ -2638,17 +2609,10 @@
       },
       "UpdateIdeaRequest": {
         "required": [
-          "title",
           "content"
         ],
         "type": "object",
         "properties": {
-          "title": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
           "content": {
             "type": [
               "null",

@@ -19,7 +19,6 @@ public sealed class JsonSerializationTests
         var dto = new IdeaDto(
             Id: "0198f0a1b2c3d4e5f60718293a4b5c6d",
             ProjectId: "inbox",
-            Title: "标题",
             Content: "正文",
             Tags: ["标签"],
             Done: false,
@@ -50,7 +49,6 @@ public sealed class JsonSerializationTests
         var dto = new IdeaDto(
             Id: "0198f0a1b2c3d4e5f60718293a4b5c6d",
             ProjectId: "inbox",
-            Title: null,
             Content: "正文",
             Tags: [],
             Done: false,

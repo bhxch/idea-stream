@@ -32,7 +32,11 @@ public static class EventPlaceholders
             ["project"] = evt.Project?.Name,
             ["project.id"] = evt.Project?.Id,
             ["idea.id"] = evt.Idea?.Id,
-            ["idea.title"] = evt.Idea?.Title,
+            // 想法没有标题了：键先留着、值恒为 null ——
+            // 渲染器对「键在、值为 null」的语义是渲染成空串，
+            // 老模板里的 {{idea.title}} 就不会在正文里露出字面量。
+            // 这个键本身在 Task 4 里整个下线（那时渲染器改认「已下线占位符」）。
+            ["idea.title"] = null,
             ["idea.content"] = evt.Idea?.Content,
             ["idea.tags"] = evt.Idea is null ? null : string.Join(",", evt.Idea.Tags),
             ["idea.done"] = evt.Idea is null ? null : evt.Idea.Done ? "true" : "false",

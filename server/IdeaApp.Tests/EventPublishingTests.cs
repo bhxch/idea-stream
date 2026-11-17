@@ -31,7 +31,6 @@ public sealed class EventPublishingTests
         var response = await client.PostAsJsonAsync("/api/ideas", new
         {
             content = "第一条想法",
-            title = "标题",
             tags = new[] { "灵感" }
         });
 
@@ -45,7 +44,6 @@ public sealed class EventPublishingTests
         var idea = Assert.IsType<IdeaSnapshot>(evt.Idea);
         Assert.Equal(createdId, idea.Id);
         Assert.Equal("inbox", idea.ProjectId);
-        Assert.Equal("标题", idea.Title);
         Assert.Equal("第一条想法", idea.Content);
         Assert.Equal(new[] { "灵感" }, idea.Tags);
         Assert.False(idea.Done);
@@ -108,12 +106,12 @@ public sealed class EventPublishingTests
         using var factory = new TestAppFactory(publisher: publisher);
         using var client = factory.CreateClient();
 
-        var id = await CreateIdeaAsync(client, "原来的正文", title: "原来的标题");
+        var id = await CreateIdeaAsync(client, "原来的正文");
 
         // 准备阶段的事件不算（这里只关心这次修改发的）。
         publisher.Clear();
 
-        var response = await PatchJsonAsync(client, $"/api/ideas/{id}", new { title = "新的标题" });
+        var response = await PatchJsonAsync(client, $"/api/ideas/{id}", new { content = "新的正文" });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var evt = Assert.Single(publisher.Events);
@@ -121,30 +119,11 @@ public sealed class EventPublishingTests
 
         var idea = Assert.IsType<IdeaSnapshot>(evt.Idea);
         Assert.Equal(id, idea.Id);
-        Assert.Equal("新的标题", idea.Title);
+        Assert.Equal("新的正文", idea.Content);
 
-        // 只列**真正改了**的字段：这次只改了标题。
-        Assert.Equal(new[] { "title" }, evt.Changed);
-    }
-
-    [Fact]
-    public async Task Update_idea_publishes_both_changed_fields_when_title_and_content_change()
-    {
-        var publisher = new RecordingEventPublisher();
-        using var factory = new TestAppFactory(publisher: publisher);
-        using var client = factory.CreateClient();
-
-        var id = await CreateIdeaAsync(client, "原来的正文", title: "原来的标题");
-
-        publisher.Clear();
-
-        var response = await PatchJsonAsync(client, $"/api/ideas/{id}",
-            new { title = "新的标题", content = "新的正文" });
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-        var evt = Assert.Single(publisher.Events);
-        Assert.Equal(EventTypes.IdeaUpdated, evt.Type);
-        Assert.Equal(new[] { "title", "content" }, evt.Changed);
+        // 只列**真正改了**的字段：这次只改了正文。
+        // 「标题」这个字段名已经不存在了，changed 里不可能有它。
+        Assert.Equal(new[] { "content" }, evt.Changed);
     }
 
     [Fact]
@@ -537,11 +516,10 @@ public sealed class EventPublishingTests
     private static async Task<string> CreateIdeaAsync(
         HttpClient client,
         string content,
-        string? title = null,
         string[]? tags = null,
         string? projectId = null)
     {
-        var response = await client.PostAsJsonAsync("/api/ideas", new { content, title, tags, projectId });
+        var response = await client.PostAsJsonAsync("/api/ideas", new { content, tags, projectId });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         return await ReadIdAsync(response);

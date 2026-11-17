@@ -231,7 +231,7 @@ public sealed class IdeaService(
     }
 
     /// <summary>新建想法。<paramref name="projectId"/> 为空时落到内置收件箱。</summary>
-    public IdeaDto Create(string projectId, string content, string? title, IReadOnlyList<string> tags)
+    public IdeaDto Create(string projectId, string content, IReadOnlyList<string> tags)
     {
         var body = ValidateContent(content);
         var targetProjectId = ResolveProjectId(projectId);
@@ -245,7 +245,9 @@ public sealed class IdeaService(
         var idea = new Idea(
             Id: MonotonicGuid.NewUuid7().ToString("N"),
             ProjectId: targetProjectId,
-            Title: NormalizeTitle(title),
+            // 本 task 领域记录 Idea 仍有 Title 字段（存储层去列是 Task 3 的事），
+            // 但对外已经没有「标题」这个概念了 —— 恒为 null。
+            Title: null,
             Content: body,
             Tags: normalizedTags,
             Done: false,
@@ -270,36 +272,26 @@ public sealed class IdeaService(
     }
 
     /// <summary>
-    /// 改正文与标题。
-    /// <paramref name="title"/> 为 null 表示**不改标题**，给字符串（含空串）表示改成那个标题
-    /// （空串 = 改成「无标题」）；<paramref name="content"/> 为 null 表示不改正文。
+    /// 改正文。
+    /// <paramref name="content"/> 为 null 表示不改正文。
     /// </summary>
-    /// <remarks>
-    /// 入参的 null 与出参的 null 语义不同：DTO 里 <c>"title": null</c> 是「无标题」，
-    /// 入参 <c>Title = null</c> 是「不修改」，前端容易误读。
-    /// </remarks>
-    public IdeaDto Update(string id, string? title, string? content)
+    public IdeaDto Update(string id, string? content)
     {
         // changed 只列**真正改了**的字段，所以要在事务里跟改之前的值比。
         var (dto, changed) = repo.InTransaction(r =>
         {
             var existing = RequireExisting(r, id);
 
-            var nextTitle = title is null ? existing.Title : NormalizeTitle(title);
             var nextContent = content is null ? existing.Content : ValidateContent(content);
 
-            var changed = new List<string>(2);
-            if (!string.Equals(existing.Title, nextTitle, StringComparison.Ordinal))
-            {
-                changed.Add("title");
-            }
-
+            var changed = new List<string>(1);
             if (!string.Equals(existing.Content, nextContent, StringComparison.Ordinal))
             {
                 changed.Add("content");
             }
 
-            return (ToDto(r.UpdateContent(id, nextTitle, nextContent)), changed.ToArray());
+            // 仓储签名在存储层去标题列（Task 3）之前仍是三参的，标题恒传 null。
+            return (ToDto(r.UpdateContent(id, null, nextContent)), changed.ToArray());
         });
 
         publisher.Publish(EventFactory.Create(
@@ -561,11 +553,10 @@ public sealed class IdeaService(
 
     /// <summary>
     /// 把多条想法合并成一条**全新**的想法：正文按源想法的 <c>updated_at</c> 升序以空行拼接，
-    /// 标签取所有源标签的并集，标题取第一条源的标题。源想法**硬删除**（不进回收站）。
+    /// 标签取所有源标签的并集。源想法**硬删除**（不进回收站）。
     /// </summary>
     /// <param name="ids">要合并的想法 id，至少两条。</param>
     /// <param name="content">给字符串则用它当正文；null 表示用自动拼接的结果。</param>
-    /// <param name="title">给字符串则用它当标题；null 表示用第一条源的标题。</param>
     /// <remarks>
     /// 跨项目合并不允许（400 <c>merge_cross_project</c>）：把一个项目的想法拼到
     /// 另一个项目下，源与结果之间的归属关系就断了。
@@ -578,7 +569,7 @@ public sealed class IdeaService(
     /// 要么全成要么全不成，不会出现「源想法没了、合并结果也没建」的中间态。
     /// </para>
     /// </remarks>
-    public IdeaDto Merge(IReadOnlyList<string> ids, string? content, string? title)
+    public IdeaDto Merge(IReadOnlyList<string> ids, string? content)
     {
         var targets = NormalizeIds(ids);
         if (targets.Count < 2)
@@ -610,7 +601,8 @@ public sealed class IdeaService(
             var idea = new Idea(
                 Id: MonotonicGuid.NewUuid7().ToString("N"),
                 ProjectId: projectIds[0],
-                Title: title is not null ? NormalizeTitle(title) : sources[0].Title,
+                // 合并结果没有「标题」：对外已经没有这个概念了（存储层去列是 Task 3 的事）。
+                Title: null,
                 Content: content is not null
                     ? ValidateContent(content)
                     : string.Join("\n\n", sources.Select(source => source.Content)),
@@ -831,14 +823,6 @@ public sealed class IdeaService(
         }
 
         return content;
-    }
-
-    /// <summary>标题去掉首尾空白；空标题等于「无标题」（null）。</summary>
-    private static string? NormalizeTitle(string? title)
-    {
-        var trimmed = title?.Trim() ?? string.Empty;
-
-        return trimmed.Length == 0 ? null : trimmed;
     }
 
     /// <summary>
@@ -1088,7 +1072,6 @@ public sealed class IdeaService(
     internal static IdeaDto ToDto(Idea idea) => new(
         Id: idea.Id,
         ProjectId: idea.ProjectId,
-        Title: idea.Title,
         Content: idea.Content,
         Tags: idea.Tags.ToArray(),
         Done: idea.Done,
@@ -1099,7 +1082,6 @@ public sealed class IdeaService(
     private static IdeaSnapshot ToSnapshot(IdeaDto dto) => new(
         Id: dto.Id,
         ProjectId: dto.ProjectId,
-        Title: dto.Title,
         Content: dto.Content,
         Tags: dto.Tags,
         Done: dto.Done,

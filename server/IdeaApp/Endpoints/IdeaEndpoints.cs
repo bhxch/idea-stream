@@ -63,7 +63,6 @@ public static class IdeaEndpoints
             ApiResults.Run(() => Results.Json(service.Create(
                     request.ProjectId ?? string.Empty,
                     request.Content ?? string.Empty,
-                    request.Title,
                     request.Tags ?? Array.Empty<string>()),
                 IdeaJsonContext.Default.IdeaDto, statusCode: StatusCodes.Status201Created)))
             .RejectsNonJsonBodyWithProblemDetails()
@@ -73,7 +72,7 @@ public static class IdeaEndpoints
             .ProducesApiProblem(StatusCodes.Status415UnsupportedMediaType, "unsupported_media_type");
 
         app.MapPatch("/api/ideas/{id}", (string id, UpdateIdeaRequest request, IdeaService service) =>
-            ApiResults.Run(() => Results.Json(service.Update(id, request.Title, request.Content),
+            ApiResults.Run(() => Results.Json(service.Update(id, request.Content),
                 IdeaJsonContext.Default.IdeaDto)))
             .RejectsNonJsonBodyWithProblemDetails()
             .Produces<IdeaDto>(StatusCodes.Status200OK)

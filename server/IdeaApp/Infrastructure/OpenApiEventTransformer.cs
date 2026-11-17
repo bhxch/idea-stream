@@ -27,7 +27,7 @@ namespace IdeaApp.Infrastructure;
 /// 帧里的 JSON 才和 schema 对得上；</item>
 /// <item>「必填可空」与「可选」是两回事：<c>changed</c> / <c>mergedFrom</c>
 /// **恒定写出来**（值可能是 null），所以它们在 required 里、类型是
-/// <c>["null","array"]</c>；<c>title</c> 同理（<c>string | null</c>，不是可选）。</item>
+/// <c>["null","array"]</c>；<c>idea</c>（快照）同理（对象 | null，不是可选）。</item>
 /// </list>
 /// </para>
 /// </summary>
@@ -128,7 +128,7 @@ public sealed class OpenApiEventTransformer : IOpenApiDocumentTransformer
                     "这次操作写过的字段名。三态：null = 该事件类型没有「改了什么」的概念" +
                     "（订阅端按「整条对象是新数据」处理）；空数组 = 写了但值没变" +
                     "（数据本身仍然是最新的，别把这次更新跳过）；非空数组 = 这次写过的字段名" +
-                    "（如 title、done、tags、name、sortOrder、deletedAt）。" +
+                    "（如 done、tags、content、name、sortOrder、deletedAt）。" +
                     "注意：SetTags / SetDone 与项目改名一律列该字段，不跟旧值比对。"),
                 ["mergedFrom"] = NullableStringArray(
                     "被合并掉的源想法 id 列表。只有 idea.merged 事件有值，其它事件为 null。")
@@ -147,17 +147,12 @@ public sealed class OpenApiEventTransformer : IOpenApiDocumentTransformer
                 "idea.deleted 事件带的是**删除前**的快照（deletedAt 不在快照里，回收站里的条目另有接口）。",
             Required = new HashSet<string>(StringComparer.Ordinal)
             {
-                "id", "projectId", "title", "content", "tags", "done", "createdAt", "updatedAt"
+                "id", "projectId", "content", "tags", "done", "createdAt", "updatedAt"
             },
             Properties = new Dictionary<string, IOpenApiSchema>(StringComparer.Ordinal)
             {
                 ["id"] = new OpenApiSchema { Type = JsonSchemaType.String, Description = "想法 id。" },
                 ["projectId"] = new OpenApiSchema { Type = JsonSchemaType.String, Description = "所属项目 id。" },
-                ["title"] = new OpenApiSchema
-                {
-                    Type = JsonSchemaType.String | JsonSchemaType.Null,
-                    Description = "标题。可以是 null（未命名想法）——键一定在，值可能是 null。"
-                },
                 ["content"] = new OpenApiSchema { Type = JsonSchemaType.String, Description = "正文（非空）。" },
                 ["tags"] = new OpenApiSchema
                 {

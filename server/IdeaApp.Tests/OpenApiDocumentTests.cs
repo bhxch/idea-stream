@@ -184,12 +184,12 @@ public sealed class OpenApiDocumentTests
         Assert.True(AllowsNull(eventProperties.GetProperty("changed")), "changed 必须可空（值可能是 null）");
         Assert.True(AllowsNull(eventProperties.GetProperty("mergedFrom")), "mergedFrom 必须可空（值可能是 null）");
 
-        // title 同理：string | null，不是「可选」。
+        // 快照里没有「标题」：想法就是一段文字。
         var snapshot = schemas.GetProperty("IdeaSnapshot");
         var snapshotProperties = snapshot.GetProperty("properties");
 
-        Assert.Contains("title", Required(snapshot));
-        Assert.True(AllowsNull(snapshotProperties.GetProperty("title")), "title 必须可空（string | null）");
+        Assert.False(Required(snapshot).Contains("title"), "IdeaSnapshot 的 required 里不该有 title");
+        Assert.False(snapshotProperties.TryGetProperty("title", out _), "IdeaSnapshot 不该再有 title 属性");
 
         // 字段名必须与实际报文一致：拿一个「什么都是 null」的真事件序列化一遍。
         var evt = new IdeaEvent(
@@ -222,6 +222,45 @@ public sealed class OpenApiDocumentTests
 
         Assert.Contains("IdeaEvent", description, StringComparison.Ordinal);
         Assert.Contains("text/event-stream", description, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 规格 §4.4 第 1 条：重新生成后的契约里**全文搜不到** idea 的 title。
+    /// </summary>
+    ///
+    /// <remarks>
+    /// 遍历五个 schema（DTO / 快照 / 三个请求体）而不是只查一个：规格写的是
+    /// 「**全文搜不到** idea 的 title」，只查一个 schema 挂一漏万。
+    /// <para>
+    /// 「正文里不出现「标题」二字」这条盖住手写的 <c>IdeaSnapshot</c> schema ——
+    /// 它的 title 属性的 description 里就写着「标题。可以是 null（未命名想法）…」，
+    /// 只查 properties 的键名会漏掉它。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task The_committed_contract_has_no_idea_title_property()
+    {
+        var committed = await File.ReadAllTextAsync(CommittedDocumentPath());
+        using var document = JsonDocument.Parse(committed);
+
+        var schemas = document.RootElement.GetProperty("components").GetProperty("schemas");
+
+        foreach (var name in new[]
+                 {
+                     "IdeaDto", "IdeaSnapshot",
+                     "CreateIdeaRequest", "UpdateIdeaRequest", "MergeIdeasRequest"
+                 })
+        {
+            Assert.True(schemas.TryGetProperty(name, out var schema), $"components.schemas 里没有 {name}");
+
+            var properties = schema.GetProperty("properties");
+
+            Assert.False(properties.TryGetProperty("title", out _), $"{name} 的 properties 里不该有 title");
+        }
+
+        // 整份契约的正文里不出现「标题」二字。
+        // （info.title 是 "Idea Manager"、ProblemDetails 的 title 是它自己的字段名，都不算。）
+        Assert.DoesNotContain("标题", committed, StringComparison.Ordinal);
     }
 
     /// <summary>schema 的 required 清单。</summary>

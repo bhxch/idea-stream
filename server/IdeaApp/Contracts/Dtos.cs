@@ -5,7 +5,7 @@ namespace IdeaApp.Contracts;
 /// <summary>
 /// 一处命中：某个字段里的字符区间（UTF-16 code unit）。
 /// </summary>
-/// <param name="Field">命中的字段：<c>"title"</c> | <c>"content"</c> | <c>"tags"</c> | <c>"project"</c>。</param>
+/// <param name="Field">命中的字段：<c>"content"</c> | <c>"tags"</c> | <c>"project"</c>。</param>
 /// <param name="Start">命中区间的起始偏移，单位是 UTF-16 code unit。</param>
 /// <param name="Length">命中区间的长度，单位是 UTF-16 code unit。</param>
 /// <remarks>
@@ -14,10 +14,9 @@ namespace IdeaApp.Contracts;
 /// </remarks>
 public sealed record SearchMatch(string Field, int Start, int Length);
 
-/// <summary>一条想法的对外表示。</summary>
+/// <summary>一条想法的对外表示。**没有标题** —— 想法就是一段文字。</summary>
 /// <param name="Id">想法 id。</param>
 /// <param name="ProjectId">所属项目 id。</param>
-/// <param name="Title">标题；null 表示「无标题」。</param>
 /// <param name="Content">正文。</param>
 /// <param name="Tags">标签名（库里读回来的排序版）。</param>
 /// <param name="Done">是否已完成。</param>
@@ -37,7 +36,7 @@ public sealed record SearchMatch(string Field, int Start, int Length);
 /// 每一条想法的响应都会多出 <c>"matches": null, "trashed": null</c> 两个键 ——
 /// 不带关键词、不带回收站标记的响应必须与今天逐字节一样。
 /// </remarks>
-public sealed record IdeaDto(string Id, string ProjectId, string? Title, string Content,
+public sealed record IdeaDto(string Id, string ProjectId, string Content,
                              string[] Tags, bool Done,
                              DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
                              [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

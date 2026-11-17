@@ -61,7 +61,7 @@ public static class BulkIdeaEndpoints
         // 合并：多条想法 → 一条全新的想法，返回合并结果。
         app.MapPost("/api/ideas/merge", (MergeIdeasRequest request, IdeaService service) =>
             ApiResults.Run(() => Results.Json(
-                service.Merge(request.Ids ?? Array.Empty<string>(), request.Content, request.Title),
+                service.Merge(request.Ids ?? Array.Empty<string>(), request.Content),
                 IdeaJsonContext.Default.IdeaDto)))
             .RejectsNonJsonBodyWithProblemDetails()
             .Produces<IdeaDto>(StatusCodes.Status200OK)
