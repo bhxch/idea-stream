@@ -428,7 +428,6 @@ public sealed class IdeaRepository
                     connection,
                     transaction,
                     idea.Id,
-                    idea.Title,
                     idea.Content,
                     tags,
                     ReadProjectName(connection, transaction, idea.ProjectId)),
@@ -440,7 +439,7 @@ public sealed class IdeaRepository
     }
 
     /// <summary>
-    /// 改正文与标题，并刷新 <c>updated_at</c>；索引行跟着更新（标题与正文两列）。
+    /// 改正文与标题，并刷新 <c>updated_at</c>；索引行跟着更新（索引里只剩正文一列）。
     /// <paramref name="title"/> 为 null 表示把标题写成「无标题」（NULL）。
     /// </summary>
     /// <remarks>
@@ -463,7 +462,7 @@ public sealed class IdeaRepository
                 command.ExecuteNonQuery();
             }
 
-            // 回读一次：索引行要用刚落库的标题与正文，标签与项目名沿用库里的现值。
+            // 回读一次：索引行要用刚落库的正文，标签与项目名沿用库里的现值。
             var idea = ReadIdea(connection, transaction, id);
 
             WarnIfIndexSkipped(
@@ -471,7 +470,6 @@ public sealed class IdeaRepository
                     connection,
                     transaction,
                     id,
-                    idea.Title,
                     idea.Content,
                     idea.Tags,
                     ReadProjectName(connection, transaction, idea.ProjectId)),
@@ -591,7 +589,6 @@ public sealed class IdeaRepository
                     connection,
                     transaction,
                     ideaId,
-                    idea.Title,
                     idea.Content,
                     idea.Tags,
                     ReadProjectName(connection, transaction, idea.ProjectId)),

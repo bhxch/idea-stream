@@ -30,14 +30,20 @@ namespace IdeaApp.Infrastructure;
 public static class SearchIndex
 {
     /// <summary>
-    /// 当前索引版本。分词规则变了就 +1，启动时会自动重建索引。
+    /// 当前索引版本。分词规则或列清单变了就 +1，启动时会自动重建索引。
     /// </summary>
     /// <remarks>
     /// 版本号记在 <c>search_meta</c> 表的 <c>index.version</c> 键上。
     /// 不建迁移框架：一个 key/value 表就够 —— 以后要改分词规则，
-    /// 把这里改成 <c>"2"</c> 就会在下次启动时整体重建一次索引。
+    /// 把这里改成 <c>"3"</c> 就会在下次启动时整体重建一次索引。
+    /// <para>
+    /// ⚠️ <strong>现在是 <c>"2"</c>，因为 <c>idea_fts</c> 的列清单变了</strong>
+    /// （去掉 title：4 列 → 3 列）。旧库的 <c>idea_fts</c> 被形状检查 DROP 掉之后是**空表**，
+    /// 版本号不变的话 <see cref="SearchIndexInitializer.EnsureIndexed"/> 会认为索引已是最新而直接返回 ——
+    /// 索引就永远空着（搜不到任何东西，而且没有任何报错）。
+    /// </para>
     /// </remarks>
-    public const string CurrentVersion = "1";
+    public const string CurrentVersion = "2";
 
     /// <summary>
     /// 回填路径里标签名之间的分隔符：ASCII 的 SOH（<c>U+0001</c>）。
@@ -82,7 +88,6 @@ public static class SearchIndex
     /// <param name="connection">数据库连接。</param>
     /// <param name="transaction">所在事务（可为 null = 不在事务里）。</param>
     /// <param name="ideaId">想法 id。</param>
-    /// <param name="title">标题（可为 null）。</param>
     /// <param name="content">正文。</param>
     /// <param name="tags">该想法的全部标签名。</param>
     /// <param name="projectName">所属项目名。</param>
@@ -90,6 +95,10 @@ public static class SearchIndex
     /// <remarks>
     /// 先删后插而不是 UPDATE：改动内容后不会残留旧 token —— UPDATE 只能改列，
     /// 而「先删干净再插新的」在语义上就是「这一行的索引就是当前内容」。
+    /// <para>
+    /// ⚠️ <strong>没有 title 参数了</strong> —— 索引里不再有标题这一列
+    /// （想法不再有标题，索引的列清单是 <c>content, tags, project</c>）。
+    /// </para>
     /// <para>
     /// ⚠️ <strong>调用方必须保证 idea 行已存在</strong>：本方法不做存在性断言，
     /// idea 行不在时**跳过**（不抛异常），跳过与否通过返回值告知调用方。
@@ -103,7 +112,6 @@ public static class SearchIndex
         SqliteConnection connection,
         SqliteTransaction? transaction,
         string ideaId,
-        string? title,
         string content,
         IReadOnlyList<string> tags,
         string projectName)
@@ -116,7 +124,7 @@ public static class SearchIndex
 
         Execute(connection, transaction, "DELETE FROM idea_fts WHERE rowid = $rowid;", ("$rowid", rowId));
 
-        InsertIdeaRow(connection, transaction, rowId.Value, title, content, tags, projectName);
+        InsertIdeaRow(connection, transaction, rowId.Value, content, tags, projectName);
         return true;
     }
 
@@ -125,7 +133,6 @@ public static class SearchIndex
         SqliteConnection connection,
         SqliteTransaction? transaction,
         long rowId,
-        string? title,
         string content,
         IReadOnlyList<string> tags,
         string projectName)
@@ -133,10 +140,9 @@ public static class SearchIndex
         Execute(
             connection,
             transaction,
-            "INSERT INTO idea_fts(rowid, title, content, tags, project) " +
-            "VALUES ($rowId, $title, $content, $tags, $project);",
+            "INSERT INTO idea_fts(rowid, content, tags, project) " +
+            "VALUES ($rowId, $content, $tags, $project);",
             ("$rowId", rowId),
-            ("$title", ToIndexText(title)),
             ("$content", ToIndexText(content)),
             // 标签名用空格连起来再切词：每个标签名都是独立的一段，
             // 词元不会跨过标签边界（标签 "ab" 与 "cd" 连成 "abcd" 会被当成一个词元）。
@@ -228,7 +234,7 @@ public static class SearchIndex
         => InsertIdeaRows(connection, transaction, LoadIdeaRows(connection, transaction, projectId: null));
 
     /// <summary>
-    /// 从业务表里读出想法的索引行数据（一条 SQL 凑齐五样，rowid 直接从查询里拿）。
+    /// 从业务表里读出想法的索引行数据（一条 SQL 凑齐四样，rowid 直接从查询里拿）。
     /// </summary>
     /// <param name="projectId">限定项目；null = 全部想法。</param>
     /// <remarks>
@@ -243,6 +249,11 @@ public static class SearchIndex
     /// 索引行被删掉却不会写回来（静默丢失）。LEFT JOIN 下这种想法照样写回，
     /// 项目名列写空串（库里查不到的项目名不写进索引）。
     /// </para>
+    /// <para>
+    /// ⚠️ <strong>列序是 <c>rowid, content, 项目名, 标签子查询</c></strong> ——
+    /// 没有 title 了（索引列是 content / tags / project）。
+    /// 下标跟着列序走：content 是 1、项目名是 2、标签子查询是 3。
+    /// </para>
     /// </remarks>
     internal static List<IdeaIndexRow> LoadIdeaRows(
         SqliteConnection connection,
@@ -250,7 +261,7 @@ public static class SearchIndex
         string? projectId)
     {
         var sql =
-            "SELECT i.rowid, i.title, i.content, p.name, " +
+            "SELECT i.rowid, i.content, p.name, " +
             // 标签名之间用 SOH（char(1)）连接：标签名本身含空格时，
             // 按空格拆分会把它拆错（["a b", "c"] → ["a", "b", "c"]）。
             "(SELECT group_concat(name, char(1)) FROM (" +
@@ -278,7 +289,7 @@ public static class SearchIndex
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                var tagText = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+                var tagText = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
 
                 // 按 SOH 拆回标签名列表：分隔符不会出现在标签名里，拆出来就是真标签名。
                 var tags = tagText.Length == 0
@@ -287,11 +298,10 @@ public static class SearchIndex
 
                 rows.Add(new IdeaIndexRow(
                     reader.GetInt64(0),
-                    reader.IsDBNull(1) ? null : reader.GetString(1),
-                    reader.GetString(2),
+                    reader.GetString(1),
                     tags,
                     // 项目行不在了（LEFT JOIN 出来是 NULL）→ 项目名列写空串。
-                    reader.IsDBNull(3) ? string.Empty : reader.GetString(3)));
+                    reader.IsDBNull(2) ? string.Empty : reader.GetString(2)));
             }
         }
 
@@ -302,11 +312,12 @@ public static class SearchIndex
     /// 把一批想法索引行分块写入（多行 VALUES，块间参数数量有硬上限）。
     /// </summary>
     /// <remarks>
-    /// 每块 199 行 × 5 个参数 = 995 个参数 —— 连 SQLite **最老的**变量上限（999）都放得下，
+    /// 每块 249 行 × 4 个参数 = 996 个参数 —— 连 SQLite **最老的**变量上限（999）都放得下，
     /// 不用碰编译选项；新默认（3.32+ 的 32766）更是绰绰有余。
     /// <para>
-    /// 199 不是随手取的：每行 5 个参数，999 ÷ 5 = 199.8 → 199 是还能塞进 999 的最大块大小
-    /// （200 行就要 1000 个参数，**超了** 999）。
+    /// 249 不是随手取的：每行 4 个参数（rowid / content / tags / project，没有 title 了），
+    /// 999 ÷ 4 = 249.75 → 249 是还能塞进 999 的最大块大小
+    /// （250 行就要 1000 个参数，**超了** 999）。
     /// </para>
     /// </remarks>
     private static void InsertIdeaRows(
@@ -314,14 +325,14 @@ public static class SearchIndex
         SqliteTransaction? transaction,
         IReadOnlyList<IdeaIndexRow> rows)
     {
-        const int chunkSize = 199;
+        const int chunkSize = 249;
 
         for (var start = 0; start < rows.Count; start += chunkSize)
         {
             var chunk = rows.Skip(start).Take(chunkSize).ToList();
 
-            var sql = new StringBuilder("INSERT INTO idea_fts(rowid, title, content, tags, project) VALUES ");
-            var parameters = new List<(string Name, object Value)>(chunk.Count * 5);
+            var sql = new StringBuilder("INSERT INTO idea_fts(rowid, content, tags, project) VALUES ");
+            var parameters = new List<(string Name, object Value)>(chunk.Count * 4);
 
             for (var i = 0; i < chunk.Count; i++)
             {
@@ -331,9 +342,8 @@ public static class SearchIndex
                     sql.Append(',');
                 }
 
-                sql.Append($"($r{i}, $t{i}, $c{i}, $g{i}, $p{i})");
+                sql.Append($"($r{i}, $c{i}, $g{i}, $p{i})");
                 parameters.Add(($"$r{i}", row.RowId));
-                parameters.Add(($"$t{i}", ToIndexText(row.Title)));
                 parameters.Add(($"$c{i}", ToIndexText(row.Content)));
                 // 标签名用空格连起来再切词：每个标签名都是独立的一段，
                 // 词元不会跨过标签边界（标签 "ab" 与 "cd" 连成 "abcd" 会被当成一个词元）。
@@ -354,7 +364,6 @@ public static class SearchIndex
     /// </remarks>
     internal sealed record IdeaIndexRow(
         long RowId,
-        string? Title,
         string Content,
         IReadOnlyList<string> Tags,
         string ProjectName);

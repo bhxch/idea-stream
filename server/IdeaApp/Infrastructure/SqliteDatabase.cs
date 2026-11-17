@@ -122,10 +122,23 @@ public sealed class SqliteDatabase
     /// <summary>
     /// 建库建表并写入内置收件箱。可重复调用。
     /// </summary>
+    /// <remarks>
+    /// ⚠️ <strong>建表之前会检查 <c>idea_fts</c> 的列清单</strong>：
+    /// 与 <c>schema.sql</c> 不一致（老库是 4 列，含 title）就 DROP 掉，
+    /// 让新的 DDL 按正确的列重建 —— FTS5 虚表的列清单建表时定死，改不了。
+    /// </remarks>
     public void Initialize()
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
+
+        // 旧库的 idea_fts 是 4 列（含 title），而 schema.sql 现在是 3 列。
+        // FTS5 虚表的列清单建表时定死，CREATE ... IF NOT EXISTS 改不了 ——
+        // 所以形状对不上时先 DROP，让后面的 schema 按新 DDL 重建。
+        //
+        // ⚠️ 必须放在 schema **之前**：schema 里的 CREATE VIRTUAL TABLE IF NOT EXISTS
+        // 遇到已存在的表是 no-op，先 DROP 才轮得到新 DDL。
+        DropLegacyIdeaFts(connection, transaction);
 
         foreach (var statement in ReadSchemaStatements())
         {
@@ -146,6 +159,70 @@ public sealed class SqliteDatabase
         }
 
         transaction.Commit();
+    }
+
+    /// <summary>
+    /// <c>idea_fts</c> 的**期望列序**（与 <c>schema.sql</c> 里的 DDL 一致）。
+    /// </summary>
+    private static readonly string[] IdeaFtsColumns = ["content", "tags", "project"];
+
+    /// <summary>
+    /// 列清单对不上时把 <c>idea_fts</c> DROP 掉，让后面的 schema 按新的 DDL 重建。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 三种情形：
+    /// <list type="bullet">
+    /// <item>表不存在（新库）→ <c>PRAGMA table_info</c> 返回 0 行 → 什么都不做，schema 会建它；</item>
+    /// <item>列名恰好是那三列 → 什么都不做（**不能** DROP：里面的索引行还在，
+    /// 一 DROP 就没了，而版本号对得上时不会触发整体重建）；</item>
+    /// <item>其它情况（老库的 4 列，含 title）→ <c>DROP TABLE</c>，让它被 schema 重新建成 3 列。</item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// ⚠️ <strong>DROP 之后索引行就没了</strong> —— 靠 <see cref="SearchIndex.CurrentVersion"/>
+    /// 升到 <c>"2"</c> 触发整体重建。所以形状检查与版本号<strong>必须一起改</strong>，
+    /// 少一个就是「索引空着但版本对上了」。
+    /// </para>
+    /// <para>
+    /// <c>PRAGMA table_info(idea_fts)</c> 返回的是<strong>声明的列</strong> ——
+    /// FTS5 的隐藏列 <c>rank</c> 不在里面（实测：<c>fts5(title, content, tags, project)</c>
+    /// 的 table_info 恰好返回那 4 列）。
+    /// </para>
+    /// </remarks>
+    private static void DropLegacyIdeaFts(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        var actual = new List<string>();
+
+        using (var info = connection.CreateCommand())
+        {
+            info.Transaction = transaction;
+            info.CommandText = "PRAGMA table_info(idea_fts);";
+
+            using var reader = info.ExecuteReader();
+            while (reader.Read())
+            {
+                // table_info 的列是 (cid, name, type, notnull, dflt_value, pk)。
+                actual.Add(reader.GetString(1));
+            }
+        }
+
+        // 表不存在（新库）：table_info 给 0 行 → 什么都不做，schema 会建它。
+        if (actual.Count == 0)
+        {
+            return;
+        }
+
+        if (actual.Count == IdeaFtsColumns.Length &&
+            actual.SequenceEqual(IdeaFtsColumns, StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        using var drop = connection.CreateCommand();
+        drop.Transaction = transaction;
+        drop.CommandText = "DROP TABLE idea_fts;";
+        drop.ExecuteNonQuery();
     }
 
     /// <summary>读取嵌入的建表脚本，按分号切成独立语句。</summary>

@@ -4,7 +4,7 @@ using IdeaApp.Domain;
 namespace IdeaApp.Infrastructure;
 
 /// <summary>
-/// 想法命中位置的计算：标题、正文、标签名、项目名四个字段各算一遍。
+/// 想法命中位置的计算：正文、标签名、项目名三个字段各算一遍。
 ///
 /// <para>
 /// 为什么单独一份：<c>GET /api/ideas?q=</c> 与 <c>GET /api/search</c> 都要给
@@ -43,7 +43,6 @@ public static class IdeaMatches
     {
         var matches = new List<SearchMatch>();
 
-        Add(matches, "title", idea.Title, keyword);
         Add(matches, "content", idea.Content, keyword);
 
         // 标签列的「完整字符串」是**用空格连起来的标签名** ——
@@ -57,7 +56,7 @@ public static class IdeaMatches
 
     /// <summary>把某个字段里的命中位置收进结果里。</summary>
     /// <param name="matches">收集结果。</param>
-    /// <param name="field">字段名（<c>title</c> / <c>content</c> / <c>tags</c> / <c>project</c>）。</param>
+    /// <param name="field">字段名（<c>content</c> / <c>tags</c> / <c>project</c>）。</param>
     /// <param name="text">该字段的完整文本（可为 null 或空）。</param>
     /// <param name="keyword">用户给的查询串。</param>
     private static void Add(List<SearchMatch> matches, string field, string? text, string keyword)

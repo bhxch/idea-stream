@@ -55,6 +55,23 @@ public sealed record SearchSlice<T>(IReadOnlyList<T> Items, int Total);
 public sealed class SearchRepository(SqliteDatabase db)
 {
     /// <summary>
+    /// <c>idea_fts</c> 的 bm25 权重，<strong>按列顺序</strong>：正文、标签、项目。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <strong>权重个数必须等于 <c>idea_fts</c> 的列数</strong> —— FTS5 的列清单建表时定死。
+    /// <para>
+    /// 个数对不上时 SQLite <strong>不报错</strong>（实测 3.53.3：多余的权重忽略、
+    /// 缺少的按默认 1.0 处理），后果是相关度<strong>静默错位</strong>：
+    /// 4 列配 3 个权重，权重落到 title / content / tags 上，项目名那列拿默认 1.0。
+    /// </para>
+    /// <para>
+    /// 正文权重 5.0：标题列去掉之后，正文权重 1 会被标签 5 / 项目 3 压过去，
+    /// 「正文里写了咖啡」的那条会排在「项目名带咖啡」的那条后面。
+    /// </para>
+    /// </remarks>
+    internal static readonly double[] IdeaFtsWeights = [5.0, 5.0, 3.0];
+
+    /// <summary>
     /// 命中的想法（一页 + 总数）。
     /// </summary>
     /// <param name="matchExpression">
@@ -91,7 +108,9 @@ public sealed class SearchRepository(SqliteDatabase db)
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                rows.Add((ReadIdea(reader), reader.GetString(8)));
+                // 项目名那一列的下标：SELECT 去掉 i.title 之后它落到 7（8 变成 score 列）。
+                // 不改就去读一个 REAL/NULL → InvalidCastException → /api/search 对所有用户 500。
+                rows.Add((ReadIdea(reader), reader.GetString(7)));
             }
         }
 
@@ -206,8 +225,10 @@ public sealed class SearchRepository(SqliteDatabase db)
     /// 没关键词时不碰索引表（<c>bm25()</c> 没有 MATCH 时用不了）。
     /// <para>
     /// <c>bm25()</c> 的权重按**列顺序**：第一个实参是最左列的权重。
-    /// <c>idea_fts</c> 的列序是 <c>title, content, tags, project</c> →
-    /// 标题 10、正文 1、标签 5、项目 3。标题命中比正文命中更相关。
+    /// <c>idea_fts</c> 的列序是 <c>content, tags, project</c> →
+    /// 正文 5.0、标签 5.0、项目 3.0。
+    /// <strong>权重个数必须等于列数</strong>（FTS5 的列清单建表时定死）——
+    /// 个数对不上时 SQLite 不报错，只是相关度静默错位。
     /// </para>
     /// <para>
     /// <c>id ASC</c> 兜底 → 全序 → 分页不漂。
@@ -217,7 +238,7 @@ public sealed class SearchRepository(SqliteDatabase db)
     {
         var sql = new StringBuilder();
 
-        sql.Append("SELECT i.id, i.project_id, i.title, i.content, i.done, i.created_at, i.updated_at, i.deleted_at, p.name, ");
+        sql.Append("SELECT i.id, i.project_id, i.content, i.done, i.created_at, i.updated_at, i.deleted_at, p.name, ");
 
         if (matchExpression is null)
         {
@@ -225,7 +246,9 @@ public sealed class SearchRepository(SqliteDatabase db)
         }
         else
         {
-            sql.Append("bm25(idea_fts, 10.0, 1.0, 5.0, 3.0) AS score ");
+            // 权重从 IdeaFtsWeights 拼出来，不写死字面量 ——
+            // 写死了将来加列就会忘了改（而改漏了不会报错，只会静默错位）。
+            sql.Append($"bm25(idea_fts, {string.Join(", ", IdeaFtsWeights)}) AS score ");
             sql.Append("FROM idea_fts JOIN idea i ON i.rowid = idea_fts.rowid ");
             sql.Append("JOIN project p ON p.id = i.project_id WHERE idea_fts MATCH $match ");
         }
@@ -479,16 +502,21 @@ public sealed class SearchRepository(SqliteDatabase db)
     }
 
     /// <summary>读一行想法（标签另查）。</summary>
+    /// <remarks>
+    /// ⚠️ 列序是 <c>id, project_id, content, done, created_at, updated_at, deleted_at</c> ——
+    /// 搜索路径的 SELECT 里**没有 title 了**（想法不再有标题，Task 3 才把
+    /// 领域记录 <c>Idea.Title</c> 一起去掉），所以这里给 <c>Title: null</c> 占位。
+    /// </remarks>
     private static Idea ReadIdea(SqliteDataReader reader) => new(
         Id: reader.GetString(0),
         ProjectId: reader.GetString(1),
-        Title: reader.IsDBNull(2) ? null : reader.GetString(2),
-        Content: reader.GetString(3),
+        Title: null,
+        Content: reader.GetString(2),
         Tags: Array.Empty<string>(),
-        Done: reader.GetInt64(4) != 0,
-        CreatedAt: SqliteDatabase.ParseTimestamp(reader.GetString(5)),
-        UpdatedAt: SqliteDatabase.ParseTimestamp(reader.GetString(6)),
-        DeletedAt: reader.IsDBNull(7) ? null : SqliteDatabase.ParseTimestamp(reader.GetString(7)));
+        Done: reader.GetInt64(3) != 0,
+        CreatedAt: SqliteDatabase.ParseTimestamp(reader.GetString(4)),
+        UpdatedAt: SqliteDatabase.ParseTimestamp(reader.GetString(5)),
+        DeletedAt: reader.IsDBNull(6) ? null : SqliteDatabase.ParseTimestamp(reader.GetString(6)));
 
     /// <summary>读一行项目。</summary>
     private static Project ReadProject(SqliteDataReader reader) => new(

@@ -74,11 +74,14 @@ CREATE TABLE IF NOT EXISTS setting (
     value TEXT NOT NULL
 );
 
--- 想法的全文索引。四列对应四个可检索字段：标题、正文、标签名、项目名。
+-- 想法的全文索引。三列对应三个可检索字段：正文、标签名、项目名。
 -- 存的是**切分后**的词元串，不是原文 —— 所以不能用 external content 表
 -- （external content 表会用本表的 tokenize 去处理原文，中文会整段成一个 token）。
+--
+-- ⚠️ FTS5 虚表的列清单**建表时定死**，IF NOT EXISTS 改不了 ——
+-- 旧库（4 列，含 title）必须先 DROP 再重建，见 SqliteDatabase.Initialize 里的形状检查。
 CREATE VIRTUAL TABLE IF NOT EXISTS idea_fts USING fts5(
-    title, content, tags, project,
+    content, tags, project,
     tokenize = 'unicode61 remove_diacritics 0'
 );
 

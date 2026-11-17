@@ -44,6 +44,84 @@ public sealed class SearchIndexTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// 旧库的 <c>idea_fts</c> 是 4 列（含 title），而 schema 现在是 3 列。
+    ///
+    /// <para>
+    /// FTS5 虚表的列清单是<strong>建表时定死</strong>的，<c>CREATE ... IF NOT EXISTS</c>
+    /// 改不了 —— 不 DROP 就永远是 4 列。
+    /// </para>
+    ///
+    /// <para>
+    /// 后果不是报错，是<strong>静默错位</strong>：bm25 的权重个数必须等于列数，
+    /// 而 SQLite 在个数对不上时<strong>不报错</strong>（多余的权重忽略、缺少的按默认 1.0 处理）——
+    /// 4 列配 3 个权重，权重落到 title / content / tags 上，项目名那列拿默认 1.0。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Initialize_rebuilds_a_legacy_idea_fts_with_the_title_column()
+    {
+        // 旧形状的库必须在**启动之前**造好 —— 造完就调 Initialize()。
+        var path = Path.Combine(_tempDirectory, "legacy", "idea.db");
+        var db = new SqliteDatabase(path);
+
+        using (var connection = db.Open())
+        using (var command = connection.CreateCommand())
+        {
+            // 旧版本的 idea_fts：四列，含 title。
+            command.CommandText =
+                "CREATE VIRTUAL TABLE idea_fts USING fts5(title, content, tags, project);";
+            command.ExecuteNonQuery();
+        }
+
+        db.Initialize();
+
+        // 列名恰好是那 3 列（PRAGMA table_info 只返回声明的列，FTS5 的隐藏列 rank 不在里面）。
+        Assert.Equal(new[] { "content", "tags", "project" }, ReadIdeaFtsColumns(path));
+    }
+
+    /// <summary>
+    /// 形状已经对得上时，<c>Initialize()</c> 不能再 DROP 掉它 ——
+    /// 一 DROP 索引行就没了，而版本号对得上时不会触发整体重建，索引就永远空着。
+    /// </summary>
+    [Fact]
+    public void Initialize_keeps_the_idea_fts_shape_when_it_already_matches()
+    {
+        InsertProject("p1", "工作");
+        InsertIdea("i1", "p1", null, "手冲咖啡的关键");
+
+        using (var connection = Database.Open())
+        {
+            SearchIndex.UpsertIdea(
+                connection, null, "i1", "手冲咖啡的关键", Array.Empty<string>(), "工作");
+        }
+
+        var before = CountIdeaFts();
+        Assert.NotEqual(0, before);
+
+        // 再跑一次 Initialize()：形状对得上 → 不 DROP → 数据一条不少。
+        Database.Initialize();
+
+        Assert.Equal(new[] { "content", "tags", "project" }, ReadIdeaFtsColumns(DatabasePath));
+        Assert.Equal(before, CountIdeaFts());
+        Assert.Equal(new[] { RowIdOfIdea("i1") }, MatchIdeaFts("\"咖 啡\""));
+    }
+
+    /// <summary>
+    /// bm25 的<strong>权重个数必须等于列数</strong>。
+    ///
+    /// <para>
+    /// 这条约束没有强制机制：个数对不上时 SQLite <strong>不报错</strong>
+    /// （多余的权重忽略、缺少的按默认 1.0 处理），后果是相关度静默错位。
+    /// 所以只能靠测试钉住 —— 权重数组与列数必须同时改。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Search_weights_match_the_index_column_count()
+    {
+        Assert.Equal(ReadIdeaFtsColumns(DatabasePath).Count, SearchRepository.IdeaFtsWeights.Length);
+    }
+
     [Fact]
     public void EnsureIndexed_on_empty_database_creates_index_rows()
     {
@@ -74,7 +152,7 @@ public sealed class SearchIndexTests : IDisposable
         SearchIndexInitializer.EnsureIndexed(Database);
 
         Assert.Equal(2, CountIdeaFts());
-        Assert.Equal("1", ReadIndexVersion());
+        Assert.Equal(SearchIndex.CurrentVersion, ReadIndexVersion());
     }
 
     [Fact]
@@ -91,7 +169,7 @@ public sealed class SearchIndexTests : IDisposable
         SearchIndexInitializer.EnsureIndexed(Database);
 
         Assert.Equal(before, CountIdeaFts());
-        Assert.Equal("1", ReadIndexVersion());
+        Assert.Equal(SearchIndex.CurrentVersion, ReadIndexVersion());
     }
 
     [Fact]
@@ -122,7 +200,7 @@ public sealed class SearchIndexTests : IDisposable
         // 这一步不能省：只比「回填的文本 vs 增量写之后的文本」的话，
         // 「增量写被忽略、行根本没变」也会让断言通过 —— 那样这条用例
         // 就分不清「增量写真的发生了且文本相同」与「增量写没生效」。
-        SearchIndex.UpsertIdea(connection, null, "i1", null, "别的内容", new[] { "茶" }, "工作");
+        SearchIndex.UpsertIdea(connection, null, "i1", "别的内容", new[] { "茶" }, "工作");
         Assert.Equal("茶", ReadIdeaFtsTags(RowIdOfIdea("i1")));
 
         // 再用与回填**完全相同**的数据做一次增量写：产物必须与回填逐字节相同。
@@ -131,7 +209,7 @@ public sealed class SearchIndexTests : IDisposable
         // （显式 ORDER BY name COLLATE NOCASE —— group_concat 自己不保序），
         // 增量写这条路也得按同样的顺序拼，否则同一份数据会写出两种文本。
         SearchIndex.UpsertIdea(
-            connection, null, "i1", null, "手冲记录", new[] { "咖啡", "手冲" }, "工作");
+            connection, null, "i1", "手冲记录", new[] { "咖啡", "手冲" }, "工作");
 
         Assert.Equal(backfilled, ReadIdeaFtsTags(RowIdOfIdea("i1")));
     }
@@ -150,8 +228,8 @@ public sealed class SearchIndexTests : IDisposable
         // 哨兵活下来 = 后来者**没有**重建。
         using var blocker = Database.Open();
         using var blockerTransaction = blocker.BeginTransaction();
-        Exec(blocker, "INSERT OR REPLACE INTO search_meta(key, value) VALUES ('index.version', '1');", blockerTransaction);
-        Exec(blocker, "INSERT INTO idea_fts(rowid, title, content, tags, project) VALUES (999999, '哨兵', '', '', '');", blockerTransaction);
+        Exec(blocker, $"INSERT OR REPLACE INTO search_meta(key, value) VALUES ('index.version', '{SearchIndex.CurrentVersion}');", blockerTransaction);
+        Exec(blocker, "INSERT INTO idea_fts(rowid, content, tags, project) VALUES (999999, '哨兵', '', '');", blockerTransaction);
 
         // 过一会儿才提交：让后来者卡在 BEGIN IMMEDIATE 上（它拿不到写锁）。
         var releaser = Task.Run(() =>
@@ -225,12 +303,11 @@ public sealed class SearchIndexTests : IDisposable
         {
             foreach (var id in IdeaIds())
             {
-                var title = ReadIdeaTitle(id);
                 var content = ReadIdeaContent(id);
                 var tags = ReadTagNamesOfIdea(id);
                 var projectName = ReadProjectName("p1");
 
-                SearchIndex.UpsertIdea(connection, null, id, title, content, tags, projectName);
+                SearchIndex.UpsertIdea(connection, null, id, content, tags, projectName);
 
                 var rowId = RowIdOfIdea(id);
                 Assert.Equal(backfilled[rowId], ReadIdeaFtsRow(rowId));
@@ -277,7 +354,7 @@ public sealed class SearchIndexTests : IDisposable
         // 逐条增量写出来的文本必须与回填**逐字节相同**（两条路径同一口径）。
         using (var connection = Database.Open())
         {
-            SearchIndex.UpsertIdea(connection, null, "i1", null, "手冲记录", new[] { "a b", "c" }, "工作");
+            SearchIndex.UpsertIdea(connection, null, "i1", "手冲记录", new[] { "a b", "c" }, "工作");
         }
 
         Assert.Equal(SearchIndex.ToIndexText("a b c"), ReadIdeaFtsTags(RowIdOfIdea("i1")));
@@ -295,7 +372,7 @@ public sealed class SearchIndexTests : IDisposable
         InsertIdea("i1", "p1", null, "手冲咖啡的关键");
 
         using var connection = Database.Open();
-        SearchIndex.UpsertIdea(connection, null, "i1", null, "手冲咖啡的关键", Array.Empty<string>(), "工作");
+        SearchIndex.UpsertIdea(connection, null, "i1", "手冲咖啡的关键", Array.Empty<string>(), "工作");
 
         // 前置断言：索引行确实在（不然「重建后还在」是白成立的）。
         Assert.Equal(new[] { RowIdOfIdea("i1") }, MatchIdeaFts("\"咖 啡\""));
@@ -331,7 +408,7 @@ public sealed class SearchIndexTests : IDisposable
 
         using var connection = Database.Open();
         SearchIndex.UpsertIdea(
-            connection, null, "i1", null, "手冲咖啡的关键", Array.Empty<string>(), "工作");
+            connection, null, "i1", "手冲咖啡的关键", Array.Empty<string>(), "工作");
 
         // "咖 啡" 是两个相邻词元组成的短语 —— 正文里的「咖啡」正好是这两个词元。
         Assert.Equal(new[] { RowIdOfIdea("i1") }, MatchIdeaFts("\"咖 啡\""));
@@ -346,7 +423,7 @@ public sealed class SearchIndexTests : IDisposable
 
         using var connection = Database.Open();
         SearchIndex.UpsertIdea(
-            connection, null, "i1", null, "手冲记录", new[] { "咖啡" }, "工作");
+            connection, null, "i1", "手冲记录", new[] { "咖啡" }, "工作");
 
         // 正文里没有「咖啡」也没有「工作」：命中只能来自标签列与项目名列。
         var rowId = RowIdOfIdea("i1");
@@ -362,7 +439,7 @@ public sealed class SearchIndexTests : IDisposable
 
         using var connection = Database.Open();
         SearchIndex.UpsertIdea(
-            connection, null, "i1", null, "手冲咖啡的关键", Array.Empty<string>(), "工作");
+            connection, null, "i1", "手冲咖啡的关键", Array.Empty<string>(), "工作");
         Assert.NotEmpty(MatchIdeaFts("\"咖 啡\""));
 
         // idea 行还在 —— DeleteIdea 靠它取 rowid。
@@ -428,7 +505,7 @@ public sealed class SearchIndexTests : IDisposable
         using var connection = Database.Open();
         using var command = connection.CreateCommand();
         command.CommandText =
-            "INSERT INTO idea_fts(rowid, title, content, tags, project) VALUES ($rowId, '哨兵', '', '', '');";
+            "INSERT INTO idea_fts(rowid, content, tags, project) VALUES ($rowId, '哨兵', '', '');";
         command.Parameters.AddWithValue("$rowId", rowId);
         command.ExecuteNonQuery();
     }
@@ -494,43 +571,41 @@ public sealed class SearchIndexTests : IDisposable
         return (string?)command.ExecuteScalar() ?? string.Empty;
     }
 
-    /// <summary>索引行的一行内容（四列的原始文本）。</summary>
-    private sealed record IndexRow(string Title, string Content, string Tags, string Project);
+    /// <summary>索引行的一行内容（三列的原始文本）。</summary>
+    private sealed record IndexRow(string Content, string Tags, string Project);
 
-    /// <summary>读 idea_fts 的一整行（四列的原始文本）。</summary>
+    /// <summary>读 idea_fts 的一整行（三列的原始文本）。</summary>
     private IndexRow ReadIdeaFtsRow(long rowId)
     {
         using var connection = Database.Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT title, content, tags, project FROM idea_fts WHERE rowid = $rowId;";
+        command.CommandText = "SELECT content, tags, project FROM idea_fts WHERE rowid = $rowId;";
         command.Parameters.AddWithValue("$rowId", rowId);
 
         using var reader = command.ExecuteReader();
         Assert.True(reader.Read(), $"索引表里没有 rowid = {rowId} 的行");
 
         return new IndexRow(
-            reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+            reader.GetString(0),
             reader.GetString(1),
-            reader.GetString(2),
-            reader.GetString(3));
+            reader.GetString(2));
     }
 
-    /// <summary>读 idea_fts 的**全部**行（rowid → 四列原文）。</summary>
+    /// <summary>读 idea_fts 的**全部**行（rowid → 三列原文）。</summary>
     private Dictionary<long, IndexRow> ReadIdeaFtsRows()
     {
         using var connection = Database.Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT rowid, title, content, tags, project FROM idea_fts ORDER BY rowid;";
+        command.CommandText = "SELECT rowid, content, tags, project FROM idea_fts ORDER BY rowid;";
 
         var rows = new Dictionary<long, IndexRow>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
             rows[reader.GetInt64(0)] = new IndexRow(
-                reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                reader.GetString(1),
                 reader.GetString(2),
-                reader.GetString(3),
-                reader.GetString(4));
+                reader.GetString(3));
         }
 
         return rows;
@@ -551,16 +626,6 @@ public sealed class SearchIndexTests : IDisposable
         }
 
         return ids;
-    }
-
-    /// <summary>读一条想法的标题。</summary>
-    private string ReadIdeaTitle(string ideaId)
-    {
-        using var connection = Database.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT title FROM idea WHERE id = $id;";
-        command.Parameters.AddWithValue("$id", ideaId);
-        return (string?)command.ExecuteScalar() ?? string.Empty;
     }
 
     /// <summary>读一条想法的正文。</summary>
@@ -638,6 +703,41 @@ public sealed class SearchIndexTests : IDisposable
         }
 
         return rowIds;
+    }
+
+    /// <summary>
+    /// 读某个库里 <c>idea_fts</c> 的<strong>声明列名</strong>（按列序）。
+    /// </summary>
+    /// <remarks>
+    /// <c>PRAGMA table_info(idea_fts)</c> 返回的是**声明的列** ——
+    /// FTS5 的隐藏列 <c>rank</c> 不在里面（实测：<c>fts5(title, content, tags, project)</c>
+    /// 的 table_info 恰好返回那 4 列）。
+    /// <para>
+    /// 表不存在时返回**空列表**（table_info 给 0 行）——
+    /// 这正是「新库」与「旧库」的分野。
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<string> ReadIdeaFtsColumns(string databasePath)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate
+        }.ToString());
+        connection.Open();
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA table_info(idea_fts);";
+
+        var names = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            // table_info 的列是 (cid, name, type, notnull, dflt_value, pk)。
+            names.Add(reader.GetString(1));
+        }
+
+        return names;
     }
 
     /// <summary>在指定连接（可选事务）上执行一条语句。</summary>

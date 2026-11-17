@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using IdeaApp.Infrastructure;
 
 namespace IdeaApp.Tests;
 
@@ -18,7 +19,7 @@ namespace IdeaApp.Tests;
 /// <item><c>/api/ideas</c> 的分页是往回翻历史：<c>offset</c> 从最新一端数，
 /// 返回的数组仍是 <c>updated_at</c> 升序。</item>
 /// <item><c>/api/search</c> 的分页是翻相关度页：<c>offset</c> 从**最相关**一端数，
-/// 想法组按 <c>bm25()</c> 排（标题命中比正文命中更相关）。</item>
+/// 想法组按 <c>bm25()</c> 排（正文命中比项目命中更相关）。</item>
 /// </list>
 /// </para>
 ///
@@ -87,20 +88,6 @@ public sealed class SearchEndpointTests
 
         Assert.Equal(new[] { id }, await ReadIdsAsync(await client.GetAsync("/api/ideas?q=hello")));
         Assert.Empty(await ReadIdsAsync(await client.GetAsync("/api/ideas?q=hel")));
-    }
-
-    /// <summary>标题也在索引里：正文没有那个词，标题有，照样搜得到。</summary>
-    [Fact]
-    public async Task Get_ideas_matches_title()
-    {
-        using var factory = new TestAppFactory();
-        using var client = factory.CreateClient();
-
-        var id = await CreateIdeaAsync(client, "完全无关的正文", title: "咖啡清单");
-
-        var ids = await ReadIdsAsync(await client.GetAsync("/api/ideas?q=咖啡"));
-
-        Assert.Equal(new[] { id }, ids);
     }
 
     /// <summary>标签名也在索引里：标签叫「咖啡」的想法搜得到。</summary>
@@ -488,11 +475,17 @@ public sealed class SearchEndpointTests
     }
 
     /// <summary>
-    /// 想法组按**相关度**排：标题命中的那条排在正文命中的前面。
+    /// 想法组按**相关度**排：正文命中的那条排在项目命中的那条前面。
     /// </summary>
     /// <remarks>
-    /// 两条的创建顺序是「正文命中在前」：相关度打平时按 id 升序兜底，
-    /// 那时正文命中的那条会排在前面 —— 这条用例要守的正是「相关度说了算」。
+    /// 标题列去掉之后，索引里只剩正文、标签、项目三列。
+    /// 正文权重 5.0 要压得住项目权重 3.0 —— 否则「正文里写了咖啡」的那条
+    /// 会排在「项目名带咖啡」的那条后面，正文就等于白搜。
+    /// <para>
+    /// 实测（SQLite 3.53.3 的 bm25，两条命中的文档各只有一个词元）：
+    /// 权重 <c>1.0, 5.0, 3.0</c> 时顺序是「项目命中在前」，
+    /// 权重 <c>5.0, 5.0, 3.0</c> 时才是「正文命中在前」。
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task Search_ideas_group_is_sorted_by_relevance()
@@ -500,12 +493,91 @@ public sealed class SearchEndpointTests
         using var factory = new TestAppFactory();
         using var client = factory.CreateClient();
 
-        var inContent = await CreateIdeaAsync(client, "咖啡机滤芯");
-        var inTitle = await CreateIdeaAsync(client, "完全不相关的正文", title: "咖啡清单");
+        // 正文命中：项目名里没有「咖啡」。
+        var inContent = await CreateIdeaAsync(
+            client, "咖啡机滤芯", projectId: await CreateProjectAsync(client, "工作"));
+
+        // 项目命中：正文里没有「咖啡」。
+        var inProject = await CreateIdeaAsync(
+            client, "今天天气不错", projectId: await CreateProjectAsync(client, "咖啡项目"));
 
         var ids = await ReadIdeaIdsAsync(await client.GetAsync("/api/search?q=咖啡"));
 
-        Assert.Equal(new[] { inTitle, inContent }, ids);
+        Assert.Equal(new[] { inContent, inProject }, ids);
+    }
+
+    /// <summary>
+    /// 命中字段只剩三种：正文、标签、项目 —— 没有 <c>title</c>。
+    /// </summary>
+    /// <remarks>
+    /// 想法不再有标题，索引里也没有标题这一列，命中位置自然就不该有
+    /// <c>field == "title"</c> 的那条。
+    /// </remarks>
+    [Fact]
+    public async Task Search_matches_only_carry_content_tags_and_project()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var projectId = await CreateProjectAsync(client, "工作复盘");
+        var id = await CreateIdeaAsync(client, "咖啡机滤芯", projectId: projectId, tags: new[] { "烘焙" });
+
+        var root = await ReadSearchAsync(await client.GetAsync("/api/search?q=咖啡"));
+
+        var item = Assert.Single(root.GetProperty("ideas").GetProperty("items").EnumerateArray(),
+            idea => idea.GetProperty("id").GetString() == id);
+
+        var fields = item.GetProperty("matches").EnumerateArray()
+            .Select(match => match.GetProperty("field").GetString()!)
+            .ToArray();
+
+        Assert.NotEmpty(fields);
+        Assert.All(fields, field => Assert.Contains(field, new[] { "content", "tags", "project" }));
+        Assert.DoesNotContain("title", fields);
+    }
+
+    /// <summary>
+    /// 旧库升级上来之后搜索照常可用。
+    /// </summary>
+    /// <remarks>
+    /// 旧库的 <c>idea_fts</c> 是 4 列（含 title）。FTS5 虚表的列清单建表时定死，
+    /// <c>CREATE ... IF NOT EXISTS</c> 改不了 —— 启动时的形状检查必须把它 DROP 掉，
+    /// 让新的 DDL 按 3 列重建。
+    /// <para>
+    /// ⚠️ <strong>这条用例单独用是钉不住形状检查的</strong>：
+    /// bm25(4 列表, 3 个权重) 在 SQLite 3.53.3 上<strong>不报错</strong>
+    /// （多余的权重忽略、缺少的按默认 1.0 处理），所以「搜索 200 且命中」
+    /// 在没有形状检查时也是绿的。它是一条**回归保护**（确保升级过程不把搜索搞挂），
+    /// 真正钉住形状的是 <c>SearchIndexTests</c> 里那条
+    /// <c>PRAGMA table_info(idea_fts)</c> 的列名断言。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Search_works_on_a_database_upgraded_from_the_old_schema()
+    {
+        using var factory = new TestAppFactory();
+
+        // 旧形状的库必须在**应用启动之前**造好 ——
+        // TestAppFactory 的库文件是在 CreateClient() 时才建的。
+        var db = new SqliteDatabase(factory.DatabasePath);
+        using (var connection = db.Open())
+        using (var command = connection.CreateCommand())
+        {
+            // 旧版本的 idea_fts：四列，含 title。
+            command.CommandText =
+                "CREATE VIRTUAL TABLE idea_fts USING fts5(title, content, tags, project);";
+            command.ExecuteNonQuery();
+        }
+
+        using var client = factory.CreateClient();
+
+        var id = await CreateIdeaAsync(client, "咖啡机滤芯");
+
+        var response = await client.GetAsync("/api/search?q=咖啡");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var ids = await ReadIdeaIdsAsync(response);
+        Assert.Contains(id, ids);
     }
 
     /// <summary>
@@ -628,16 +700,19 @@ public sealed class SearchEndpointTests
         using var factory = new TestAppFactory();
         using var client = factory.CreateClient();
 
-        // 三条命中，相关度各不相同（标题 / 正文 / 正文）。
-        await CreateIdeaAsync(client, "完全不相关的正文", title: "咖啡清单");
-        await CreateIdeaAsync(client, "咖啡机滤芯");
-        await CreateIdeaAsync(client, "手冲咖啡的要点");
+        // 两条命中，相关度不同（正文 / 项目）。
+        // 顺序同样是「正文命中在前」—— 见 Search_ideas_group_is_sorted_by_relevance。
+        var inContent = await CreateIdeaAsync(
+            client, "咖啡机滤芯", projectId: await CreateProjectAsync(client, "工作"));
+        var inProject = await CreateIdeaAsync(
+            client, "今天天气不错", projectId: await CreateProjectAsync(client, "咖啡项目"));
 
         // 先取全量：bm25 的顺序就是「最相关 → 最不相关」。
         var full = await ReadSearchAsync(await client.GetAsync("/api/search?q=咖啡&limit=10"));
         var ordered = ReadGroupIds(full, "ideas");
 
-        Assert.Equal(3, ordered.Length);
+        Assert.Equal(2, ordered.Length);
+        Assert.Equal(new[] { inContent, inProject }, ordered);
 
         // offset=N → 跳过最相关的前 N 条，返回第 N+1 条。
         for (var offset = 0; offset < ordered.Length; offset++)
