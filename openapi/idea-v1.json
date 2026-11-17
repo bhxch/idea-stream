@@ -424,6 +424,7 @@
           {
             "name": "q",
             "in": "query",
+            "description": "关键词，可选。中文按词元相邻匹配（标点不挡路），英文按词级；缺失或全是标点/空白 = 没有关键词（不过滤）",
             "schema": {
               "type": "string"
             }
@@ -431,6 +432,7 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "返回条数上限，1..1000 的整数；不给 = 全量（超过单次返回上限报 400 too_many_ideas），给了 limit 就不再触发那个 400",
             "schema": {
               "type": "string"
             }
@@ -438,8 +440,10 @@
           {
             "name": "offset",
             "in": "query",
+            "description": "往回翻历史：跳过最新的 N 条（列表按 updated_at 升序、最新的在底部），0 = 最新的一页；必须与 limit 一起给。注意与 GET /api/search 的 offset 方向相反",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "default": "0"
             }
           }
         ],
@@ -1067,6 +1071,8 @@
           {
             "name": "q",
             "in": "query",
+            "description": "关键词（必填）。中文按词元相邻匹配（标点不挡路：搜「咖啡水温」能命中「咖啡，水温」），英文按词级（搜 hel 命中不了 hello）；多段之间是 AND。缺失或全是标点/空白 → 400 invalid_search_query",
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -1074,22 +1080,28 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "每类结果（想法/项目/标签）各自的最大条数，1..100 的整数；缺省 20",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "default": "20"
             }
           },
           {
             "name": "offset",
             "in": "query",
+            "description": "翻相关度页：跳过最相关的前 N 条（该组按 bm25 相关度排序）；缺省 0。注意与 GET /api/ideas 的 offset 方向相反",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "default": "0"
             }
           },
           {
             "name": "includeTrash",
             "in": "query",
+            "description": "是否包含回收站里的条目；缺省 true。只给 true / false —— 别的值会得到一个没有错误码的 400（框架的参数绑定失败）",
             "schema": {
-              "type": "boolean"
+              "type": "boolean",
+              "default": true
             }
           }
         ],

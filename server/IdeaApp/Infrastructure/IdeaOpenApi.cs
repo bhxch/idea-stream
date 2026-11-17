@@ -40,6 +40,10 @@ public static class IdeaOpenApi
     {
         options.AddDocumentTransformer<OpenApiInfoTransformer>();
 
+        // 查询参数的 description / default 与 /api/search 的 q 必填标记。
+        // 操作级 transformer：框架先生成每个操作（含参数），再在这里按路径改写。
+        options.AddOperationTransformer<OpenApiQueryParameterTransformer>();
+
         // 错误响应：错误码清单与每个错误响应的描述都写进契约。
         // 顺序无关（一个改 info、一个改 paths/components），但两者都在
         // 「文档已生成」之后跑：框架先生成 paths，再跑文档 transformer。
