@@ -65,8 +65,21 @@ public sealed class SqliteDatabase
     public string DatabasePath { get; }
 
     /// <summary>
-    /// 打开一个连接，并已执行 <c>PRAGMA journal_mode=WAL</c> 与 <c>PRAGMA foreign_keys=ON</c>。
+    /// 打开一个连接，并已执行 <c>PRAGMA journal_mode=WAL</c>、<c>PRAGMA foreign_keys=ON</c>
+    /// 与 <c>PRAGMA busy_timeout</c>。
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>busy_timeout</c> 的值与设计文档 §16 的描述一致（30 秒）：写锁被占时 SQLite 自己等，
+    /// 而不是立刻回 <c>SQLITE_BUSY</c>。不设它的话，等待其实发生在 Microsoft.Data.Sqlite 的
+    /// 托管层重试里（CommandTimeout 驱动）——行为上等价，但「会等多久」这件事没有落在
+    /// 数据库一层，也不受这里控制；显式设掉，等待时长就成了本文件里可见、可调的一个事实。
+    /// </para>
+    /// <para>
+    /// 单用户单实例下写锁竞争本来就少；这条主要防的是启动窗口里
+    /// 回填（<see cref="SearchIndexInitializer"/> 拿写锁重建索引）与第一个请求撞车的抖动。
+    /// </para>
+    /// </remarks>
     public SqliteConnection Open()
     {
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
@@ -86,6 +99,12 @@ public sealed class SqliteDatabase
         using (var pragma = connection.CreateCommand())
         {
             pragma.CommandText = "PRAGMA foreign_keys=ON";
+            pragma.ExecuteNonQuery();
+        }
+
+        using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA busy_timeout=30000";
             pragma.ExecuteNonQuery();
         }
 
