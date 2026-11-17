@@ -69,19 +69,20 @@ public static class SearchIndex
     /// <param name="content">正文。</param>
     /// <param name="tags">该想法的全部标签名。</param>
     /// <param name="projectName">所属项目名。</param>
+    /// <returns>true = 已写入；false = idea 行不存在，跳过了。</returns>
     /// <remarks>
     /// 先删后插而不是 UPDATE：改动内容后不会残留旧 token —— UPDATE 只能改列，
     /// 而「先删干净再插新的」在语义上就是「这一行的索引就是当前内容」。
     /// <para>
     /// ⚠️ <strong>调用方必须保证 idea 行已存在</strong>：本方法不做存在性断言，
-    /// idea 行不在时**静默跳过**（不抛异常、不记日志）。
-    /// 静默是有代价的 —— 「先调本方法、后插 idea 行」这种顺序错误会让索引**悄悄少一条**，
-    /// 没有任何异常、没有任何日志，搜索结果只是少了一行，很难查。
-    /// 索引行是给业务行配套的：业务行没了就没有索引行可写，
-    /// 为这种顺序问题抛异常反而会把整批写入打断。
+    /// idea 行不在时**跳过**（不抛异常），跳过与否通过返回值告知调用方。
+    /// 跳过不该抛 —— 索引行是给业务行配套的，回填这类批处理里业务行可能真的不在，
+    /// 为顺序问题打断整批写入得不偿失；但跳过不该没有痕迹 ——
+    /// 「先调本方法、后插 idea 行」这种顺序错误会让索引**悄悄少一条**，
+    /// 搜索结果只是少了一行，极难排查。调用方（仓储层）拿返回值把它记成一条 warning。
     /// </para>
     /// </remarks>
-    public static void UpsertIdea(
+    public static bool UpsertIdea(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         string ideaId,
@@ -93,12 +94,13 @@ public static class SearchIndex
         var rowId = FindRowId(connection, transaction, "SELECT rowid FROM idea WHERE id = $id;", ideaId);
         if (rowId is null)
         {
-            return;
+            return false;
         }
 
         Execute(connection, transaction, "DELETE FROM idea_fts WHERE rowid = $rowid;", ("$rowid", rowId));
 
         InsertIdeaRow(connection, transaction, rowId.Value, title, content, tags, projectName);
+        return true;
     }
 
     /// <summary>把一行想法索引数据写进 <c>idea_fts</c>（调用方负责先删掉旧行）。</summary>

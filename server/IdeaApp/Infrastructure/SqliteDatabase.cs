@@ -165,6 +165,11 @@ public sealed class SqliteDatabase
     /// 回调拿到两条**绑定在该事务上**的仓储：它们之间的读能看到彼此未提交的写入，
     /// 因此「改项目行 + 改想法行」这类跨表操作可以是原子的。
     /// </summary>
+    /// <param name="work">要同生共死的一组写操作。</param>
+    /// <param name="ideaLogger">
+    /// 想法仓储的日志器（可空）。事务绑定的想法仓储是这里现造的 ——
+    /// 「索引写入被跳过」的 warning 从它那里发，logger 不传进去就永远不响。
+    /// </param>
     /// <remarks>
     /// 事务边界由调用方划定：调用方把要同生共死的一组写操作圈进这个回调，
     /// 仓储只负责在给定的事务里执行语句。
@@ -174,13 +179,15 @@ public sealed class SqliteDatabase
     /// 中途失败会留下「项目回来了、想法还在回收站」这种半截状态。
     /// </para>
     /// </remarks>
-    public T InTransaction<T>(Func<IdeaRepository, ProjectRepository, T> work)
+    public T InTransaction<T>(
+        Func<IdeaRepository, ProjectRepository, T> work,
+        ILogger<IdeaRepository>? ideaLogger = null)
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
 
         var result = work(
-            new IdeaRepository(this, connection, transaction),
+            new IdeaRepository(this, connection, transaction, ideaLogger),
             new ProjectRepository(this, connection, transaction));
 
         transaction.Commit();

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using IdeaApp.Domain;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 namespace IdeaApp.Infrastructure;
 
@@ -21,29 +22,64 @@ namespace IdeaApp.Infrastructure;
 /// 拿到一个绑定在同一事务上的仓储。
 /// </para>
 /// </summary>
-public sealed class IdeaRepository(SqliteDatabase db)
+public sealed class IdeaRepository
 {
     private const string SelectColumns =
         "id, project_id, title, content, done, created_at, updated_at, deleted_at";
+
+    private readonly SqliteDatabase db;
+    private readonly ILogger<IdeaRepository>? logger;
 
     // 事务作用域内复用同一条连接；不在事务里时为 null，各方法自己开连接。
     private readonly SqliteConnection? _connection = null;
     private readonly SqliteTransaction? _transaction = null;
 
-    internal IdeaRepository(SqliteDatabase db, SqliteConnection connection, SqliteTransaction transaction)
-        : this(db)
+    public IdeaRepository(SqliteDatabase db, ILogger<IdeaRepository>? logger = null)
     {
+        this.db = db;
+        this.logger = logger;
+    }
+
+    internal IdeaRepository(
+        SqliteDatabase db,
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ILogger<IdeaRepository>? logger = null)
+    {
+        this.db = db;
+        this.logger = logger;
         _connection = connection;
         _transaction = transaction;
+    }
+
+    /// <summary>
+    /// 索引写入被跳过（idea 行不存在）时记一条 warning。
+    /// 跳过本身不抛 —— 回填这类批处理里业务行可能真的不在，打断整批写入得不偿失；
+    /// 但「这条想法从此搜不到」不能没有痕迹，否则顺序写错只能靠人肉排查。
+    /// </summary>
+    private void WarnIfIndexSkipped(bool indexed, string ideaId, string operation)
+    {
+        if (!indexed)
+        {
+            logger?.LogWarning(
+                "想法索引行未写入（idea 行不存在，索引写入被跳过）：{IdeaId}（{Operation}）" +
+                "—— 这条想法将搜不到。通常意味着调用顺序错了（先写索引后写业务行），值得查。",
+                ideaId,
+                operation);
+        }
     }
 
     /// <summary>
     /// 在一个 SQLite 事务里执行一组写操作：全部成功才提交，任一步抛异常则整体回滚。
     /// 回调拿到的仓储绑定在该事务上，事务里的读写互相可见。
     /// </summary>
+    /// <remarks>
+    /// logger 要跟着进去：事务里的写方法（Insert 等）在绑定仓储上执行，
+    /// 索引写入被跳过的 warning 是从那里发的。
+    /// </remarks>
     public T InTransaction<T>(Func<IdeaRepository, T> work)
     {
-        return db.InTransaction((ideas, _) => work(ideas));
+        return db.InTransaction((ideas, _) => work(ideas), logger);
     }
 
     /// <summary>在一个 SQLite 事务里执行一组写操作（无返回值版本）。</summary>
@@ -53,7 +89,7 @@ public sealed class IdeaRepository(SqliteDatabase db)
         {
             work(ideas);
             return 0;
-        });
+        }, logger);
     }
 
     /// <summary>按 id 取一条想法（含回收站里的），带上它的标签。找不到返回 null。</summary>
@@ -387,14 +423,17 @@ public sealed class IdeaRepository(SqliteDatabase db)
 
             // 索引行与业务行在同一个事务里写（规格 §10.1）：索引落后就是搜不到，
             // 索引超前就是搜到不该搜到的，两种偏差都得靠同事务杜绝。
-            SearchIndex.UpsertIdea(
-                connection,
-                transaction,
+            WarnIfIndexSkipped(
+                SearchIndex.UpsertIdea(
+                    connection,
+                    transaction,
+                    idea.Id,
+                    idea.Title,
+                    idea.Content,
+                    tags,
+                    ReadProjectName(connection, transaction, idea.ProjectId)),
                 idea.Id,
-                idea.Title,
-                idea.Content,
-                tags,
-                ReadProjectName(connection, transaction, idea.ProjectId));
+                "Insert");
 
             return idea with { Tags = tags };
         });
@@ -427,14 +466,17 @@ public sealed class IdeaRepository(SqliteDatabase db)
             // 回读一次：索引行要用刚落库的标题与正文，标签与项目名沿用库里的现值。
             var idea = ReadIdea(connection, transaction, id);
 
-            SearchIndex.UpsertIdea(
-                connection,
-                transaction,
+            WarnIfIndexSkipped(
+                SearchIndex.UpsertIdea(
+                    connection,
+                    transaction,
+                    id,
+                    idea.Title,
+                    idea.Content,
+                    idea.Tags,
+                    ReadProjectName(connection, transaction, idea.ProjectId)),
                 id,
-                idea.Title,
-                idea.Content,
-                idea.Tags,
-                ReadProjectName(connection, transaction, idea.ProjectId));
+                "UpdateContent");
 
             return idea;
         });
@@ -544,14 +586,17 @@ public sealed class IdeaRepository(SqliteDatabase db)
             // 回填路径按名称排序后拼，两条路径必须逐字节一致。
             var idea = ReadIdea(connection, transaction, ideaId);
 
-            SearchIndex.UpsertIdea(
-                connection,
-                transaction,
+            WarnIfIndexSkipped(
+                SearchIndex.UpsertIdea(
+                    connection,
+                    transaction,
+                    ideaId,
+                    idea.Title,
+                    idea.Content,
+                    idea.Tags,
+                    ReadProjectName(connection, transaction, idea.ProjectId)),
                 ideaId,
-                idea.Title,
-                idea.Content,
-                idea.Tags,
-                ReadProjectName(connection, transaction, idea.ProjectId));
+                "ReplaceTags");
 
             using var touch = connection.CreateCommand();
             touch.Transaction = transaction;
