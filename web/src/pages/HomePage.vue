@@ -955,12 +955,15 @@ async function loadOlder(): Promise<void> {
     return;
   }
   if (older.length === 0) {
-    hasMore.value = false;
+    // 到底了。hasMore 由 store 自己写（fetchOlderIdeas）—— 这里不要再写一遍：
+    // 若这一页是**过期**的（期间有过更新的列表请求），store 什么都没写，
+    // 这里再写就是把过期结果写进共享状态（hasMore 是新页面刚算好的）。
     return;
   }
   if (unmounted) {
     // 页面已经没了：这一页没人看，也不该写进共享的 store。
-    // 深度也要还回去 —— 这一页没进列表，深度不能替它记着。
+    // 深度要还回去 —— 这一页没进列表，深度不能替它记着。
+    // （若这一页其实已经过期 —— store 没入过账 —— release 自己会跳过。）
     releaseOlderIdeas(older.length);
     return;
   }
