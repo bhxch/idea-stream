@@ -327,5 +327,5 @@ public static class TelegramTemplate
 
     /// <summary>请求体模板（JSON 文档）。</summary>
     public const string BodyTemplate =
-        """{"chat_id":-1003800671233,"message_thread_id":89,"text":"[{{project}}] {{event}}\n{{idea.title}}\n{{idea.content}}\n#{{idea.tags}}"}""";
+        """{"chat_id":-1003800671233,"message_thread_id":89,"text":"[{{project}}] {{event}}\n{{idea.content}}\n#{{idea.tags}}"}""";
 }

@@ -179,12 +179,18 @@ public sealed class WebhookApiTests
         Assert.Contains("message_thread_id", bodyTemplate, StringComparison.Ordinal);
         Assert.Contains("{{idea.content}}", bodyTemplate, StringComparison.Ordinal);
 
+        // 想法没有标题了，预设里不该再有 {{idea.title}}。
+        Assert.DoesNotContain("{{idea.title}}", bodyTemplate, StringComparison.Ordinal);
+
         // 预设本身必须是一个合法的 JSON 文档（占位符在字符串值里面）——
         // 页面拿它直接当 Body 模板用，非法 JSON 的话渲染器会直接抛。
         using var template = JsonDocument.Parse(bodyTemplate);
         Assert.Equal(JsonValueKind.Object, template.RootElement.ValueKind);
+
+        // 正文那一行的位置变了：模板少了一行（原来第 2 行是 {{idea.title}}，第 3 行才是正文）。
+        // 结构变了，断言没写错 —— 现在第 1 行就是正文。
         Assert.Equal("{{idea.content}}",
-            template.RootElement.GetProperty("text").GetString()!.Split('\n')[2]);
+            template.RootElement.GetProperty("text").GetString()!.Split('\n')[1]);
     }
 
     [Fact]

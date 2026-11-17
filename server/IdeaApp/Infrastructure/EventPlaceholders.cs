@@ -6,7 +6,7 @@ namespace IdeaApp.Infrastructure;
 /// 事件 → 占位符字典：把一个 <see cref="IdeaEvent"/> 摊平成模板能用的键值对。
 ///
 /// <para>
-/// 键就是占位符的名字（<c>event</c>、<c>idea.title</c>…），值是它们的文本形态。
+/// 键就是占位符的名字（<c>event</c>、<c>idea.content</c>…），值是它们的文本形态。
 /// 事件里没有的字段（没有项目、没有想法、没改过东西）对应的值是 <c>null</c> ——
 /// 渲染时它渲染成空串，而不是把占位符原样留在正文里。
 /// </para>
@@ -32,11 +32,6 @@ public static class EventPlaceholders
             ["project"] = evt.Project?.Name,
             ["project.id"] = evt.Project?.Id,
             ["idea.id"] = evt.Idea?.Id,
-            // 想法没有标题了：键先留着、值恒为 null ——
-            // 渲染器对「键在、值为 null」的语义是渲染成空串，
-            // 老模板里的 {{idea.title}} 就不会在正文里露出字面量。
-            // 这个键本身在 Task 4 里整个下线（那时渲染器改认「已下线占位符」）。
-            ["idea.title"] = null,
             ["idea.content"] = evt.Idea?.Content,
             ["idea.tags"] = evt.Idea is null ? null : string.Join(",", evt.Idea.Tags),
             ["idea.done"] = evt.Idea is null ? null : evt.Idea.Done ? "true" : "false",

@@ -33,7 +33,8 @@ public sealed class TemplateRendererTests
             Done: done,
             CreatedAt: new DateTimeOffset(2026, 11, 12, 3, 4, 5, TimeSpan.Zero),
             UpdatedAt: new DateTimeOffset(2026, 11, 12, 3, 4, 5, TimeSpan.Zero)),
-        Changed: changed ?? ["title", "done"],
+        // 「标题」这个字段名已经不存在了，示例事件不该还带一个。
+        Changed: changed ?? ["done"],
         MergedFrom: null);
 
     [Fact]
@@ -211,6 +212,74 @@ public sealed class TemplateRendererTests
         Assert.Equal("正文 [] 结束 {{unknown}}", rendered);
     }
 
+    /// <summary>
+    /// 占位符字典里**没有** <c>idea.title</c> —— 想法不再有标题，这个占位符整个下线了。
+    /// </summary>
+    [Fact]
+    public void The_placeholder_table_has_no_idea_title()
+    {
+        var values = EventPlaceholders.Build(SampleEvent(), "https://x.example");
+
+        Assert.False(values.ContainsKey("idea.title"));
+    }
+
+    /// <summary>
+    /// 老模板里的 <c>{{idea.title}}</c> 要渲染成**空串**（不是报错、也不是原样留着字面量）。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §4.3 D 要的是空串，而渲染器原本的语义是「键在、值为 null → 空串；键不在 → 原样保留」——
+    /// 占位符下线后键会消失，于是落进「原样保留」那一档。这条钉住「已下线占位符」这条路。
+    /// </remarks>
+    [Fact]
+    public void A_template_with_a_removed_placeholder_renders_as_empty()
+    {
+        var values = EventPlaceholders.Build(SampleEvent(), "https://x.example");
+
+        var rendered = TemplateRenderer.RenderJson(
+            """{"text":"[{{idea.title}}] {{idea.content}}"}""",
+            values);
+
+        using var document = JsonDocument.Parse(rendered);
+
+        Assert.Equal("[] 正文", document.RootElement.GetProperty("text").GetString());
+    }
+
+    /// <summary>
+    /// 纯文本模板上的老占位符同样渲染成空串（<c>RenderPlain</c> 与 <c>RenderJson</c> 是两条路径）。
+    /// </summary>
+    [Fact]
+    public void A_removed_placeholder_in_a_plain_template_renders_as_empty()
+    {
+        var values = EventPlaceholders.Build(SampleEvent(), "https://x.example");
+
+        var rendered = TemplateRenderer.RenderPlain("[{{idea.title}}] {{idea.content}}", values);
+
+        Assert.Equal("[] 正文", rendered);
+    }
+
+    /// <summary>
+    /// 「未识别的占位符原样保留」这条既有语义不能被改坏：名字拼错不是「已下线」，
+    /// 模板是用户手写的，不该让投递炸掉。
+    /// </summary>
+    [Fact]
+    public void An_unknown_placeholder_is_still_kept_verbatim()
+    {
+        var rendered = TemplateRenderer.RenderJson(
+            """{"text":"{{unknown}}"}""",
+            EventPlaceholders.Build(SampleEvent(), "https://x.example"));
+
+        using var document = JsonDocument.Parse(rendered);
+
+        Assert.Equal("{{unknown}}", document.RootElement.GetProperty("text").GetString());
+    }
+
+    /// <summary>预设的 Telegram 模板不再用 <c>{{idea.title}}</c>。</summary>
+    [Fact]
+    public void The_telegram_preset_template_does_not_use_idea_title()
+    {
+        Assert.DoesNotContain("{{idea.title}}", TelegramTemplate.BodyTemplate);
+    }
+
     [Fact]
     public void Build_placeholders_contains_all_documented_keys()
     {
@@ -219,7 +288,7 @@ public sealed class TemplateRendererTests
         foreach (var key in new[]
                  {
                      "event", "timestamp", "project", "project.id",
-                     "idea.id", "idea.title", "idea.content", "idea.tags", "idea.done",
+                     "idea.id", "idea.content", "idea.tags", "idea.done",
                      "changed", "idea.url"
                  })
         {
@@ -300,10 +369,10 @@ public sealed class TemplateRendererTests
     public void Build_changed_is_comma_separated()
     {
         var values = EventPlaceholders.Build(
-            SampleEvent(changed: ["title", "done"]),
+            SampleEvent(changed: ["done"]),
             null);
 
-        Assert.Equal("title,done", values["changed"]);
+        Assert.Equal("done", values["changed"]);
     }
 
     /// <summary>

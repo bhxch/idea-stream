@@ -10,8 +10,13 @@ namespace IdeaApp.Infrastructure;
 /// 模板渲染器：把 <c>{{...}}</c> 占位符替换成事件数据。
 ///
 /// <para>
-/// 占位符语法是 <c>{{名字}}</c>，名字允许字母、数字、下划线与点（<c>idea.title</c>）。
+/// 占位符语法是 <c>{{名字}}</c>，名字允许字母、数字、下划线与点（<c>idea.content</c>）。
 /// 未识别的占位符**原样保留** —— 模板是用户手写的，名字拼错不该让投递炸掉。
+/// </para>
+///
+/// <para>
+/// **已下线的占位符**（见 <see cref="RetiredPlaceholders"/>）渲染成空串 ——
+/// 老模板不该在正文里露出占位符的字面量。
 /// </para>
 ///
 /// <para>
@@ -38,12 +43,31 @@ public static class TemplateRenderer
         new(@"\{\{([a-zA-Z0-9_.]+)\}\}", RegexOptions.CultureInvariant);
 
     /// <summary>
+    /// 已经下线、但老模板里可能还留着的占位符。
+    ///
+    /// <para>
+    /// 能力去掉之后，这些占位符不再出现在 <see cref="EventPlaceholders"/> 的字典里 ——
+    /// 但渲染器**不能**把它们当「未识别的占位符」原样保留：老模板的正文里会冒出
+    /// 「{{idea.title}}」这样的字面量。规格 §4.3 D 要的是**渲染成空串**。
+    /// </para>
+    ///
+    /// <para>
+    /// 为什么单开一张表：渲染器原本的语义是「键在、值为 null → 空串；键不在 →
+    /// 原样保留」。占位符下线时键会消失，于是落进「原样保留」那一档 ——
+    /// 这张表把「已下线」与「拼错了」区分开。
+    /// </para>
+    /// </summary>
+    private static readonly HashSet<string> RetiredPlaceholders =
+        new(StringComparer.Ordinal) { "idea.title" };
+
+    /// <summary>
     /// 渲染 JSON 模板：解析模板，把字符串值节点里的占位符替换掉，输出缩进 2 格的 JSON。
     /// </summary>
     /// <param name="jsonTemplate">JSON 模板（根节点必须是 JSON 对象）。</param>
     /// <param name="values">
     /// 占位符的值。值是 <c>null</c> 表示「这个字段这次没有值」，渲染成空串；
-    /// 字典里**没有**这个键才是「未识别的占位符」，原样保留。
+    /// 字典里**没有**这个键才是「未识别的占位符」，原样保留
+    /// （已下线的除外，见 <see cref="RetiredPlaceholders"/>）。
     /// </param>
     /// <returns>缩进 2 格的 JSON（与 <c>JsonNode.ToJsonString(WriteIndented)</c> 逐字节相同）。</returns>
     /// <exception cref="ArgumentException">
@@ -80,8 +104,8 @@ public static class TemplateRenderer
 
             if (!values.TryGetValue(name, out var value))
             {
-                // 未识别的占位符：原样保留。
-                return match.Value;
+                // 未识别的占位符：原样保留 —— **但已下线的占位符渲染成空串**。
+                return RetiredPlaceholders.Contains(name) ? string.Empty : match.Value;
             }
 
             // 值是 null：这次事件没有这个字段 → 空串。
@@ -285,15 +309,15 @@ public static class TemplateRenderer
         value.GetValue<JsonElement>().WriteTo(writer);
     }
 
-    /// <summary>取占位符的值（未识别的占位符原样保留）。</summary>
+    /// <summary>取占位符的值（未识别的占位符原样保留，已下线的渲染成空串）。</summary>
     private static string Resolve(Match match, IReadOnlyDictionary<string, string?> values)
     {
         var name = match.Groups[1].Value;
 
         if (!values.TryGetValue(name, out var value))
         {
-            // 未识别的占位符：原样保留。
-            return match.Value;
+            // 未识别的占位符：原样保留 —— **但已下线的占位符渲染成空串**。
+            return RetiredPlaceholders.Contains(name) ? string.Empty : match.Value;
         }
 
         // 值是 null：这次事件没有这个字段 → 空串（占位符的名字是认识的）。

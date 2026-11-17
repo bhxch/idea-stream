@@ -175,8 +175,9 @@ describe('WebhookForm', () => {
   it('点「Telegram 模板」按钮后 URL 与 Body 模板被预填', async () => {
     apiGet.mockResolvedValue({
       url: 'https://api.telegram.org/bot<BOT_TOKEN>/sendMessage',
+      // 预设与服务端一致：想法没有标题了，预设里不再有 {{idea.title}} 那一行。
       bodyTemplate:
-        '{"chat_id":-1003800671233,"message_thread_id":89,"text":"[{{project}}] {{event}}\\n{{idea.title}}\\n{{idea.content}}\\n#{{idea.tags}}"}',
+        '{"chat_id":-1003800671233,"message_thread_id":89,"text":"[{{project}}] {{event}}\\n{{idea.content}}\\n#{{idea.tags}}"}',
     });
 
     const wrapper = mountForm();
