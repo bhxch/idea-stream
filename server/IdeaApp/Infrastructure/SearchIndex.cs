@@ -302,15 +302,19 @@ public static class SearchIndex
     /// 把一批想法索引行分块写入（多行 VALUES，块间参数数量有硬上限）。
     /// </summary>
     /// <remarks>
-    /// 每块 200 行 × 5 个参数 = 1000 个参数 —— 连 SQLite 老的变量上限（999）都放得下，
+    /// 每块 199 行 × 5 个参数 = 995 个参数 —— 连 SQLite **最老的**变量上限（999）都放得下，
     /// 不用碰编译选项；新默认（3.32+ 的 32766）更是绰绰有余。
+    /// <para>
+    /// 199 不是随手取的：每行 5 个参数，999 ÷ 5 = 199.8 → 199 是还能塞进 999 的最大块大小
+    /// （200 行就要 1000 个参数，**超了** 999）。
+    /// </para>
     /// </remarks>
     private static void InsertIdeaRows(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         IReadOnlyList<IdeaIndexRow> rows)
     {
-        const int chunkSize = 200;
+        const int chunkSize = 199;
 
         for (var start = 0; start < rows.Count; start += chunkSize)
         {
