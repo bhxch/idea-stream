@@ -25,7 +25,7 @@ namespace IdeaApp.Infrastructure;
 public sealed class IdeaRepository
 {
     private const string SelectColumns =
-        "id, project_id, title, content, done, created_at, updated_at, deleted_at";
+        "id, project_id, content, done, created_at, updated_at, deleted_at";
 
     private readonly SqliteDatabase db;
     private readonly ILogger<IdeaRepository>? logger;
@@ -399,11 +399,10 @@ public sealed class IdeaRepository
             {
                 command.Transaction = transaction;
                 command.CommandText =
-                    "INSERT INTO idea(id, project_id, title, content, done, deleted_at, created_at, updated_at) " +
-                    "VALUES ($id, $projectId, $title, $content, $done, $deletedAt, $createdAt, $updatedAt);";
+                    "INSERT INTO idea(id, project_id, content, done, deleted_at, created_at, updated_at) " +
+                    "VALUES ($id, $projectId, $content, $done, $deletedAt, $createdAt, $updatedAt);";
                 command.Parameters.AddWithValue("$id", idea.Id);
                 command.Parameters.AddWithValue("$projectId", idea.ProjectId);
-                command.Parameters.AddWithValue("$title", Parameter(idea.Title));
                 command.Parameters.AddWithValue("$content", idea.Content);
                 command.Parameters.AddWithValue("$done", idea.Done ? 1 : 0);
                 command.Parameters.AddWithValue("$deletedAt",
@@ -439,14 +438,13 @@ public sealed class IdeaRepository
     }
 
     /// <summary>
-    /// 改正文与标题，并刷新 <c>updated_at</c>；索引行跟着更新（索引里只剩正文一列）。
-    /// <paramref name="title"/> 为 null 表示把标题写成「无标题」（NULL）。
+    /// 改正文，并刷新 <c>updated_at</c>；索引行跟着更新（索引里只剩正文一列）。
     /// </summary>
     /// <remarks>
     /// 索引写的是**刚落库的值**：正文改了，索引里就不能还留着旧 token
     /// （旧的搜得到、新的搜不到，比整条搜不到更难查）。
     /// </remarks>
-    public Idea UpdateContent(string id, string? title, string content)
+    public Idea UpdateContent(string id, string content)
     {
         return Write((connection, transaction) =>
         {
@@ -454,8 +452,7 @@ public sealed class IdeaRepository
             {
                 command.Transaction = transaction;
                 command.CommandText =
-                    "UPDATE idea SET title = $title, content = $content, updated_at = $now WHERE id = $id;";
-                command.Parameters.AddWithValue("$title", Parameter(title));
+                    "UPDATE idea SET content = $content, updated_at = $now WHERE id = $id;";
                 command.Parameters.AddWithValue("$content", content);
                 command.Parameters.AddWithValue("$now", SqliteDatabase.FormatTimestamp(DateTimeOffset.UtcNow));
                 command.Parameters.AddWithValue("$id", id);
@@ -827,19 +824,23 @@ public sealed class IdeaRepository
         return existing is null ? null : Convert.ToInt64(existing, CultureInfo.InvariantCulture);
     }
 
+    /// <summary>
+    /// 读一行想法。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 列序是 <c>id, project_id, content, done, created_at, updated_at, deleted_at</c> ——
+    /// **按位置读列**，下标与 <see cref="SelectColumns"/> 必须一一对应：
+    /// 错位不会报错，只会安静地读出别的字段。
+    /// </remarks>
     private static Idea Read(SqliteDataReader reader) => new(
         Id: reader.GetString(0),
         ProjectId: reader.GetString(1),
-        Title: reader.IsDBNull(2) ? null : reader.GetString(2),
-        Content: reader.GetString(3),
+        Content: reader.GetString(2),
         Tags: Array.Empty<string>(),
-        Done: reader.GetInt64(4) != 0,
-        CreatedAt: SqliteDatabase.ParseTimestamp(reader.GetString(5)),
-        UpdatedAt: SqliteDatabase.ParseTimestamp(reader.GetString(6)),
-        DeletedAt: reader.IsDBNull(7) ? null : SqliteDatabase.ParseTimestamp(reader.GetString(7)));
-
-    /// <summary>可空文本按 SQL 的 NULL 传参。</summary>
-    private static object Parameter(string? value) => value is null ? DBNull.Value : value;
+        Done: reader.GetInt64(3) != 0,
+        CreatedAt: SqliteDatabase.ParseTimestamp(reader.GetString(4)),
+        UpdatedAt: SqliteDatabase.ParseTimestamp(reader.GetString(5)),
+        DeletedAt: reader.IsDBNull(6) ? null : SqliteDatabase.ParseTimestamp(reader.GetString(6)));
 
     /// <summary>执行一条查询。</summary>
     private T Query<T>(Func<SqliteConnection, SqliteTransaction?, T> action)

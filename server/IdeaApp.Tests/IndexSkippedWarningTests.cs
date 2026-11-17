@@ -161,7 +161,6 @@ public sealed class IndexSkippedWarningTests : IDisposable
     private static Idea NewIdea() => new(
         Id: "idea-1",
         ProjectId: "p1",
-        Title: null,
         Content: "手冲记录",
         Tags: Array.Empty<string>(),
         Done: false,

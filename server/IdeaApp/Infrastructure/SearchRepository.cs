@@ -504,13 +504,15 @@ public sealed class SearchRepository(SqliteDatabase db)
     /// <summary>读一行想法（标签另查）。</summary>
     /// <remarks>
     /// ⚠️ 列序是 <c>id, project_id, content, done, created_at, updated_at, deleted_at</c> ——
-    /// 搜索路径的 SELECT 里**没有 title 了**（想法不再有标题，Task 3 才把
-    /// 领域记录 <c>Idea.Title</c> 一起去掉），所以这里给 <c>Title: null</c> 占位。
+    /// 搜索路径的 SELECT 里没有标题，领域记录 <c>Idea</c> 也没有标题这一列。
+    /// <para>
+    /// <strong>按位置读列</strong>：下标与 SELECT 的列一一对应，错位不会报错，
+    /// 只会安静地读出别的字段。
+    /// </para>
     /// </remarks>
     private static Idea ReadIdea(SqliteDataReader reader) => new(
         Id: reader.GetString(0),
         ProjectId: reader.GetString(1),
-        Title: null,
         Content: reader.GetString(2),
         Tags: Array.Empty<string>(),
         Done: reader.GetInt64(3) != 0,

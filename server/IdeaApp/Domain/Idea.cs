@@ -3,7 +3,10 @@ namespace IdeaApp.Domain;
 /// <summary>
 /// 一条想法的领域记录。<see cref="DeletedAt"/> 非空表示该想法在回收站里。
 /// </summary>
-public sealed record Idea(string Id, string ProjectId, string? Title, string Content,
+/// <remarks>
+/// <strong>没有标题</strong> —— 想法就是一段文字。
+/// </remarks>
+public sealed record Idea(string Id, string ProjectId, string Content,
                           IReadOnlyList<string> Tags, bool Done,
                           DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
                           DateTimeOffset? DeletedAt);

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using IdeaApp.Domain;
+using IdeaApp.Infrastructure;
 using Microsoft.Data.Sqlite;
 
 namespace IdeaApp.Tests;
@@ -404,6 +405,59 @@ public sealed class IdeaApiTests
         Assert.False(root.TryGetProperty("title", out _));
     }
 
+    /// <summary>
+    /// 新库的想法表里没有「标题」这一列 —— 想法就是一段文字。
+    /// </summary>
+    [Fact]
+    public async Task The_idea_table_has_no_title_column_in_a_fresh_database()
+    {
+        using var factory = new TestAppFactory();
+        using var client = factory.CreateClient();
+
+        var columns = ReadTableColumns(factory.DatabasePath, "idea");
+
+        Assert.DoesNotContain("title", columns);
+    }
+
+    /// <summary>
+    /// 旧库的想法表里还留着 <c>title TEXT NULL</c> 那一列
+    /// （<c>CREATE TABLE IF NOT EXISTS</c> 改不了已有表的列），但代码不读写它 ——
+    /// 旧库升级后照常能用。
+    /// </summary>
+    /// <remarks>
+    /// 旧形状的表必须在 <c>CreateClient()</c> <strong>之前</strong>造好：
+    /// 库文件是应用启动时才建的。
+    /// </remarks>
+    [Fact]
+    public async Task An_old_database_with_a_title_column_still_works()
+    {
+        using var factory = new TestAppFactory();
+
+        var db = new SqliteDatabase(factory.DatabasePath);
+        using (var connection = db.Open())
+        using (var command = connection.CreateCommand())
+        {
+            // 旧版本的 idea 表：保留 title TEXT NULL 那一列。
+            command.CommandText =
+                "CREATE TABLE idea (" +
+                "    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), " +
+                "    title TEXT NULL, content TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, " +
+                "    deleted_at TEXT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);";
+            command.ExecuteNonQuery();
+        }
+
+        using var client = factory.CreateClient();
+
+        var created = await client.PostAsJsonAsync("/api/ideas", new { content = "旧库里的想法" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var listed = await client.GetAsync("/api/ideas");
+        Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+
+        var idea = Assert.Single(await ReadIdeasAsync(listed));
+        Assert.Equal("旧库里的想法", idea.Content);
+    }
+
     private static bool IsLowerHex(char c) => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
 
     /// <summary>建一条想法并返回它的 id。</summary>
@@ -473,8 +527,8 @@ public sealed class IdeaApiTests
         using var connection = OpenDatabase(databasePath);
         using var command = connection.CreateCommand();
         command.CommandText =
-            "INSERT INTO idea(id, project_id, title, content, done, deleted_at, created_at, updated_at) " +
-            "VALUES ($id, 'inbox', NULL, '直接插入', 0, NULL, $stamp, $stamp);";
+            "INSERT INTO idea(id, project_id, content, done, deleted_at, created_at, updated_at) " +
+            "VALUES ($id, 'inbox', '直接插入', 0, NULL, $stamp, $stamp);";
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$stamp", stamp);
         command.ExecuteNonQuery();
@@ -507,6 +561,24 @@ public sealed class IdeaApiTests
         }.ToString());
         connection.Open();
         return connection;
+    }
+
+    /// <summary>读一张表的列名（<c>PRAGMA table_info</c>）。</summary>
+    private static List<string> ReadTableColumns(string databasePath, string table)
+    {
+        using var connection = OpenDatabase(databasePath);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({table});";
+
+        var columns = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            // table_info 的列是 (cid, name, type, notnull, dflt_value, pk)。
+            columns.Add(reader.GetString(1));
+        }
+
+        return columns;
     }
 
     private sealed record IdeaSummary(string Id, string ProjectId, string Content,

@@ -276,7 +276,6 @@ public sealed class FilteringTests
     private static Idea MakeIdea(string projectId = "inbox", string[]? tags = null, bool done = false) =>
         new(Id: "0198f0a1b2c3d4e5f60718293a4b5c6d",
             ProjectId: projectId,
-            Title: null,
             Content: "内容",
             Tags: tags ?? Array.Empty<string>(),
             Done: done,

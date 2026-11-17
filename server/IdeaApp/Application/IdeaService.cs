@@ -245,9 +245,6 @@ public sealed class IdeaService(
         var idea = new Idea(
             Id: MonotonicGuid.NewUuid7().ToString("N"),
             ProjectId: targetProjectId,
-            // 本 task 领域记录 Idea 仍有 Title 字段（存储层去列是 Task 3 的事），
-            // 但对外已经没有「标题」这个概念了 —— 恒为 null。
-            Title: null,
             Content: body,
             Tags: normalizedTags,
             Done: false,
@@ -290,8 +287,7 @@ public sealed class IdeaService(
                 changed.Add("content");
             }
 
-            // 仓储签名在存储层去标题列（Task 3）之前仍是三参的，标题恒传 null。
-            return (ToDto(r.UpdateContent(id, null, nextContent)), changed.ToArray());
+            return (ToDto(r.UpdateContent(id, nextContent)), changed.ToArray());
         });
 
         publisher.Publish(EventFactory.Create(
@@ -601,8 +597,6 @@ public sealed class IdeaService(
             var idea = new Idea(
                 Id: MonotonicGuid.NewUuid7().ToString("N"),
                 ProjectId: projectIds[0],
-                // 合并结果没有「标题」：对外已经没有这个概念了（存储层去列是 Task 3 的事）。
-                Title: null,
                 Content: content is not null
                     ? ValidateContent(content)
                     : string.Join("\n\n", sources.Select(source => source.Content)),

@@ -88,7 +88,7 @@ public sealed class SearchIndexTests : IDisposable
     public void Initialize_keeps_the_idea_fts_shape_when_it_already_matches()
     {
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "手冲咖啡的关键");
+        InsertIdea("i1", "p1", "手冲咖啡的关键");
 
         using (var connection = Database.Open())
         {
@@ -127,8 +127,8 @@ public sealed class SearchIndexTests : IDisposable
     {
         // 库里还没有索引（老库就是这样），回填后每条想法都要有一行索引。
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "手冲咖啡的关键");
-        InsertIdea("i2", "p1", null, "第二件事");
+        InsertIdea("i1", "p1", "手冲咖啡的关键");
+        InsertIdea("i2", "p1", "第二件事");
 
         SearchIndexInitializer.EnsureIndexed(Database);
 
@@ -139,7 +139,7 @@ public sealed class SearchIndexTests : IDisposable
     public void EnsureIndexed_rebuilds_when_version_differs()
     {
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "第一条");
+        InsertIdea("i1", "p1", "第一条");
         SearchIndexInitializer.EnsureIndexed(Database);
 
         // 版本对不上 → 整体重建。
@@ -147,7 +147,7 @@ public sealed class SearchIndexTests : IDisposable
 
         // 重建期间才加进来的想法也必须进索引 —— 增量写入不会碰它，
         // 只有整体重建才会（这一条就是「确实重建过」的证据）。
-        InsertIdea("i2", "p1", null, "第二条");
+        InsertIdea("i2", "p1", "第二条");
 
         SearchIndexInitializer.EnsureIndexed(Database);
 
@@ -159,7 +159,7 @@ public sealed class SearchIndexTests : IDisposable
     public void EnsureIndexed_is_a_noop_when_version_matches()
     {
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "第一条");
+        InsertIdea("i1", "p1", "第一条");
         SearchIndexInitializer.EnsureIndexed(Database);
 
         // 哨兵行：重建会先清空索引表，这行就没了；没重建它就还在。
@@ -179,7 +179,7 @@ public sealed class SearchIndexTests : IDisposable
         // 不然 Task 3 一引入增量写，两条路径立刻分叉（回填出来的行搜得到，
         // 增量写出来的行搜不到，或者反过来），而且分叉点极难查。
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "手冲记录");
+        InsertIdea("i1", "p1", "手冲记录");
 
         // 标签**故意按与排序相反的顺序**插入：回填必须自己按名称排序
         // （group_concat 自己不保序），不然写出来的文本就取决于插入顺序。
@@ -218,7 +218,7 @@ public sealed class SearchIndexTests : IDisposable
     public async Task EnsureIndexed_skips_the_rebuild_when_another_instance_rebuilt_it_meanwhile()
     {
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "手冲记录");
+        InsertIdea("i1", "p1", "手冲记录");
         SetIndexVersion("0");
 
         // 模拟「另一个实例」：占住写锁，在锁里把版本改成当前值，
@@ -251,7 +251,7 @@ public sealed class SearchIndexTests : IDisposable
     public void EnsureIndexed_indexes_tags_with_the_tag_id_as_rowid()
     {
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "手冲记录");
+        InsertIdea("i1", "p1", "手冲记录");
         var tagId = InsertTag("咖啡");
         LinkTag("i1", tagId);
 
@@ -285,7 +285,7 @@ public sealed class SearchIndexTests : IDisposable
         for (var i = 0; i < count; i++)
         {
             var id = $"i{i:D3}";
-            InsertIdea(id, "p1", $"标题 {i}", $"正文 {i}：手冲咖啡的关键");
+            InsertIdea(id, "p1", $"正文 {i}：手冲咖啡的关键");
             LinkTag(id, tagIds[i % tagIds.Length]);
         }
 
@@ -332,7 +332,7 @@ public sealed class SearchIndexTests : IDisposable
         // ["a", "b", "c"] —— 拆错了。索引文本上看不出来（切完再拼回去恰好还原），
         // 但那个列表本身是错的（是个陷阱）。
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "手冲记录");
+        InsertIdea("i1", "p1", "手冲记录");
 
         LinkTag("i1", InsertTag("a b"));
         LinkTag("i1", InsertTag("c"));
@@ -369,7 +369,7 @@ public sealed class SearchIndexTests : IDisposable
         // 写回范围必须与它一致 —— 之前写回用的是 INNER JOIN，
         // 项目行不在时那条想法压根不会被写回：索引行被删掉就没了（静默丢失）。
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "手冲咖啡的关键");
+        InsertIdea("i1", "p1", "手冲咖啡的关键");
 
         using var connection = Database.Open();
         SearchIndex.UpsertIdea(connection, null, "i1", "手冲咖啡的关键", Array.Empty<string>(), "工作");
@@ -404,7 +404,7 @@ public sealed class SearchIndexTests : IDisposable
     public void UpsertIdea_makes_the_idea_findable()
     {
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "手冲咖啡的关键");
+        InsertIdea("i1", "p1", "手冲咖啡的关键");
 
         using var connection = Database.Open();
         SearchIndex.UpsertIdea(
@@ -418,7 +418,7 @@ public sealed class SearchIndexTests : IDisposable
     public void UpsertIdea_indexes_tags_and_project_name()
     {
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "手冲记录");
+        InsertIdea("i1", "p1", "手冲记录");
         LinkTag("i1", InsertTag("咖啡"));
 
         using var connection = Database.Open();
@@ -435,7 +435,7 @@ public sealed class SearchIndexTests : IDisposable
     public void DeleteIdea_removes_the_row()
     {
         InsertProject("p1", "工作");
-        InsertIdea("i1", "p1", null, "手冲咖啡的关键");
+        InsertIdea("i1", "p1", "手冲咖啡的关键");
 
         using var connection = Database.Open();
         SearchIndex.UpsertIdea(
@@ -461,16 +461,15 @@ public sealed class SearchIndexTests : IDisposable
         command.ExecuteNonQuery();
     }
 
-    private void InsertIdea(string id, string projectId, string? title, string content)
+    private void InsertIdea(string id, string projectId, string content)
     {
         using var connection = Database.Open();
         using var command = connection.CreateCommand();
         command.CommandText =
-            "INSERT INTO idea(id, project_id, title, content, done, deleted_at, created_at, updated_at) " +
-            "VALUES ($id, $projectId, $title, $content, 0, NULL, $now, $now);";
+            "INSERT INTO idea(id, project_id, content, done, deleted_at, created_at, updated_at) " +
+            "VALUES ($id, $projectId, $content, 0, NULL, $now, $now);";
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$projectId", projectId);
-        command.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
         command.Parameters.AddWithValue("$content", content);
         command.Parameters.AddWithValue("$now", Now());
         command.ExecuteNonQuery();

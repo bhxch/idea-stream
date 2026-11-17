@@ -12,7 +12,6 @@ CREATE INDEX IF NOT EXISTS ix_project_active  ON project(updated_at DESC);
 CREATE TABLE IF NOT EXISTS idea (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL REFERENCES project(id),
-    title         TEXT NULL,
     content       TEXT NOT NULL,
     done          INTEGER NOT NULL DEFAULT 0,
     deleted_at    TEXT NULL,                 -- 非空 = 在回收站

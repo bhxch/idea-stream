@@ -759,11 +759,9 @@ public sealed class BulkAndMergeTests
 
         using (var command = connection.CreateCommand())
         {
-            // title 这一列还在库里（业务表去标题列是 Task 3 的事），但它恒为 NULL：
-            // 对外契约已经没有「标题」这个概念了。
             command.CommandText =
-                "INSERT INTO idea(id, project_id, title, content, done, deleted_at, created_at, updated_at) " +
-                "VALUES ($id, $projectId, NULL, $content, 0, NULL, $createdAt, $updatedAt);";
+                "INSERT INTO idea(id, project_id, content, done, deleted_at, created_at, updated_at) " +
+                "VALUES ($id, $projectId, $content, 0, NULL, $createdAt, $updatedAt);";
             command.Parameters.AddWithValue("$id", id);
             command.Parameters.AddWithValue("$projectId", projectId);
             command.Parameters.AddWithValue("$content", content);
