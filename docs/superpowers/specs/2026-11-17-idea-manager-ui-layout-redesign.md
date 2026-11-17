@@ -2,8 +2,8 @@
 
 - 日期：2026-11-17
 - 状态：待评审
-- 范围：**只改前端呈现与前端列表渲染机制**。后端契约、REST 接口、OpenAPI 文档、服务端排序规则**一律不改**。
-- 关联：`docs/superpowers/specs/2026-11-11-idea-manager-design.md`（原始设计；本文是它的前端呈现层修订，覆盖其中与界面布局相关的部分）
+- 范围：**前端呈现 + 前端列表渲染机制**，**外加一项前置的数据模型改动：去掉「标题」这个概念**（§4）。
+- 关联：`docs/superpowers/specs/2026-11-11-idea-manager-design.md`（原始设计）、`docs/superpowers/specs/2026-11-15-backend-full-text-search-design.md`（全文搜索；FTS 表结构在 §4 里要改）
 - 配套工具：`~/.agents/skills/ui-ux-pro-max`（本地可检索的设计规则库）、`~/.agents/skills/web-design-guidelines`（Vercel 的界面审查清单，交付前逐条过）
 
 ---
@@ -21,9 +21,7 @@
 | 3 | 每条想法 | 固定占 4 行：勾选 +「标记完成」+标题 / 正文 / 标签 / **常驻**的「🏷 标签 🗑 删除」 | 每条多耗约 40px 竖向空间；20 条就差出小半屏 |
 | 4 | 窄屏外壳 | 标题 / 项目 Tab / 过滤 ×2 行 / 输入条 **全都钉死不滚** | 375×667 上占掉约 180px（27%），列表只剩 4 张卡 |
 
-第 3 条还有一个根子上的问题：卡片看起来有「标题」层，但**数据模型里的 `title` 大多数时候是空的** —— `HomePage.onSubmit` 提交时写死 `title: null`，输入框也只有一个正文框，没有标题输入位。界面上看到的「粗体标题」其实是正文第一行被 `splitTitleAndBody` 提升的结果。
-
-⚠️ **但 `title` 并非永远为空**：走 REST API 创建的想法、合并出来的想法都带标题（`IdeaService.Create` / `Merge` 都接受并落 `title`），现有 e2e 也造了带标题的想法。拆标题层时**不能把这类想法的标题弄丢** —— 处理办法见 §D2。
+第 3 条还有一个根子上的问题：卡片看起来有「标题」层，但**这个标题从来不是真标题** —— `HomePage.onSubmit` 提交时写死 `title: null`，输入框只有一个正文框，界面上看到的「粗体标题」是正文首行被 `splitTitleAndBody` 提升出来的假象。既然是假象，就干脆把「标题」这个概念整个去掉（§4）。
 
 ## 2. 使用画像（决定了取舍）
 
@@ -31,7 +29,7 @@
 - **手机 : 电脑 ≈ 1 : 1**，偶尔用平板横屏看。
 - **这是聊天流**：打开页面停在最下边，底部是当下，往上才是历史。**最新的永远在最下面**。
 
-第三条是硬约束 —— §5.5 会说明它如何限制了布局方案的选择。
+第三条是硬约束 —— §6.5 会说明它如何限制了布局方案的选择。
 
 ## 3. 目标 / 非目标 / 反目标
 
@@ -41,11 +39,12 @@
 2. **保住聊天流语义**：最新的在最下边；往上翻加载更早的无感（视口不跳）；新内容追加时不抢滚动。
 3. 窄屏上**把界面外壳从 4 行压到 2 行**，省下的高度还给内容。
 4. 卡片只显示内容，不显示假标题层；低频操作不常驻占位。
-5. 一套结构走三个设备（手机 / 平板 / 电脑），不是三套样式。
+5. **「标题」这个概念从产品里消失**（§4）—— 想法就是一段文字。
+6. 一套结构走三个设备（手机 / 平板 / 电脑），不是三套样式。
 
 ### 非目标
 
-- 不改后端契约、不改 REST 接口、不改 OpenAPI 文档。
+- 不改 REST 接口的**路径**与**语义**，只按 §4 去掉标题相关的字段。
 - 不改服务端的排序规则（`updated_at ASC, id ASC`）、不改「改一条想法它会跳到最下边」这个既有行为。
 - 不做富文本、不做看板视图、不做标签云、不做深色模式开关（主题仍跟随系统）。
 - 不做多列瀑布流、不做「列表 + 阅读栏」双主区。
@@ -56,8 +55,145 @@
 - **不能引入横向滚动** —— 横向空间是靠布局吃掉，不是靠滚动。
 - **不能让「往上翻加载更早的」变得有感** —— 预加载的意义就是无感。
 - 不做「多列但读不出顺序」的墙 —— 顺序必须一眼可辨。
+- **不能留下「半去掉」的标题** —— 比如「接口不再收 title，但界面还留个标题行」。
 
-## 4. 设计决策
+## 4. 前置改动：去掉「标题」这个概念
+
+### 4.1 决定
+
+**这个产品不再有「标题」。** 想法就是一段文字：数据库里没有这一列，接口里没有这个字段，搜索里不搜它，webhook 模板里没有它的占位符，界面上也没有标题层。
+
+### 4.2 为什么
+
+1. **界面这一层本来就不要它**（§5 D2）。
+2. **它从来没被真正使用过**：本应用的录入路径写死 `title: null`，所有经界面创建的想法标题都是空的；界面上的标题层只是正文首行被提升出来的假象。
+3. **留着它的代价是实打实的**：FTS 索引多一列、bm25 多一个权重、三个按位置读列的 reader 多一个下标、`PATCH` 的「null = 不改 / 空串 = 清空」双语义、DTO 与 OpenAPI 多一个字段、agent 手册多一整页说明、e2e 多若干用例。
+
+### 4.3 改动清单
+
+#### A. 数据库与索引
+
+- `Infrastructure/schema.sql`：
+  - `idea` 表去掉 `title TEXT NULL`。
+  - `idea_fts` 从 `fts5(title, content, tags, project, …)` 改成 `fts5(content, tags, project, …)`。
+- ⚠️ **`idea` 表不需要迁移**：`CREATE TABLE IF NOT EXISTS` 意味着旧库保留那一列（永远是 NULL，代码不再读写）✓ 无害；新库没有这一列。**代码不得依赖这一列在不在。**
+- ⚠️ **`idea_fts` 必须重建**（这是本节最大的坑）：
+  - FTS5 虚拟表的**列清单是建表时定死的**，`IF NOT EXISTS` 意味着旧库永远保持 4 列。
+  - `bm25()` 的权重个数**必须等于列数**（`SearchRepository.cs:228` 现在是 `bm25(idea_fts, 10.0, 1.0, 5.0, 3.0)`，4 个权重配 4 列）。
+  - 去掉 title 列后，若旧库不重建：3 个权重配 4 列 → SQLite 报 **"wrong number of arguments to function bm25()"** → **`/api/search` 对每个旧库用户 500**。
+  - **现有的版本机制不够用**：`SearchIndex.CurrentVersion`（现在是 `"1"`）只触发「清空索引行 + 重新灌行」（`SearchIndexInitializer.cs:108-118` 是 `DELETE FROM idea_fts`），**改不了虚拟表的列清单**。
+  - **做法**：在应用 schema 之前，用 `PRAGMA table_info(idea_fts)` 比对列名/列数；不一致就 `DROP TABLE idea_fts`，让新的 DDL 按 3 列重建。同时把 `SearchIndex.CurrentVersion` 升到 `"2"`，触发整表重建索引。具体放在 `SqliteDatabase.Initialize()` 里（它在 `SearchIndexInitializer.EnsureIndexed` 之前跑）还是做成一个独立的形状检查，实施者自定，但**效果必须等价**。
+- ⚠️ **bm25 权重要重新编号**：`bm25(idea_fts, 10.0, 1.0, 5.0, 3.0)`（标题 10 / 正文 1 / 标签 5 / 项目 3）→ `bm25(idea_fts, 1.0, 5.0, 3.0)`。
+  - ⚠️ **相关度排序会变**：以前「正文命中」权重 1，旁边还杵着一个权重 10 的标题列；现在正文命中权重 1，却要跟标签 5 / 项目 3 比。**建议把正文权重调高（如 5.0）**，否则标签/项目命中的条目会压过正文命中的条目。
+  - `SearchEndpointTests` 里钉住旧排序的两个用例（按相关度排序、按相关度翻页）要按新的权重重调期望。
+
+#### B. 领域与应用层
+
+- `Domain/Idea.cs`、`Domain/IdeaEvent.cs`（`IdeaSnapshot`）：去掉 `Title`。
+- `Application/IdeaService.cs`：
+  - `Create(projectId, content, title, tags)` → 去掉 `title`；删掉 `NormalizeTitle`。
+  - `Update(id, title, content)` → `Update(id, content)`；删掉「`title` 为 null = 不改标题」那套语义，以及 `changed.Add("title")`。
+  - `Merge(ids, content, title)` → `Merge(ids, content)`；合并结果直接用给定的正文。
+- `Infrastructure/IdeaRepository.cs`：`SelectColumns` 去掉 `title` → ⚠️ **`Read(reader)` 里所有 `reader.GetString(N)` 的下标全部前移一位**。
+- `Infrastructure/IdeaMatches.cs`：删掉 `Add(matches, "title", …)` → `matches[].field` 只剩 `content` / `tags` / `project` 三种取值。
+- `Infrastructure/SearchRepository.cs`：SELECT 去掉 `i.title` → ⚠️ **reader 下标前移**（`reader.GetString(8)` → 7）；bm25 权重如上。
+- `Infrastructure/SearchIndex.cs`：
+  - `UpsertIdea` 去掉 `title` 参数。
+  - `InsertIdeaRow` / `InsertIdeaRows` 去掉 title 列与参数 → ⚠️ **批量插入的参数个数从每行 5 个变成 4 个**，`chunkSize` 的注释里「199 = 999 ÷ 5」要改成「999 ÷ 4」。
+  - `LoadIdeaRows` 的 SELECT 与下标映射同理（⚠️ 标签子查询在最后，去掉 title 后 content 2→1、project 3→2、tags 4→3）。
+
+#### C. 契约与端点
+
+- `Contracts/Dtos.cs`：`IdeaDto` 去掉 `Title`；`SearchMatch.Field` 的文档枚举去掉 `"title"`。
+- `Contracts/Requests.cs`：`CreateIdeaRequest` / `UpdateIdeaRequest` / `MergeIdeasRequest` 去掉 `Title`。
+  - ⚠️ **`UpdateIdeaRequest` 变成 `UpdateIdeaRequest(string? Content)`，其中 `Content = null` 仍然是「不改正文」** —— 这条语义不变，只是标题那一半没了。
+- `Endpoints/IdeaEndpoints.cs` / `Endpoints/BulkIdeaEndpoints.cs`：去掉传参。
+
+#### D. Webhook 占位符
+
+- `Infrastructure/EventPlaceholders.cs`：删掉 `idea.title` 占位符。
+- ⚠️ **后果**：已经配了 `{{idea.title}}` 的 webhook 模板会**渲染成空串**（不是报错 —— 缺失字段渲染为空）。预设的 Telegram 模板（`WebhookService.cs`）要改成用 `{{idea.content}}`。这是有意为之（能力去掉），但要在变更说明里点明。
+
+#### E. OpenAPI 契约
+
+- ⚠️ `Infrastructure/OpenApiEventTransformer.cs` 的 `BuildIdeaSnapshotSchema` 是**手写的** `IdeaSnapshot` schema 副本 → 手工去掉 `title`（它与 `Domain/IdeaEvent.cs` 之间**没有任何强制一致**的机制，忘了改就会继续对外宣称 payload 里有 title）。
+- `changed` 字段说明里「如 title、done、tags…」去掉 title。
+- 重新生成 `openapi/idea-v1.json`：`dotnet run --project tools/ExportOpenApi`。
+- ⚠️ `OpenApiDocumentTests` 会拿提交进仓库的 JSON 与运行中的应用比对 —— 忘了重新生成就红。
+
+#### F. Agent skill
+
+- `skills/idea-manager/references/api.md`：请求体字段表删 `title`（`POST /api/ideas`、`PATCH /api/ideas/{id}`、`POST /api/ideas/merge` 三处）；逐端点表里三行 `title` 行删掉；`matches.field` 的取值列表去掉 `"title"`。
+- `skills/idea-manager/references/calling.md`、`references/scenarios.md`：curl 示例里的 `"title": …` 删掉；「给空串 = 清成无标题」那段删掉；合并场景的示例改成只给正文。
+- `skills/idea-manager/references/webhooks.md`：占位符表删 `{{idea.title}}`，示例模板改掉。
+- `skills/idea-manager/SKILL.md`：「`PATCH` 只发要改的字段」那段里的标题那句删掉。
+- ⚠️ `server/IdeaApp.Tests/SkillDocGuardTests.cs` 会拿手册跟 `openapi/idea-v1.json` 对照 —— **契约改了手册没改（或反过来）就红**。这两件事必须一起做。
+- ⚠️ **老客户端仍会发 `title`**：.NET 的 System.Text.Json 默认**忽略未知成员**，所以一个还按老文档发 `{"content":"x","title":"y"}` 的 agent 会得到一个「标题被静默忽略」的结果（内容正常保存）。
+  - **本 spec 的决定：不为此专门报错。** 不为单个字段加特例（全局改成「未知成员即 400」超出了本次范围）。但**手册与契约必须同步更新**，且变更说明里要点明这条行为。
+
+#### G. 前端
+
+- `web/src/api/types.ts`：`Idea` 去掉 `title`；`SearchMatch.field` 的联合类型去掉 `'title'`。
+- ⚠️ **`web/src/api/events.ts` 的 SSE 帧校验要去掉 title 那一条**（`record.title === null || typeof record.title === 'string'`）—— 服务器不再发 `title` 时 `record.title` 是 `undefined`，`undefined === null` 为假 → **每一帧都会被判成畸形而丢弃** → 界面再也不更新。**这是个静默但致命的坑。**
+- `web/src/lib/highlight.ts`：`splitTitleAndBody` **删掉** —— 它的存在意义就是「摘正文首行当视觉标题」，跟标题能力一起去掉。卡片正文显示**全文（含首行）**。
+- `web/src/components/MessageItem.vue`：去掉 `titleAndBody` 的两分支，直接渲染正文全文；`<h2 class="title">` 随之消失。
+  - ⚠️ **可访问名称要重新找来源**：勾选框的 `aria-label` 现在是「选择 {visualTitle}」→ 改成用**正文首行**（截断到约 40 字）。
+- `web/src/components/MergeDialog.vue`：`idea.title?.trim() || '（无标题）'` → 改成**正文首行**。
+- `web/src/pages/HomePage.vue`：创建请求里的 `title: null` 删掉。
+
+#### H. 测试
+
+- **服务端**：
+  - `IdeaApiTests`：`title` 的 JSON 断言、`Update_idea_with_null_title_keeps_existing_title`、`Update_idea_with_empty_title_clears_title` 全部删掉/改写。
+  - `EventPublishingTests`：`changed` 断言里的 `"title"` 去掉。
+  - `BulkAndMergeTests`：`Merge_result_takes_title_of_first_source` 整个用例删掉；`Merge_request_body_overrides_content_and_title` 改成只测正文。
+  - `SearchIndexTests`：FTS 直插语句、`IndexRow.Title`、`ReadIdeaTitle` 辅助方法去掉。
+  - `SearchEndpointTests`：`Get_ideas_matches_title` 整个用例消失；两个钉住相关度排序的用例按新权重重调。
+  - `OpenApiDocumentTests`、`JsonSerializationTests`、`TemplateRendererTests`（占位符白名单）、`SseTests` / `TrashTests` / `SettingsTests` 的 `CreateIdeaAsync` 辅助方法。
+- **前端单测**：
+  - `lib/highlight.spec.ts` 的 6 个 `splitTitleAndBody` 用例删掉。
+  - `components/MessageItem.spec.ts` 的标题相关用例重写。
+  - `pages/HomePage.spec.ts` 的 `titledIdea` fixture 与 `.title` 断言重写。
+  - `api/events.spec.ts` 的「title 既不是 null 也不是字符串」用例删掉。
+  - 各处 fixture 里的 `title: null` 删掉。
+- **e2e**：
+  - `fixtures.ts`：`Idea` 接口、`CreateIdeaInput`、`updateIdea`、`mergeIdeas`、`seed.*` 里的 title 全删；复位用的 `RESET_ARTIFACT` 断言改到 content 上。
+  - `search.spec.ts`：「搜索：能搜到标题里的词」整个用例消失。
+  - `layout.spec.ts`：就绪探针（`getByText('排版探测标题')`）改到正文；`'想法条目的标题'` 那个「关键文本块」条目要重写（`<h2 class="title">` 没了）。
+  - `COVERAGE.md` 里那两行「想法带 title 时…」删掉。
+
+#### I. 文档
+
+- `docs/superpowers/specs/2026-11-11-idea-manager-design.md`：§9 数据模型、§10.4 合并、§11.2 事件结构、§12.2 占位符、§12.3 Telegram 模板、§13.2 / §13.3 接口、§19 留给实现者的空白。
+- `docs/superpowers/specs/2026-11-15-backend-full-text-search-design.md`：§8.1 FTS 表结构、§10.2 写路径、§11.3 `Field` 取值、§11.4 列序与权重、§12.3、§13。
+- `docs/superpowers/specs/2026-11-13-skill-distribution-design.md`：那句「标题空串 = 清成无标题」。
+- `README.md`：curl 示例里的 `"title"`。
+- **旧的 plan 文档（`docs/superpowers/plans/*.md`）不改** —— 那是历史记录，记录的是当时怎么做的；当前事实以本 spec 为准。
+
+#### J. 顺序
+
+**§4 必须先于布局重设计做完。** 否则布局要按「有标题」写一遍，再拆一遍，白干两遍。
+
+### 4.4 §4 的验收
+
+- [ ] `openapi/idea-v1.json` 重新生成后，全文搜不到 idea 的 title（ProblemDetails 的 `title` 与文档标题不算）。
+- [ ] **拿一个旧库升级上来**：`/api/search` 正常返回（bm25 的权重个数跟列数对得上），`/api/ideas` 正常。
+- [ ] SSE 帧不再带 `title`，前端**不丢帧**（界面能实时更新）。
+- [ ] 搜索命中的 `matches[].field` 只剩 `content` / `tags` / `project`。
+- [ ] `SkillDocGuardTests` 与 `OpenApiDocumentTests` 全绿（手册与契约同步了）。
+- [ ] 界面上：一条想法只有「一段文字 + 底部 meta 行」，没有标题层。
+
+### 4.5 别误伤：`title` 这个词在本仓库里被严重超载
+
+以下**跟想法的标题无关**，不要动：
+
+- `ApiProblem.title` / `ProblemDetails.title`（服务端 `ApiResults.cs`、前端 `api/client.ts` 与 `api/types.ts`、skill 的 `references/errors.md`、`skills/idea-manager-client/scripts/fetch.py`）。
+- HTML 的 `title=` 属性（`MessageItem.vue` 的 `title="点击编辑"`、`ProjectTabs` / `ProjectSidebar` / `BatchBar` / `TagFilter` / `ProjectsPage` 里的 title 提示、`openapi/idea-v1.json` 的文档标题）。
+- CSS 类名里带 "title" 的（`MergeDialog.vue` 的 `.merge-dialog__title` / `.merge-dialog__item-title`、`HomePage.vue` 的 `.bar__title`、`ProjectSidebar`、webhook 表单的那些）。
+- `UnicodeCategory.TitlecaseLetter`（`Domain/TextTokenizer.cs`）。
+- **webhook 模板里的 `title` 占位符**（`{{title}}` 指的是消息标题，不是想法标题）—— 只有 `{{idea.title}}` 要删。
+
+## 5. 设计决策
 
 每条给出：**定了什么 / 为什么 / 代价**。带 ⚠️ 的是实施者必须知道的已知后果。
 
@@ -66,7 +202,7 @@
 侧栏贴左边（不再有页面级居中与留白），主区铺满剩余宽度。想法在主区里排成**两列**，一对一对往下。
 
 **为什么不是「一列铺满」**：一行拉到 1800px 宽，标题和右侧时间戳隔着一千多像素，眼睛要横着扫。
-**为什么不是「多列瀑布墙」**：多列（6 列之类）会让「最新的」在右下角和左下角之间乱跳，而且上翻预加载会让整墙重排 —— 见 §5.5。
+**为什么不是「多列瀑布墙」**：多列（6 列之类）会让「最新的」在右下角和左下角之间乱跳，而且上翻预加载会让整墙重排 —— 见 §6.5。
 **为什么是 2 列而不是 3、4 列**：交错编号的「奇数在左、偶数在右」只在两列下成立；两列也正好对应「一读就是一对」的节奏。
 
 代价：宽屏一屏约 10–14 条（比现在的 4 条多，但比 6 列墙少）。
@@ -75,18 +211,13 @@
 
 **卡片正文是想法的全部文字，作为一整块纯文本显示**（`white-space: pre-wrap`），按行数截断（宽屏 3 行 / 窄屏 3 行）。**没有标题层、没有加粗的首行。**
 
-文本的来源：
+§4 去掉标题之后，这条没有任何例外分支了：`idea.content` 是什么就显示什么。
 
-- `idea.title` 为空（经本应用录入的绝大多数想法）→ 就是 `idea.content` 全文。
-- `idea.title` 非空（API 创建、合并出来的）→ **标题接在正文前面，中间一个换行**，同样作为一整块纯文本，**不加粗、不单独成行**。
+⚠️ **连带改动**：`lib/highlight.ts` 的 `splitTitleAndBody` 存在的唯一意义就是「把正文首行摘出来当视觉标题」—— **这个函数删掉**，正文一律显示全文（含首行）。否则同一句话会在一条卡片里出现两次，或者首行被吃掉。
 
-⚠️ **连带改动**：`lib/highlight.ts` 的 `splitTitleAndBody` 存在的唯一意义就是「把正文首行摘出来当视觉标题」—— 现在**这个拆分要拆掉**，正文一律显示全文（含首行）。否则同一句话会在一条卡片里出现两次，或者首行被吃掉。
+⚠️ **搜索命中**：`matches.field === 'title'` 的命中不存在了（§4）；`field === 'content'` 的命中照旧，包 `<mark>`。命中位置是相对完整原文的区间，直接用即可。
 
-⚠️ **搜索命中**：`matches.field === 'title'` 的命中落在合并后文本的第一行，照旧包 `<mark>`；`field === 'content'` 的命中照旧。**命中位置是相对完整原文的区间**，合并文本时要相应平移 content 那部分的偏移。
-
-⚠️ **无障碍名称**：现在 `<h2 class="title">` 承担了可读名称。拆掉后，`aria-label` 要改用「正文首行（或标题）+ 时间」拼出来，不能留空。
-
-**为什么这么处理**：本应用录入的想法没有标题，用户要的就是「卡片只有内容」；但 API 造的想法确实有标题，直接丢掉是信息损失。合并成一块纯文本，两个诉求都满足：卡片永远只有「一块文字」。
+⚠️ **无障碍名称**：现在 `<h2 class="title">` 承担了可读名称。拆掉后，`aria-label` 改用**正文首行**（截断到约 40 字）拼出来，不能留空。
 
 ### D3 · 卡片底部一行的排布（排法 1）
 
@@ -100,7 +231,7 @@
 
 - **完成态**（一个小圆圈按钮）：**常驻**。它是「翻看整理」时最常用的动作，要一按就中。
 - **标签 chips**：常驻（有才显示）。
-- **编号**：紧挨时间，显示成 `12  12:30` 这种形式（§6.3 定了字形）。
+- **编号**：紧挨时间，显示成 `12  12:30` 这种形式（§7.2 定了字形）。
 - **🏷 标签 / 🗑 删除**：桌面端**悬停/聚焦才显形**；窄屏常驻（§D8）。
 - **勾选框**：桌面端悬停才显形（不悬停时透明）；窄屏常驻。
 
@@ -177,7 +308,7 @@
 
 ⚠️ **窄屏桌面窗口（375px 的桌面浏览器）按并集判据也是常驻** —— 这跟「手机上没有 hover」是同一个结果，一致。
 
-已有的窄屏触摸目标规则（点按不小于 32×32）继续适用，见 §5.10。
+已有的窄屏触摸目标规则（点按不小于 32×32）继续适用，见 §6.10。
 
 ### D9 · 平板
 
@@ -205,9 +336,9 @@
 
 > 备选（未采用）：把 `PageNav` 整个搬到主页顶栏。四个入口常驻会让 375px 的顶栏挤爆，而且它跟项目下拉的功能有重叠。
 
-## 5. 实现要点
+## 6. 实现要点
 
-### 5.1 列表的 DOM 结构要换
+### 6.1 列表的 DOM 结构要换
 
 现在的 `MessageList` 是 `display:flex; flex-direction:column`，一条一个 `MessageItem`（`.idea` 是带边框的卡片）。新结构：
 
@@ -217,7 +348,7 @@
 
 **不要用 CSS `columns` 实现两列** —— CSS 多列在内容增删时会重新平衡各列，导致整墙重排；用「排」为显式 DOM 容器，每排 2 格，追加只影响最后一排。
 
-### 5.2 编号与奇偶在哪算
+### 6.2 编号与奇偶在哪算
 
 编号 = 该条目在**当前已加载且已排序**的数组里的下标 + 1。排序沿用现有的 `sortIdeas`（`updated_at` 升序、同值按 id）。
 
@@ -225,13 +356,13 @@
 
 渲染时按**下标**切排：第 k 排装下标 2k 与 2k+1。
 
-### 5.3 追加新内容（SSE / 刚记的那条）
+### 6.3 追加新内容（SSE / 刚记的那条）
 
 追加到数组末尾 → 它落在**最后一排的下一个格子**。这一排若已满，则新起一排。
 
 追加**不重排**已有条目（行优先的尾部追加），所以已有的卡片位置不动 ✓。
 
-### 5.4 上翻加载更早的一页（prepend）—— 这里是本设计最容易做错的一处
+### 6.4 上翻加载更早的一页（prepend）—— 这里是本设计最容易做错的一处
 
 ⚠️ **prepend 的条数必须是偶数，否则整墙左右互换。**
 
@@ -256,16 +387,16 @@
 
 ⚠️ **prepend 之后编号会 +100**（§D4 后果 1）。可接受，但**不要**为此另搞一套编号逻辑 —— 那会让 D5 的「奇偶在左偶数在右」失效。
 
-### 5.5 视口补偿：两处都要
+### 6.5 视口补偿：两处都要
 
 现有的两套补偿机制在两列布局下**一半够用**，要一起用：
 
-- `useHistoryScroll.loadOlder` 的 **高度差补偿**（`container.scrollTop += container.scrollHeight - before`）：prepend 后整体下移了多少就补回多少 —— 在两列布局里，**只要已有排的高度没变**，这个补偿是精确的 ✓（§5.4 的偶数 prepend 不换边，排的高度也不变）。
+- `useHistoryScroll.loadOlder` 的 **高度差补偿**（`container.scrollTop += container.scrollHeight - before`）：prepend 后整体下移了多少就补回多少 —— 在两列布局里，**只要已有排的高度没变**，这个补偿是精确的 ✓（§6.4 的偶数 prepend 不换边，排的高度也不变）。
   - ⚠️ 但如果 prepend 的条数是奇数（最后一页），边界排会换边 → 那一排的高度可能变 → 高度差补偿就不精确了。**边界排高度变了的话，用 `HomePage.captureViewportAnchor` / `restoreViewportAnchor`（按 `[data-idea-id]` 找锚点）校正** —— 那套逻辑已经存在（`scheduleResync` 在用），把它复用到 prepend 路径即可。
 
 - `useScrollFollow` 的贴底判定（`scrollHeight - scrollTop - clientHeight <= 32`）：两列布局下依然成立 ✓。追加后若最后一排新起了一排，`scrollHeight` 变高 → 自动滚到底 ✓；若只是往最后一排的空格里追加，`scrollHeight` 不变 → 不需要滚 ✓。
 
-### 5.6 悬停与常驻的切换
+### 6.6 悬停与常驻的切换
 
 用媒体查询（§D8 的并集判据）：
 
@@ -278,13 +409,13 @@
 
 ⚠️ **无障碍**：悬停才显形的按钮不能是「唯一入口」。键盘聚焦时也要显形（`:focus-within`），并且卡片本身要有可聚焦入口或 `aria-label` 指向操作。
 
-### 5.7 顶栏（窄屏）
+### 6.7 顶栏（窄屏）
 
 - 项目下拉：复用现有 `ProjectTabs` 的数据源（`projects` + `currentProjectId` + 排序方式）做一个下拉形态；宽屏侧栏保持原样。
 - 🔍：**滚回列表顶部并聚焦过滤行的搜索框**。要能聚焦，搜索框的引用得从 `FilterBar` 暴露出来（`defineExpose`）或由主页层持有 —— **不引入第二套搜索状态**。
 - ⋯ 菜单：项目管理 / 回收站 / Webhook（§D11）。
 
-### 5.8 过滤栏的窄屏紧凑形态
+### 6.8 过滤栏的窄屏紧凑形态
 
 现有 `FilterBar` = 状态分段按钮 + 搜索框 + `TagFilter` + 清除按钮。窄屏上：
 
@@ -295,7 +426,7 @@
 
 宽屏形态不变。
 
-### 5.9 尺寸与间距
+### 6.9 尺寸与间距
 
 - 卡片圆角 10px、边框 1px、内边距 9px 11px 7px；正文 12.5px / 行高 1.55。
 - 底部 meta 行：字号 10.5–11px；chips 圆角胶囊。
@@ -303,7 +434,7 @@
 - 正文截断用 `-webkit-line-clamp`（3 行）。
 - 沿用现有的主题变量（`--border` / `--accent` / `--chip-bg` 等），**不引入新颜色**。
 
-### 5.10 触摸目标
+### 6.10 触摸目标
 
 - 触摸目标不小于 32×32 的规则，**统一到 `@media (max-width: 767px)`**（把现有的 640px 断点一并改掉，见 §D9）。
 - **meta 行里的完成态、🏷、🗑 也要满足**：窄屏上把这些控件的**可点区域撑到 32×32**（字形保持小，用 padding / 伪元素撑开 hit area），不额外增加 meta 行的高度。
@@ -311,13 +442,13 @@
 
 ⚠️ **这条会改变卡片高度**：窄屏上 meta 行 ≥32px，正文 3 行（约 58px），加上内边距与间距 → 单卡约 110px。375×667 扣掉顶栏与输入条约 90px，**一屏约 5 张卡**（验收按这个数）。
 
-### 5.11 截断后怎么读全文
+### 6.11 截断后怎么读全文
 
 正文被截断后，**唯一的全文入口就是「点正文进编辑态」** —— 编辑框里是完整正文（textarea 不做行数截断，可纵向滚动）。这跟现状一致。
 
 ⚠️ **e2e 有一条例外要处理**：现有 `e2e/layout.spec.ts` 的 `expectTextNotClipped` 断言 `scrollHeight <= clientHeight + 1`（「关键文本块没被裁掉」）。新卡片正文**是**会被截断的，这条断言要改成**只对编辑态生效**（编辑框里必须能看到全文），非编辑态的卡片正文不再受这条约束。
 
-## 6. 我已经替实施者定掉的（不必再问，但照做）
+## 7. 我已经替实施者定掉的（不必再问，但照做）
 
 1. **时间格式**：沿用现有的相对时间（`formatRelativeTime`：刚刚 / N 分钟前 / 昨天 / M月D日），**不改**成钟点。既有格式函数与单测不用动。
 2. **编号的字形**：**用「淡色圆底 + 普通数字」的徽标**（`<span class="num">12</span>`），**不用** `①②③` 那种带圈字符 —— 一页就有 101 条，带圈字符到 ⑳ 之后就没有一致的写法了。圆底徽标在暗色主题下也清楚（底色用 `--chip-bg`）。
@@ -326,21 +457,30 @@
 5. **「⋯」菜单**：下拉面板（跟 `TagFilter` 一致），不是原生 `<details>`。
 6. **悬停显形**：纯 CSS（`@media` + `:hover` / `:focus-within`），不引入 JS。
 7. **管理页铺满**：`.page` 的 `max-width` 对列表页去掉，表单页保留窄容器。
+8. **老客户端仍发 `title`**：静默忽略，不专门报错（§4.3 F）。
 
-## 7. 留给实施者的（可以自己定，但定完要一致）
+## 8. 留给实施者的（可以自己定，但定完要一致）
 
 1. **主区外边距**：侧栏与主区之间的间距、页面四周留白。倾向：侧栏贴左边缘、主区四周留 10–12px。
 2. **悬停显形的具体过渡**：要不要做淡入淡出，还是直接切换。
 3. **项目下拉的具体形态**：下拉面板还是别的（顶栏里那一格）。
+4. **FTS 表形状检查放在哪**：§4.3 A 说了效果必须等价，代码放 `SqliteDatabase.Initialize()` 还是单独一步，实施者自定。
 
-## 8. 验收标准
+## 9. 验收标准
+
+### 数据模型（§4）
+
+- [ ] `openapi/idea-v1.json` 重新生成后，全文搜不到 idea 的 title。
+- [ ] **拿一个旧库升级上来**：`/api/search` 正常返回，`/api/ideas` 正常。
+- [ ] SSE 帧不再带 `title`，前端**不丢帧**（界面能实时更新）。
+- [ ] 搜索命中的 `matches[].field` 只剩三种取值。
+- [ ] `SkillDocGuardTests` 与 `OpenApiDocumentTests` 全绿。
 
 ### 视觉 / 布局
 
 - [ ] 1920×1080：侧栏贴左，主区铺到右边缘，**左右两侧不再有大片死区**；一屏能看到 **≥ 10 条**想法。
 - [ ] 375×667：**钉死的外壳只有 2 行**（顶栏 + 输入条），过滤行随内容滚走；一屏能看到 **≥ 5 条**想法。
 - [ ] 卡片只有一整块文字，没有标题层、没有加粗首行；底部 meta 行里编号紧挨时间。
-- [ ] 带 `title` 的想法（API 创建 / 合并出来的）在卡片里能看到标题，且**不与正文重复**。
 - [ ] 768×1024：两列、无侧栏；1024 以上：两列 + 侧栏。
 - [ ] 管理页（回收站 / 项目管理）铺满；Webhook 表单保持窄。
 
@@ -364,11 +504,12 @@
 - [ ] `npm run typecheck`（vue-tsc）无错。
 - [ ] 交付前按 Vercel `web-design-guidelines` 清单逐条过一遍（对比度、焦点可见、触摸目标、横向滚动、语义色）。
 
-## 9. 与既有设计文档的关系
+## 10. 与既有设计文档的关系
 
 `2026-11-11-idea-manager-design.md` 里与本文冲突的部分，以本文为准：
 
-- 「想法列表以卡片形式呈现，每条含标题」→ 改为**一整块文字**（§D2）。
+- 「想法列表以卡片形式呈现，每条含标题」→ 改为**一整块文字**，且**标题这个概念整个去掉**（§4、§D2）。
 - 「`max-width` 限制正文宽度以保证可读性」→ 主页不再有页面级宽度上限（§D1）。
 - 「排序规则恒定为『最近更新的在最下边』」→ **不变**（§D6）。
 - 窄屏「项目收成顶部横向 Tab、过滤栏挪到输入框上面」→ 改为**项目下拉 + 过滤行在列表顶部**（§D7）。
+- §9 数据模型里的 `title TEXT NULL`、§10.4 的合并标题规则、§11.2 的事件结构、§12.2/§12.3 的 `{{idea.title}}` 占位符 → 全部去掉（§4）。
