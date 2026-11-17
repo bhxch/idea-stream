@@ -1,7 +1,13 @@
 import { nextTick, type Ref } from 'vue';
-import type { Idea } from '../api/types';
-import type { IdeaFilter } from '../lib/filter';
-import { fetchOlderIdeas, hasMore, ideas, loadingMore, releaseOlderIdeas } from '../stores/ideas';
+import { filterKey, type IdeaFilter } from '../lib/filter';
+import {
+  fetchOlderIdeas,
+  hasMore,
+  ideas,
+  loadingMore,
+  prependOlder,
+  type OlderPage,
+} from '../stores/ideas';
 
 /** 往回翻需要的外部依赖。 */
 export interface HistoryScrollOptions {
@@ -37,8 +43,9 @@ export interface HistoryScrollOptions {
  * - prepend 会把用户正在看的内容往下推，量一次「多了多少」补回 `scrollTop`，
  *   视口才不会跳（预加载的意义就是「无感」）。
  *
- * 深度与 `hasMore` 的记账都在 store（`fetchOlderIdeas` / `releaseOlderIdeas`）：
- * 这里只负责触发、丢弃与渲染层的视口修正。
+ * 「取」与「用」分成两步：{@link fetchOlderIdeas} 只负责取（它不碰共享状态），
+ * 这一层判断这一页**还能不能用**，能才 {@link prependOlder} 用掉它。
+ * 不能用就整页丢掉 —— 半用半丢会让列表既不是旧的也不是新的，深度更对不上。
  */
 export function useHistoryScroll(options: HistoryScrollOptions) {
   /** 哨兵的观察者（页面没了就要断开）。 */
@@ -71,45 +78,45 @@ export function useHistoryScroll(options: HistoryScrollOptions) {
     const container = options.container.value;
     // 过滤条件先记下来：等这一页的时候条件可能变（见下面）。
     const requestedFilter = options.filter();
-    let older: Idea[];
+    // 比的是**值**不是对象身份：过滤条件是 computed 每次求值都产生新对象的
+    // 普通对象，身份一变就当成「条件变了」会把这一页白白丢掉。
+    const requestedKey = filterKey(requestedFilter);
+    let page: OlderPage;
     try {
       // offset = 已经加载的条数：服务端从**最新**一端数（设计文档 §11.1）。
-      older = await fetchOlderIdeas(requestedFilter, ideas.value.length);
+      page = await fetchOlderIdeas(requestedFilter, ideas.value.length);
     } catch (error) {
       // 失败必须给一条提示：不然就是一次没人管的 Promise rejection ——
       // 用户只看到「往上翻没反应」，不知道是翻完了还是请求挂了。
       options.reportError(error, '加载更早的想法失败');
       return;
     }
-    if (older.length === 0) {
-      // 到底了。hasMore 由 store 自己写（fetchOlderIdeas）—— 这里不要再写一遍：
-      // 若这一页是**过期**的（期间有过更新的列表请求），store 什么都没写，
-      // 这里再写就是把过期结果写进共享状态（hasMore 是新页面刚算好的）。
+    if (page.stale) {
+      // 过期：这一页回来的时候，已经有更新的整表替换落地了。这一页是按
+      // 旧状态要的（它的条目可能已经被新列表收进去了），拼进去会重复或错位。
+      // 整页丢掉 —— 它什么都没往共享状态里写，丢掉也不用还什么。
       return;
     }
     if (disposed) {
       // 页面已经没了：这一页没人看，也不该写进共享的 store。
-      // 深度要还回去 —— 这一页没进列表，深度不能替它记着。
-      // （若这一页其实已经过期 —— store 没入过账 —— release 自己会跳过。）
-      releaseOlderIdeas(older.length);
       return;
     }
-    if (requestedFilter !== options.filter()) {
+    if (requestedKey !== filterKey(options.filter())) {
       // 等这一页的时候过滤条件变了：这一页是按**旧**条件要的，拼到新列表上
       // 就是把不匹配当前条件的条目塞给用户。重拉会按新条件重新要一份，
-      // 这一页直接丢掉（深度也还回去：它没进列表）。
-      releaseOlderIdeas(older.length);
+      // 这一页直接丢掉（它也什么都没写进共享状态，不用还）。
       return;
     }
     // prepend 之前量一次内容高度：之后靠它算出「多了多少」，好把视口钉回原处。
     //
-    // 量在**赋值之前**（而不是请求之前）：这一来一回期间到达的内容（SSE 在
+    // 量在**应用之前**（而不是请求之前）：这一来一回期间到达的内容（SSE 在
     // 底部追加的条目、加载提示的出现与消失）也得算进「之前的高度」—— 不然
     // 差额里会多出那部分，视口就偏了。先 `await nextTick()` 把待渲染的改动
     // 落进 DOM，量到的才是真的高度。
     await nextTick();
     const before = container?.scrollHeight ?? 0;
-    ideas.value = [...older, ...ideas.value];
+    // 列表、深度、「还有没有更旧的」在 store 里一起改（见 prependOlder）。
+    prependOlder(page.items);
     // 必须等 DOM 更新完再量：重渲染之前量到的还是旧高度，补出来的位置是错的。
     await nextTick();
     if (container) {

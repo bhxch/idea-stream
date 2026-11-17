@@ -120,6 +120,32 @@ export function hasActiveFilter(filter: IdeaFilter): boolean {
 }
 
 /**
+ * 过滤条件的**值**指纹：两份条件是不是同一份。
+ *
+ * 不能比对象身份：过滤条件是普通对象，谁都能重新造一个（`{ ...filter }`
+ * 就是新的）。身份一变就当成「条件变了」的话，一份**内容完全相同**的条件
+ * 也会被判成不同 —— 正在等的那一页往回翻就被白白丢掉。
+ *
+ * 比值才稳：条件真的变了（项目 / 状态 / 标签 / 模式 / 关键词有一项不同）
+ * 指纹才变。
+ *
+ * 标签按**集合**比（先排序）：标签的顺序不影响服务端过滤的结果
+ * （AND/OR 都是按集合判的）。
+ *
+ * @param filter 一份过滤条件。
+ * @returns 指纹字符串（两份条件相同则相同）。
+ */
+export function filterKey(filter: IdeaFilter): string {
+  return JSON.stringify([
+    filter.projectId ?? null,
+    filter.status,
+    [...filter.tags].sort(),
+    filter.tagMode,
+    (filter.keyword ?? '').trim(),
+  ]);
+}
+
+/**
  * 把过滤条件转成 GET /api/ideas 的查询参数。
  *
  * 过滤在**服务端**做（设计文档 §11.1）：项目、状态、标签、AND-OR 模式、

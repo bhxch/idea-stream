@@ -44,29 +44,38 @@ const MAX_LIMIT = 1000;
  * 这次要到的条数，下一个事件又按更大的长度再要一页 → 每来一个事件列表就长
  * 一页（4 个事件就能把 500 条全塞进 DOM，哪怕用户从没往上翻过），
  * `hasMore` 也会跟着失真。
+ *
+ * 深度与列表长度必须**始终对得上**：深度记的是「列表里有多少条是翻出来的
+ * 历史」，两者一旦脱钩，下一次重拉就会按错的条数要 —— 要少了用户翻过的
+ * 历史凭空消失，要多了塞进一堆用户没翻过的内容。
  */
 export const scrolledItems = ref(0);
 
 /**
- * 列表级请求的「代次」。loadIdeas 与 fetchOlderIdeas 每次发起时 +1，
- * 响应回来时对照：对不上 = 期间有过更新的列表请求（条件变了触发的重拉、
- * SSE 触发的重拉、新页面挂载后的首次加载……），这一页是按**旧**条件要的，
- * 什么都不能写进共享状态。
+ * 列表级请求的「代次」。loadIdeas 与 fetchOlderIdeas 每次发起时 +1。
  *
- * 要防的场景：页面卸载时在飞的短页响应回来，把 hasMore 写成 false ——
- * 新页面刚算好的 hasMore 就被翻掉了，往回翻从此再也不触发。
- * 卸载本身不动代次，但新页面挂载后的 loadIdeas 会 —— 过期响应要么赶在它
- * 前面落地（马上被覆盖，无害），要么落在它后面（代次对不上，跳过）。
+ * 代次只在**请求发起**时涨，不看响应什么时候回来 —— 两发请求的响应可能
+ * 乱序回来（谁的网络快谁先到），代次记的是「请求的先后」。
  */
 let listGeneration = 0;
 
 /**
- * 最近一次 fetchOlderIdeas 的响应有没有**入账**（hasMore 与深度都写过）。
+ * 最后一次**成功落地**的整表替换（loadIdeas）的代次。
  *
- * releaseOlderIdeas 靠它判断：没入过账的页没什么可还 —— 深度根本没记它，
- * 还回去反而会把深度还过头（比列表实际多翻的还少）。
+ * 它跟 {@link listGeneration} 差一层：那个记「谁最后发起」，这个记
+ * 「现在共享状态里是谁的数据」。响应乱序时靠它判断谁该写：
+ *
+ * - 代次比它**旧**的响应是按更旧的状态要的 → 不写（否则会把刚落地的
+ *   新数据覆盖掉；条件变了的那一发就会看到旧条件的结果）；
+ * - 代次比它**新**的响应照写（更新的数据落地）；
+ * - 比它新的那一发**失败**了 → 代次不变 → 旧的那一发仍然写得进去
+ *   （不然新数据没拿到、旧数据也丢了，列表就空了）。
+ *
+ * 往回翻的那一页也看这个：它落地时若有更新的整表替换已经落地了，它就是
+ * **过期**的 —— 那一页是按旧状态要的（它的条目可能已经被新列表收进去了），
+ * 拼进去会重复或错位。
  */
-let lastOlderPageCounted = false;
+let appliedGeneration = 0;
 
 /**
  * SSE 重拉时要多少条：一页 + 一条（留给刚到的那条）+ 用户往上翻过的条数。
@@ -101,44 +110,74 @@ export const loadingMore = ref(false);
  *              也用来判断还有没有更旧的。
  */
 export async function loadIdeas(filter: IdeaFilter, limit = PAGE_SIZE + 1): Promise<void> {
-  // 有更新的列表请求在发起了：之前在飞的「往回翻」响应从此过期，
-  // 它的 hasMore 与深度都不该再写进共享状态（见 {@link listGeneration} 的说明）。
-  listGeneration += 1;
+  // 发起一次整表替换：代次 +1。
+  const generation = ++listGeneration;
   loading.value = true;
   try {
     const params = toQueryParams(filter);
     params.limit = String(limit);
-    ideas.value = await apiGet<Idea[]>('/ideas', params);
+    const result = await apiGet<Idea[]>('/ideas', params);
+    if (generation < appliedGeneration) {
+      // 已经有**更新的**整表替换落地了：这一页是按更旧的状态要的
+      // （条件变了的那一发晚回来），写进去会把刚落地的数据覆盖掉。
+      // 什么也不写 —— 共享状态里已经是更新的那份了。
+      return;
+    }
+    appliedGeneration = generation;
     // 整页收下（含多要的那一条）：列表长度 = 从最新一端数已经加载的条数，
     // 往回翻时的 offset 就拿它当基准（见 {@link fetchOlderIdeas}）。
-    hasMore.value = ideas.value.length >= limit;
-    // 只加载一页 = 列表被重置了：用户往上翻过的深度也就没了
-    // （下次重拉不该再要那么多条）。要得更深（`limit` 大于一页）时保留深度。
+    ideas.value = result;
+    hasMore.value = result.length >= limit;
+    // 深度按**这一页实际给了多少条**重算，而不是「要不要清零」。
     //
-    // 清零放在**成功之后**而不是发起之前：请求挂了的话（网络抖了一下），
-    // 列表还在、用户翻过的历史也还在 —— 深度不该替一次失败的请求清掉，
-    // 不然下次重拉会少要一页，用户翻过的历史凭空少了（要再翻一次才回得来）。
-    if (limit <= PAGE_SIZE + 1) {
-      scrolledItems.value = 0;
-    }
+    // 列表 = 从最新一端数的若干条，头一页是 PAGE_SIZE + 1 条（多要的那条
+    // 用来判断还有没有更旧的），多出来的那些就是用户翻出来的历史。
+    // 按实收条数算，深度与列表长度**始终对得上**：不管这一发是「只加载
+    // 一页」（深度归零）还是「保留深度的重拉」（深度照旧），还是两发同时
+    // 在飞、落地顺序颠倒（后落地的那发按自己的条数重算），都不会脱钩。
+    //
+    // 之前是「发起时清零 / 成功时不动」：清零放在发起之前，请求一挂深度
+    // 就没了（用户翻过的历史凭空少一页）；放在成功之后，又会出现「在途
+    // 期间深度还是旧值」的缝 —— 两发重拉落地顺序一颠倒，列表和深度就对不上了。
+    scrolledItems.value = Math.max(0, result.length - (PAGE_SIZE + 1));
   } finally {
     loading.value = false;
   }
 }
 
 /**
- * 往回翻：取**更旧**的一页，返回新取到的那些（**不改动列表**）。
+ * 往回翻取回的一页。
+ */
+export interface OlderPage {
+  /** 这一页的条目。 */
+  items: Idea[];
+  /**
+   * 这一页是不是已经**过期**。
+   *
+   * 过期 = 它回来的时候，已经有**更新的**整表替换落地了（条件变了触发的
+   * 重拉、SSE 触发的重拉、新页面挂载后的首次加载……）。这一页是按旧状态
+   * 要的：它的条目可能已经被新列表收进去了，拼进去会重复或错位。
+   *
+   * 过期页要**整页丢掉**（不能只丢一半）—— 丢一半的话，列表既不是旧的
+   * 也不是新的，深度更对不上。
+   */
+  stale: boolean;
+}
+
+/**
+ * 往回翻：取**更旧**的一页。
  *
- * 调用方负责把它们拼到列表前面，并在 DOM 更新后修正滚动位置。
+ * **这个函数什么都不写进共享状态** —— 取回来的那一页由调用方决定要不要
+ * （{@link prependOlder} 才是真正落地的那个动作）。这样「取」与「用」分成
+ * 两步，中间不管插进来什么（页面卸载了、过滤条件变了、列表被重拉换了），
+ * 共享状态都不会被一页**过期**的响应改坏。
  *
  * @param filter 当前过滤条件（服务端按它过滤）。
  * @param offset 已经翻过多少条（从**最新**一端数：`offset=0` 是最新那页）。
  */
-export async function fetchOlderIdeas(filter: IdeaFilter, offset: number): Promise<Idea[]> {
-  // 发起新的一页：上一次的入账标记作废。回来时若代次对不上
-  // （期间有过更新的列表请求），这一页是按旧条件要的 —— 什么都不写。
+export async function fetchOlderIdeas(filter: IdeaFilter, offset: number): Promise<OlderPage> {
+  // 发起新的一页：代次 +1。
   const generation = ++listGeneration;
-  lastOlderPageCounted = false;
   loadingMore.value = true;
   try {
     const params = toQueryParams(filter);
@@ -158,50 +197,35 @@ export async function fetchOlderIdeas(filter: IdeaFilter, offset: number): Promi
     // 洞再也补不上（还会顺带多出一条重复的）。
     //
     // 整页收下就不会丢：列表长度 = 从最新一端数已经加载的条数，
-    // 下一次的 offset 正好接在这一页的下面（见 HomePage.loadOlder）。
-    //
-    // 「还有没有更旧的」只看**条数**：要了 PAGE_SIZE + 1 条，
-    // 服务端给满了就说明下面还有，没给满就是到底了。
-    //
-    // 这些写入只在响应仍是最新时做（代次对得上）。过期的响应什么都不写：
-    // 它的 hasMore 会把新页面刚算好的翻掉（往回翻从此不触发），
-    // 它的深度会被调用方丢掉的那一页 release 掉（可深度根本没记它，还回去就还过头）。
-    // 过期页的清理由调用方直接丢（它连 release 都不必调 —— 见 releaseOlderIdeas）。
-    lastOlderPageCounted = generation === listGeneration;
-    if (lastOlderPageCounted) {
-      hasMore.value = result.length >= PAGE_SIZE + 1;
-      // 往上翻的深度记在这儿：翻出来多少条，SSE 重拉时就得保留多少条
-      // （基准不能用「列表当前长度」—— 重拉是整表替换，那会自我膨胀）。
-      scrolledItems.value += result.length;
-    }
-    return result;
+    // 下一次的 offset 正好接在这一页的下面（见 useHistoryScroll.loadOlder）。
+    return { items: result, stale: generation < appliedGeneration };
   } finally {
     loadingMore.value = false;
   }
 }
 
 /**
- * 把**丢掉**的那一页的深度还回去。
+ * 把往回翻取回的一页**用到**列表上：拼到列表前面，并把深度与「还有没有
+ * 更旧的」一起改掉。
  *
- * 深度由 {@link fetchOlderIdeas} 记（那儿是唯一记它的地方），但调用方拿到
- * 这一页之后可能决定不要它 —— 条件变了（这一页是按旧条件要的）、页面已经
- * 卸载了。那时候必须把深度还回去：深度比列表多一页的话，下一次 SSE 重拉
- * 会按 {@link loadedLimit} 多要一页用户根本没翻过的内容，列表凭空长一页。
+ * 三件事必须在**同一个动作**里做完 —— 列表变了而深度没变（或反过来），
+ * 两者就脱钩了：下一次 SSE 重拉按 {@link loadedLimit} 要条目，深度少了
+ * 用户翻过的历史凭空消失，深度多了塞进一堆用户没翻过的内容。
  *
- * @param count 丢掉的那一页有多少条。
+ * @param items 往回翻取回的那一页（可以为空 —— 空页就是「到底了」）。
  */
-export function releaseOlderIdeas(count: number): void {
-  // 这一次的响应没入过账（期间有过更新的列表请求，hasMore 与深度什么都没写）——
-  // 没什么可还的；还回去会把深度还过头。
-  if (!lastOlderPageCounted) {
+export function prependOlder(items: Idea[]): void {
+  // 「还有没有更旧的」只看**条数**：要了 PAGE_SIZE + 1 条，
+  // 服务端给满了就说明下面还有，没给满就是到底了。
+  hasMore.value = items.length >= PAGE_SIZE + 1;
+  if (items.length === 0) {
+    // 到底了：列表与深度都不动（换一个新数组只会白白触发一次重渲染）。
     return;
   }
-
-  lastOlderPageCounted = false;
-  // 入参也要夹住：负数会把深度**抬高**，大于这一页的条数会把深度减到比列表
-  // 实际翻过的还少。两个调用点传的都是 older.length，但这是 store 自己守得住的边界。
-  const dropped = Math.max(0, count);
-  scrolledItems.value = Math.max(0, scrolledItems.value - dropped);
+  ideas.value = [...items, ...ideas.value];
+  // 翻出来多少条，深度就记多少条：SSE 重拉时按它保留深度
+  // （基准不能用「列表当前长度」—— 重拉是整表替换，那会自我膨胀）。
+  scrolledItems.value += items.length;
 }
 
 /**

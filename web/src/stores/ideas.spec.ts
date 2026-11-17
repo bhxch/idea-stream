@@ -18,7 +18,7 @@ import {
   loadIdeas,
   loadingMore,
   PAGE_SIZE,
-  releaseOlderIdeas,
+  prependOlder,
   scrolledItems,
 } from './ideas';
 
@@ -139,6 +139,77 @@ describe('loadIdeas', () => {
     expect(ideas.value).toHaveLength(3);
     expect(ideas.value.map((idea) => idea.id)).toEqual(['idea-0', 'idea-1', 'idea-2']);
   });
+
+  it('深度按这一页实际给了多少条重算（与列表长度始终对得上）', async () => {
+    // 只加载一页：列表 = 头一页（PAGE_SIZE + 1 条），深度就是 0。
+    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
+    await loadIdeas(makeFilter());
+    expect(scrolledItems.value).toBe(0);
+
+    // 保留了深度的重拉：多要的那部分就是用户翻出来的历史。
+    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1 + 101));
+    await loadIdeas(makeFilter(), loadedLimit(101));
+    expect(scrolledItems.value).toBe(101);
+    expect(ideas.value).toHaveLength(PAGE_SIZE + 1 + 101);
+  });
+
+  it('两发重拉乱序回来时，旧的那发不覆盖更新的那份', async () => {
+    // 第一发挂住。
+    let releaseFirst!: (value: Idea[]) => void;
+    apiGet.mockImplementationOnce(
+      () => new Promise<Idea[]>((resolve) => {
+        releaseFirst = resolve;
+      }),
+    );
+    const first = loadIdeas(makeFilter({ keyword: '旧条件' }));
+
+    // 期间发了第二发（条件变了），它先落地。
+    apiGet.mockResolvedValueOnce(makeIdeas(3));
+    await loadIdeas(makeFilter({ keyword: '新条件' }));
+    expect(ideas.value).toHaveLength(3);
+
+    // 第一发这时才回来：它是按**旧条件**要的，不能覆盖已经落地的新数据。
+    releaseFirst(makeIdeas(5));
+    await first;
+
+    expect(ideas.value).toHaveLength(3);
+  });
+
+  it('更新的那一发失败时，旧的那发仍然写得进去', async () => {
+    // 第一发挂住。
+    let releaseFirst!: (value: Idea[]) => void;
+    apiGet.mockImplementationOnce(
+      () => new Promise<Idea[]>((resolve) => {
+        releaseFirst = resolve;
+      }),
+    );
+    const first = loadIdeas(makeFilter());
+
+    // 期间发了第二发，它**失败**了：共享状态里还没有更新的数据。
+    apiGet.mockRejectedValueOnce(new Error('网络抖了一下'));
+    await expect(loadIdeas(makeFilter())).rejects.toThrow('网络抖了一下');
+
+    // 第一发这时才回来：它比失败的更新，没被更新的数据顶掉 —— 该写得进去。
+    releaseFirst(makeIdeas(4));
+    await first;
+
+    expect(ideas.value).toHaveLength(4);
+  });
+
+  it('loadIdeas 失败不清深度（列表与翻过的历史都还在）', async () => {
+    // 先有一份成功的列表与一段翻过的历史。
+    ideas.value = makeIdeas(3);
+    prependOlder(makeIdeas(PAGE_SIZE + 1));
+    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
+
+    // 这次 loadIdeas 挂了：整表替换没有发生 —— 列表与深度都该保持原样
+    // （深度要是在发起时就被清了，用户翻过的历史会凭空少一页）。
+    apiGet.mockRejectedValueOnce(new Error('网络抖了一下'));
+    await expect(loadIdeas(makeFilter())).rejects.toThrow('网络抖了一下');
+
+    expect(ideas.value).toHaveLength(3 + PAGE_SIZE + 1);
+    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
+  });
 });
 
 describe('fetchOlderIdeas', () => {
@@ -153,77 +224,34 @@ describe('fetchOlderIdeas', () => {
     );
   });
 
-  it('fetchOlderIdeas 整页返回更旧的那一页，不动列表', async () => {
+  it('fetchOlderIdeas 整页返回更旧的那一页', async () => {
     apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
-    ideas.value = makeIdeas(2);
 
-    const older = await fetchOlderIdeas(makeFilter(), 2);
+    const page = await fetchOlderIdeas(makeFilter(), 2);
 
     // 这一页**整页**收下：服务端给的条数一条都不丢
     // （多要的那一条在这一页的**最老**那端，丢掉它就是在列表中间挖个洞）。
-    expect(older).toHaveLength(PAGE_SIZE + 1);
-    expect(ideas.value).toHaveLength(2);
-    expect(hasMore.value).toBe(true);
+    expect(page.items).toHaveLength(PAGE_SIZE + 1);
+    expect(page.stale).toBe(false);
     expect(loadingMore.value).toBe(false);
   });
 
-  it('fetchOlderIdeas 没有更多时 hasMore 为 false', async () => {
-    apiGet.mockResolvedValue(makeIdeas(3));
-
-    const older = await fetchOlderIdeas(makeFilter(), 2);
-
-    expect(older).toHaveLength(3);
-    expect(hasMore.value).toBe(false);
-  });
-
-  it('fetchOlderIdeas 记下往上翻过的深度', async () => {
+  it('取回来的那一页什么都不写进共享状态', async () => {
     apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
+    ideas.value = makeIdeas(2);
+    hasMore.value = true;
 
     await fetchOlderIdeas(makeFilter(), 2);
 
-    // 翻出来多少条就记多少条：SSE 重拉时按它保留深度。
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
-  });
-
-  it('只加载一页会把深度清零（列表被重置了）', async () => {
-    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
-    await fetchOlderIdeas(makeFilter(), 2);
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
-
-    // 只加载一页 = 整表替换成最新的一页：翻过的历史没了，深度也就没了。
-    await loadIdeas(makeFilter());
+    // 「取」与「用」分成两步：取的时候不碰共享状态 ——
+    // 中间插进来什么（页面卸载了、条件变了、列表被重拉换了），
+    // 共享状态都不会被一页**过期**的响应改坏。
+    expect(ideas.value).toHaveLength(2);
+    expect(hasMore.value).toBe(true);
     expect(scrolledItems.value).toBe(0);
   });
 
-  it('丢掉的一页要把深度还回去', async () => {
-    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
-    await fetchOlderIdeas(makeFilter(), 2);
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
-
-    // 这一页最后没被留下（条件变了 / 页面卸载了）：深度也得还回去 ——
-    // 深度比列表多一页的话，下一次 SSE 重拉会多要一页用户没翻过的内容。
-    releaseOlderIdeas(PAGE_SIZE + 1);
-    expect(scrolledItems.value).toBe(0);
-  });
-
-  it('还深度不会减成负数', () => {
-    releaseOlderIdeas(50);
-    expect(scrolledItems.value).toBe(0);
-  });
-
-  it('releaseOlderIdeas 的入参也要夹住（负数不会把深度抬高）', async () => {
-    apiGet.mockResolvedValueOnce(makeIdeas(PAGE_SIZE + 1));
-    await fetchOlderIdeas(makeFilter(), 2);
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
-
-    // 负数入参要把深度抬高的话，下一次 SSE 重拉会按抬高的深度多要一页
-    // 用户根本没翻过的内容。两个调用点传的都是 older.length，但这是
-    // store 自己守得住的边界。
-    releaseOlderIdeas(-50);
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
-  });
-
-  it('过期的往回翻响应不写共享状态（期间有过更新的列表请求）', async () => {
+  it('过期的往回翻响应标成 stale（期间有更新的整表替换落地了）', async () => {
     // 第一发挂住，让列表级请求先跑完。
     let releaseFirst!: (value: Idea[]) => void;
     apiGet.mockImplementationOnce(
@@ -233,56 +261,71 @@ describe('fetchOlderIdeas', () => {
     );
     const stale = fetchOlderIdeas(makeFilter(), 0);
 
-    // 期间有过更新的列表请求（条件变了的重拉、新页面挂载后的首次加载……）。
+    // 期间有过更新的整表替换（条件变了的重拉、新页面挂载后的首次加载……）。
     apiGet.mockResolvedValueOnce(makeIdeas(PAGE_SIZE + 1));
     await loadIdeas(makeFilter());
     expect(hasMore.value).toBe(true);
 
     // 这时第一发才回来：它是**过期**的 —— 是个短页，要是不设防，
-    // hasMore 会被它翻成 false（新页面的往回翻从此不再触发），
-    // 深度也会被它多记一页（下一次 SSE 重拉多要一页没人翻过的历史）。
+    // 它的条目可能已经被新列表收进去了（拼进去就重复了）。
     releaseFirst(makeIdeas(PAGE_SIZE));
-    await stale;
+    const page = await stale;
 
+    expect(page.stale).toBe(true);
+    // 过期页什么都不写：hasMore 是新页面刚算好的，深度也没被它多记一页。
     expect(hasMore.value).toBe(true);
     expect(scrolledItems.value).toBe(0);
     expect(ideas.value).toHaveLength(PAGE_SIZE + 1);
   });
+});
 
-  it('过期页丢掉时 releaseOlderIdeas 不动作（深度没入过账）', async () => {
-    let releaseFirst!: (value: Idea[]) => void;
-    apiGet.mockImplementationOnce(
-      () => new Promise<Idea[]>((resolve) => {
-        releaseFirst = resolve;
-      }),
-    );
-    const stale = fetchOlderIdeas(makeFilter(), 0);
+describe('prependOlder', () => {
+  it('把这一页拼到列表前面，并记下翻过的深度', async () => {
+    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
+    const page = await fetchOlderIdeas(makeFilter(), 2);
+    ideas.value = makeIdeas(2);
 
-    apiGet.mockResolvedValueOnce(makeIdeas(3));
-    await loadIdeas(makeFilter());
+    prependOlder(page.items);
 
-    releaseFirst(makeIdeas(PAGE_SIZE + 1));
-    await stale;
+    expect(ideas.value).toHaveLength(2 + PAGE_SIZE + 1);
+    expect(ideas.value.at(-1)?.id).toBe('idea-1');
+    // 深度是「用户往上翻过了多少条」：翻出来多少条就记多少条，
+    // SSE 重拉时按它保留深度。
+    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
+    expect(hasMore.value).toBe(true);
+  });
 
-    // 过期页被调用方丢掉了：深度没入过账 —— release 再还一遍只会还过头。
-    releaseOlderIdeas(PAGE_SIZE + 1);
+  it('不满的一页 = 到底了（hasMore 变 false）', async () => {
+    apiGet.mockResolvedValue(makeIdeas(3));
+    const page = await fetchOlderIdeas(makeFilter(), 2);
+
+    prependOlder(page.items);
+
+    expect(hasMore.value).toBe(false);
+  });
+
+  it('空页不动列表（到底了也不用换一个新数组）', async () => {
+    ideas.value = makeIdeas(2);
+    const before = ideas.value;
+
+    prependOlder([]);
+
+    expect(ideas.value).toBe(before);
+    expect(hasMore.value).toBe(false);
     expect(scrolledItems.value).toBe(0);
   });
 
-  it('loadIdeas 失败不清深度（列表与翻过的历史都还在）', async () => {
-    // 先有一份成功的列表与一段翻过的历史。
-    ideas.value = makeIdeas(3);
-    apiGet.mockResolvedValueOnce(makeIdeas(PAGE_SIZE + 1));
-    await fetchOlderIdeas(makeFilter(), 3);
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
+  it('列表与深度始终对得上（深度 = 列表长度 - 头一页）', async () => {
+    // 首屏。
+    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
+    await loadIdeas(makeFilter());
+    expect(scrolledItems.value).toBe(ideas.value.length - (PAGE_SIZE + 1));
 
-    // 这次 loadIdeas 挂了：整表替换没有发生 —— 列表与深度都该保持原样
-    // （深度要是在发起时就被清了，用户翻过的历史会凭空少一页）。
-    apiGet.mockRejectedValueOnce(new Error('网络抖了一下'));
-    await expect(loadIdeas(makeFilter())).rejects.toThrow('网络抖了一下');
-
-    expect(ideas.value).toHaveLength(3);
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
+    // 翻一页。
+    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
+    const page = await fetchOlderIdeas(makeFilter(), ideas.value.length);
+    prependOlder(page.items);
+    expect(scrolledItems.value).toBe(ideas.value.length - (PAGE_SIZE + 1));
   });
 });
 
@@ -311,11 +354,12 @@ describe('往回翻（按服务端的切片算术走）', () => {
     expect(hasMore.value).toBe(true);
 
     // 一直往回翻，直到没有更旧的了。
-    // 拼法与 HomePage.loadOlder 一致：往回翻的那一页拼到列表**前面**，
+    // 拼法与 useHistoryScroll.loadOlder 一致：往回翻的那一页拼到列表**前面**，
     // offset 拿「列表长度」当（从最新一端数已经加载了多少条）。
     for (let round = 0; round < 10 && hasMore.value; round += 1) {
-      const older = await fetchOlderIdeas(makeFilter(), ideas.value.length);
-      ideas.value = [...older, ...ideas.value];
+      const page = await fetchOlderIdeas(makeFilter(), ideas.value.length);
+      expect(page.stale).toBe(false);
+      prependOlder(page.items);
     }
     // 翻到底了（没有更旧的了），不是翻够了 10 轮还在翻。
     expect(hasMore.value).toBe(false);
@@ -324,6 +368,8 @@ describe('往回翻（按服务端的切片算术走）', () => {
     expect(ideas.value.map((idea) => idea.id)).toEqual(all.map((idea) => idea.id));
     // 一条不重：id 唯一。
     expect(new Set(ideas.value.map((idea) => idea.id)).size).toBe(all.length);
+    // 深度与列表长度对得上。
+    expect(scrolledItems.value).toBe(ideas.value.length - (PAGE_SIZE + 1));
   });
 });
 

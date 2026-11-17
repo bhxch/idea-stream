@@ -13,6 +13,7 @@ import {
   ideas,
   loadingMore,
   PAGE_SIZE,
+  prependOlder,
   scrolledItems,
 } from '../stores/ideas';
 import { currentProjectId } from '../stores/projects';
@@ -2144,11 +2145,12 @@ describe('HomePage', () => {
       expect(wrapper.findAll('.idea')).toHaveLength(2);
 
       // 用户往上翻了一页（滚动接上是下一个任务的事，这里直接调 store 的接口
-      // 模拟「翻过了」这个动作）：深度会记在 store 里。
-      await fetchOlderIdeas(
+      // 模拟「翻过了」这个动作）：取回来 + 用上去，深度会记在 store 里。
+      const page = await fetchOlderIdeas(
         { projectId: null, status: 'all', tags: [], tagMode: 'or', keyword: '' },
         ideas.value.length,
       );
+      prependOlder(page.items);
       // 往回翻回来的那一页是**整页**（PAGE_SIZE + 1 条），深度就记这么多。
       expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
 
