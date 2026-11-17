@@ -973,17 +973,28 @@
 
   | 测试 | 断言 |
   |---|---|
-  | `Manual_and_contract_have_no_idea_title_field` | ① **契约**：读 `openapi/idea-v1.json`（用 `OpenApiDocumentTests` 里那套 `RepoPaths.Contract` 读法），`IdeaDto` / `IdeaSnapshot` / `CreateIdeaRequest` / `UpdateIdeaRequest` / `MergeIdeasRequest` 五个 schema 的 `properties` 里都**没有** `title` 键；② **手册**：扫 `skills/idea-manager/references/{api,calling,scenarios,webhooks}.md` 与 `skills/idea-manager/SKILL.md`，断言**不出现** `` `title` ``（表格里的字段名）与 `"title"`（JSON 键） |
+  | `Manual_and_contract_have_no_idea_title_field` | ① **契约**：读 `openapi/idea-v1.json`（用 `OpenApiDocumentTests` 里那套 `RepoPaths.Contract` 读法），`IdeaDto` / `IdeaSnapshot` / `CreateIdeaRequest` / `UpdateIdeaRequest` / `MergeIdeasRequest` 五个 schema 的 `properties` 里都**没有** `title` 键；② **手册**：扫**语料**（索引页 + `references/` 下递归的全部 .md，**排除 `references/errors.md`**），断言**不出现**三种形态：`` `title` ``（表格里的字段名）、`"title"`（JSON 键）、`{{idea.title}}`（webhook 占位符，允许中间带空格） |
 
   ⚠️ **扫描要排除 `references/errors.md`** —— 那里面的 `"title"` 是 **ProblemDetails 的字段名**
   （`errors.md:12`），跟想法的标题无关（规格 §4.5 明说别误伤）。
+  ⚠️ **扫描范围用语料枚举（`Corpus()`），不要点名几份文件** —— 将来 `references/` 下新加一份 .md，
+  它自动进守卫；硬编码名单会让新文档不受这条守卫管。
+  ⚠️ **占位符形态必须一起禁**：`{{idea.title}}` 是 Task 4 刚下线的那个（服务端
+  `TemplateRenderer` 的 `RetiredPlaceholders`），也是 agent 最容易照抄回手册的形态 ——
+  只禁前两种形态，它会从守卫的缝里溜过去。
+  ⚠️ **不要禁中文「标题」**：手册得能用中文讲「标题字段这件事」（变更说明就要讲），
+  禁掉中文等于禁止写变更说明（与规格 §4.5「别误伤」的基调相反）。
   ⚠️ 契约那半条**在 Task 2 做完之后就已经是绿的**（契约里确实没有 title 了）——
   真正会红的是**手册那半条**：手册里现在还有 **16 处** `title`（`api.md` 7、`calling.md` 2、
   `scenarios.md` 4、`webhooks.md` 2、`SKILL.md` 1），外加 12 行中文「标题」。
+  ⚠️ **那 16 处里有 3 处是占位符形态**（`scenarios.md` 的 Telegram 模板、`webhooks.md` 的
+  占位符表与示例模板，都是 `{{idea.title}}`）—— 前两种形态只盖得住剩下的 **13 处**，
+  这就是守卫必须扩到第三种形态的理由。
 
   Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SkillDocGuardTests"`
   Expected: **失败**（手册那半条红 —— 手册里还有 **16 处** `title`
-  （`api.md` 7 处、`calling.md` 2 处、`scenarios.md` 4 处、`webhooks.md` 2 处、`SKILL.md` 1 处），
+  （`api.md` 7 处、`calling.md` 2 处、`scenarios.md` 4 处、`webhooks.md` 2 处、`SKILL.md` 1 处，
+  其中 **3 处是 `{{idea.title}}` 占位符形态**、只有 13 处落在字段名 / JSON 键这两种形态里），
   外加 12 行中文「标题」；下面 Step 2–4 的编辑清单覆盖了全部这些位置）。
 
   > 这一条守卫是**长期**的：以后契约里加/删字段而手册没跟上，它会红。
@@ -997,10 +1008,18 @@
   - 逐端点字段表（`:183`/`:185`/`:199`）：**三行 `title` 行整个删掉**（`POST /api/ideas`、`PATCH /api/ideas/{id}`、`POST /api/ideas/merge` 各一行）。
   - `matches.field` 的取值列表（`:232`）：`"title" / "content" / "tags" / "project"` → `"content" / "tags" / "project"`。
   - ⚠️ **两处散文里也提到标题**（守卫扫的是全文，光改表格不够）：
-    - `:60`「**按相关度排**：标题命中比正文命中更相关。」→「**按相关度排**：正文命中比标签、项目命中更相关。」
+    - `:60`「**按相关度排**：标题命中比正文命中更相关。」→「**按相关度排**：正文与标签命中**同权**，项目名命中的权重低一档（得分还受词频与文档长度影响，不是同权就一定同分）。」
+      ⚠️ **别写「正文比标签更相关」**：真实权重是 `content=5.0 / tags=5.0 / project=3.0`
+      （`SearchRepository.cs` 的 `IdeaFtsWeights`，列序 content/tags/project）——
+      正文与标签**同权**，只有项目名低一档（与本计划 Task 1 Step 1(c) 钉住的期望、
+      规格 §4.3 A 一致）。
     - `:93`「**搜的不只是正文**：标题、正文、标签名、项目名都在索引里」→「**搜的不只是正文**：正文、标签名、项目名都在索引里」。
   - **在请求体字段表下面补一句**（规格 §4.3 F 要求「变更说明里要点明这条行为」）：
-    「老客户端仍然发 `title` 会被**静默忽略**（内容正常保存、不报错）—— 想法已经没有标题这个字段了。」
+    点明「老客户端多带标题键会被**静默忽略**（内容正常保存、不报错）」——
+    ⚠️ **措辞本身也要守 Step 1**（不得出现被守卫禁的字段形态）：
+    写成「**老客户端仍然带上标题字段会被静默忽略**（内容正常保存、不报错）——
+    想法已经没有标题这个字段了：请求体里多带的那个键，服务端直接丢掉。」，
+    **不要**写出那个字段的字面拼写（写了就与 Step 1 的守卫互斥）。
 
 - [ ] **Step 3: 改 `calling.md` 与 `scenarios.md`**
 
