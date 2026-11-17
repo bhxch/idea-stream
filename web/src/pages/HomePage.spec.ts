@@ -1492,6 +1492,85 @@ describe('HomePage', () => {
     wrapper.unmount();
   });
 
+  it('两发重拉同时在飞时，事件攒到全部结束才补回去', async () => {
+    // 整表替换期间来的事件要攒着（替换会把它们抹掉）。两发重拉同时在飞是可能的
+    // （条件变化与 SSE 各有自己的防抖计时器），先结束的那发不能把「还在飞」的
+    // 状态置回假 —— 要是置了，窗口里来的事件会被合并进列表、再被仍在飞的那发
+    // 整表替换抹掉（该条目短暂消失，下一个事件才把它带回来）。
+    vi.useFakeTimers();
+    const layout = stubLayout();
+    try {
+      // 首屏那发正常返回；之后带关键词（q）的重拉全部用手动的 deferred 挡住，
+      // 才能构造出「两发同时在飞」。
+      const deferreds: Array<(value: Idea[]) => void> = [];
+      apiGet.mockImplementation((path: string, params?: Record<string, string | undefined>) => {
+        switch (path) {
+          case '/projects':
+            return Promise.resolve(projects);
+          case '/settings':
+            return Promise.resolve({});
+          case '/tags':
+            return Promise.resolve([]);
+          case '/ideas':
+            if (!params?.q && deferreds.length === 0) {
+              return Promise.resolve([ideaA, ideaB]);
+            }
+            return new Promise<Idea[]>((resolve) => {
+              deferreds.push(resolve);
+            });
+          default:
+            return Promise.resolve([]);
+        }
+      });
+
+      const wrapper = mount(HomePage);
+      await flushPromises();
+      const before = ideasCalls().length;
+
+      // 用户刚改了关键词（A 的防抖还没走完），别处又来了一条（B 的防抖跟着排上）。
+      // 两条内容的都含「点子」：改完关键词后它们才匹配得上过滤条件。
+      await wrapper.get('input[aria-label="搜索想法"]').setValue('点子');
+      FakeEventSource.instances[0].emit(
+        'idea.created',
+        makeEvent('idea.created', {
+          idea: { ...idea, id: 'idea-new-1', content: '别处记的点子', updatedAt: '2026-11-12T10:00:00Z' },
+        }),
+        'e1',
+      );
+      await flushPromises();
+      await waitForReload();
+
+      // A、B 两发都出去了，都卡在 deferred 上。
+      expect(ideasCalls().length).toBe(before + 2);
+      expect(deferreds).toHaveLength(2);
+
+      // B 还在飞的时候又来了一条：正在飞（计数 > 0）→ 攒着，不合并。
+      FakeEventSource.instances[0].emit(
+        'idea.created',
+        makeEvent('idea.created', {
+          idea: { ...idea, id: 'idea-new-2', content: '又一条点子', updatedAt: '2026-11-12T10:01:00Z' },
+        }),
+        'e2',
+      );
+      expect(wrapper.get('.list').text()).not.toContain('又一条点子');
+
+      // A 先结束（计数 2 → 1）：还没到零，攒着的事件不能补 ——
+      // 现在补进去，马上会被仍在飞的 B 整表替换抹掉。
+      deferreds[0]?.([ideaA, ideaB]);
+      await flushPromises();
+      expect(wrapper.get('.list').text()).not.toContain('又一条点子');
+
+      // B 也结束了（计数 1 → 0）：这才补 —— 攒着的那条进列表，一条都没丢。
+      deferreds[1]?.([ideaA, ideaB]);
+      await flushPromises();
+      expect(wrapper.get('.list').text()).toContain('又一条点子');
+      wrapper.unmount();
+    } finally {
+      layout.restore();
+      vi.useRealTimers();
+    }
+  });
+
   it('深链 ?idea=<id> 打开后定位到那条并高亮', async () => {
     await router.push('/?idea=idea-1');
 

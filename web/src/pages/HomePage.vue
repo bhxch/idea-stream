@@ -1021,12 +1021,17 @@ function observeHistorySentinel(): void {
 let stream: EventStream | null = null;
 
 /**
- * 列表正在被整表替换（首屏、切项目、resync）。
+ * 还在飞的整表替换数（首屏、切项目、resync、SSE 重拉都算）。
  *
  * 替换的这段时间里可能又来了事件 —— 整表替换会把它们抹掉
- * （服务端给的是它读库那一刻的快照），所以先攒着，替换完再补回去。
+ * （服务端给的是它读库那一刻的快照），所以先攒着，**全部**替换完再补回去。
+ *
+ * ⚠️ 必须是计数器而不是布尔：条件变化与 SSE 各有一个重拉入口（各自的
+ * 防抖计时器，只撤自己那路），两发同时在飞是可能的 —— 先结束的那发把
+ * 布尔置回 false，窗口里来的事件就会被合并进列表、然后被仍在飞的那发
+ * 整表替换抹掉（该条目短暂消失，下一个事件才把它带回来）。数到零才算结束。
  */
-let reloading = false;
+let reloadingCount = 0;
 
 /** 整表替换期间攒着的事件。 */
 const queuedEvents: IdeaEvent[] = [];
@@ -1098,7 +1103,7 @@ function adjustProjectCount(projectId: string | undefined, delta: number): void 
 
 /** 收到一条业务事件。 */
 function onEvent(event: IdeaEvent): void {
-  if (reloading) {
+  if (reloadingCount > 0) {
     // 列表马上要被整表换掉：先攒着，换完再补（不然这条变更就丢了）。
     queuedEvents.push(event);
     return;
@@ -1114,15 +1119,18 @@ function onEvent(event: IdeaEvent): void {
  * @param load 真正去拉列表的活（首屏、切项目、resync 各带自己的参数）
  */
 async function reloadList(load: () => Promise<void>): Promise<void> {
-  reloading = true;
+  reloadingCount += 1;
   try {
     await load();
   } finally {
-    reloading = false;
-    // 补回刚才攒着的事件：一条都不丢。
-    const queued = queuedEvents.splice(0);
-    for (const event of queued) {
-      applyEventToList(event);
+    reloadingCount -= 1;
+    if (reloadingCount === 0) {
+      // 最后一发也结束了才补事件：还有别的发在飞的话，它们结束时一样会
+      // 整表替换 —— 现在补进去也会被抹掉。攒着更稳，一条都不会丢。
+      const queued = queuedEvents.splice(0);
+      for (const event of queued) {
+        applyEventToList(event);
+      }
     }
   }
 }
