@@ -2056,7 +2056,7 @@
 **Files:**
 - Modify: `web/src/stores/ideas.ts:27`（`PAGE_SIZE`）、`:178-205`（`fetchOlderIdeas`）、`:217-229`（`prependOlder`）
 - Modify: `web/src/composables/useHistoryScroll.ts:74-125`（`loadOlder`）
-- Test: `web/src/stores/ideas.spec.ts`、`web/src/composables/useHistoryScroll.spec.ts`、`web/src/lib/rows.spec.ts`（位置序号的奇偶用例放在这里 —— 位置序号是渲染层算的）
+- Test: `web/src/stores/ideas.spec.ts`、`web/src/composables/useHistoryScroll.spec.ts`、`web/src/lib/rows.spec.ts`（位置序号的奇偶用例放在这里 —— 位置序号是渲染层算的）、`web/src/pages/HomePage.spec.ts`（`:2153` 那个 `prependOlder` 调用点与 `:2155` 的深度断言）
 
 **Interfaces:**
 - Consumes: Task 11 的 `lib/rows.toRows` 与两列布局
@@ -2171,6 +2171,38 @@
     ```
   - ⚠️ `scrolledItems` 加的是**实际 prepend 的条数**（100 或到底那页的条数）—— SSE 重拉的基准要跟它对上。
 
+  **同时改既有调用点与既有断言** —— 签名与语义都变了（传数组 → 传 page；满页整页收下 → 丢掉探针），
+  **既有测试不改就必红**（`page.items` 是 `undefined` → `TypeError`；长度与深度的期望值 101 → 100）：
+
+  | 文件:行 | 现在 | 改成 |
+  |---|---|---|
+  | `web/src/stores/ideas.spec.ts:202` | `prependOlder(makeIdeas(PAGE_SIZE + 1));` | `prependOlder({ items: makeIdeas(PAGE_SIZE + 1), stale: false, hasMore: true });` |
+  | `web/src/stores/ideas.spec.ts:288` / `:302` / `:327` / `:362` | `prependOlder(page.items);` | `prependOlder(page);` |
+  | `web/src/stores/ideas.spec.ts:311` | `prependOlder([]);` | `prependOlder({ items: [], stale: false, hasMore: false });` |
+  | `web/src/pages/HomePage.spec.ts:2153` | `prependOlder(page.items);` | `prependOlder(page);`（⚠️ **这个文件不在本 task 原来的 Test 清单里** —— 已补进 Files） |
+
+  | 文件:行 | 断言 | 改成 |
+  |---|---|---|
+  | `web/src/stores/ideas.spec.ts:234` | `expect(page.items).toHaveLength(PAGE_SIZE + 1);`（用例名「fetchOlderIdeas 整页返回更旧的那一页」） | `toHaveLength(PAGE_SIZE);`，用例名改成「fetchOlderIdeas 满页时丢掉最老的那一条（探针）」，上面那句注释「这一页**整页**收下：服务端给的条数一条都不丢」也要改 |
+  | `web/src/stores/ideas.spec.ts:203` / `:211` | `expect(scrolledItems.value).toBe(PAGE_SIZE + 1);` | `toBe(PAGE_SIZE);` |
+  | `web/src/stores/ideas.spec.ts:210` | `expect(ideas.value).toHaveLength(3 + PAGE_SIZE + 1);` | `toHaveLength(3 + PAGE_SIZE);` |
+  | `web/src/stores/ideas.spec.ts:290` | `toHaveLength(2 + PAGE_SIZE + 1)` | `toHaveLength(2 + PAGE_SIZE)` |
+  | `web/src/stores/ideas.spec.ts:294` | `toBe(PAGE_SIZE + 1)` | `toBe(PAGE_SIZE)` |
+  | `web/src/composables/useHistoryScroll.spec.ts:162` / `:300` / `:360` | `toHaveLength(2 + PAGE_SIZE + 1)` | `toHaveLength(2 + PAGE_SIZE)` |
+  | `web/src/composables/useHistoryScroll.spec.ts:165` / `:301` | `toBe(PAGE_SIZE + 1)` | `toBe(PAGE_SIZE)` |
+  | `web/src/composables/useHistoryScroll.spec.ts:407` | `const grown = (PAGE_SIZE + 1) * 10;` | `const grown = PAGE_SIZE * 10;`（那一页现在只拼进 100 条） |
+  | `web/src/pages/HomePage.spec.ts:2155` | `expect(scrolledItems.value).toBe(PAGE_SIZE + 1);`（上面那句注释「往回翻回来的那一页是**整页**（PAGE_SIZE + 1 条）」） | `toBe(PAGE_SIZE);`，注释改成「满页丢掉探针，净增 100 条」 |
+
+  ⚠️ **有一处**不用改**：`web/src/stores/ideas.spec.ts:355-368` 那条「一直往回翻……一条不漏：翻出来的正好是库里那 250 条」。
+  满页丢掉的那一条落在**已加载区域的外侧**，下一轮的请求窗口会把它要回来（规格 §6.4 的验算），
+  所以总数仍然是 250 —— **别去动它**（动了反而会把「不丢东西」这条保证改坏）。
+  ⚠️ 同理，`ideas.spec.ts:328` 那条「列表与深度始终对得上」的公式
+  `scrolledItems === ideas.length - (PAGE_SIZE + 1)` **也不用改**：首屏仍是 101 条，
+  深度 = 翻出来的条数，公式照样成立。
+
+  按 Global Constraints 的要求，这些断言的调整理由（「结构变了：满页丢掉探针，净增 100 条」）
+  要写进本 task 的提交说明。
+
 - [ ] **Step 4: 改 `useHistoryScroll.ts`**
 
   在 `web/src/composables/useHistoryScroll.ts:74-125`：
@@ -2206,7 +2238,7 @@
   git add web/src/stores/ideas.ts web/src/stores/ideas.spec.ts \
           web/src/composables/useHistoryScroll.ts web/src/composables/useHistoryScroll.spec.ts \
           web/src/lib/rows.ts web/src/lib/rows.spec.ts \
-          web/src/pages/HomePage.vue
+          web/src/pages/HomePage.vue web/src/pages/HomePage.spec.ts
   git commit -m "fix(web): 往回翻丢掉探针那一条，prepend 净增偶数条
 
   实际每页要的是 101 条（多要的那条是探针），101 是奇数 —— 每翻一页
@@ -2442,7 +2474,8 @@
   | `the_webhook_form_page_uses_the_narrow_container` | Webhook 页的根元素**有** `page--narrow` class |
 
   > 这两条是**结构断言**（class 在不在），不是样式断言 —— 「铺满」是 CSS 的事，
-  > 真正的视觉验证在 Task 15 的 e2e 里（量 `.page` 的实际宽度）。
+  > 真正的视觉验证在 **Task 15 的 e2e `管理页铺满，Webhook 表单保持窄`** 那条里
+  > （量 `.page` / `.page--narrow` 的实际宽度）。
 
 - [ ] **Step 2: 跑测试确认它失败**
 
@@ -2573,21 +2606,29 @@
 - [ ] **Step 3: 追加新外壳的行为用例**
 
   在 `web/e2e/layout.spec.ts` 的 `test.describe('排版与响应式', …)` 里追加。
-  ⚠️ **每条新用例自己造数据**（照现有那条循环里的写法：`const path = await route.prepare(seed, api);`
-  然后 `await page.setViewportSize({ width, height }); await page.goto(path);`）——
-  它们不在「路由 × 视口」那个循环里，不会自动拿到 `prepare` 造的数据。
-  造多少条也要写清：home 路由的 `prepare` 造 **14** 条，下面几条断言里的位置序号都是按这 14 条推的。
+  ⚠️ **每条新用例自己造数据**，写法照现有那条循环里的四行（`web/e2e/layout.spec.ts:516-518`）：
+  ```ts
+  const path = await route.prepare(seed, api);
+  await page.setViewportSize({ width, height });
+  await page.goto(path);
+  await expect(route.ready(page)).toBeVisible();   // ← 这一步不能省
+  ```
+  - 它们不在「路由 × 视口」那个循环里，不会自动拿到 `prepare` 造的数据；
+  - ⚠️ **`await expect(route.ready(page)).toBeVisible();` 不能省**：想法列表是挂载后**异步**从服务端
+    拉来的，`page.goto()` 只等 load 事件 —— 不等 `ready` 就去量，列表可能还是空的，
+    下面那些**计数类**断言（可见条数 ≥10 / ≥5、`count` == 14）会**假红**（代码其实是对的）；
+  - 造多少条也要写清：home 路由的 `prepare` 造 **14** 条，下面几条断言里的位置序号都是按这 14 条推的。
 
   | 用例 | 断言 |
   |---|---|
   | `宽屏：侧栏贴左，主区铺到右边缘` | 1920×1080 → `.home__sidebar` 的左边距 ≈ 0（`boundingBox().x <= 2`）；`.home__content` 的右边缘离视口右边缘 ≤ 24px（主区四周留 10–12px + 内容区留白） |
-  | `宽屏：一屏能看到 ≥10 条想法` | 1920×1080 → `.idea` 的可见数量 `>= 10` |
+  | `宽屏：一屏能看到 ≥10 条想法` | 1920×1080 → **在视口里**的 `.idea` 数量 `>= 10`（用 `page.locator('.idea:visible')` 数 DOM 节点不等于「在视口里」—— 屏幕外但没被藏的卡片也是 `:visible`；要数「在视口里」的，就用 `boundingBox()` 与视口矩形相交来数） |
   | `宽屏：想法排成两列` | 1920×1080 → 第 1 排的左格与右格**都在视口里**，且左格的 x 小于右格的 x |
   | `平板 768×1024：两列、无侧栏` | 768×1024 → `.home__sidebar` **不可见**（断点 1024px 以下没有侧栏）；第 1 排的左格与右格**都在视口里**且 x 不同（规格 §D9：768–1023px → 2 列、无侧栏） |
-  | `窄屏 <768px：单列` | 375×667 → 第 1 排的**两条**想法都在（`.cell--left .idea` 与 `.cell--right .idea` 各 1 个），且两条的 **x 相同**（同一列）、**y 不同**（上下堆叠）—— 规格 §D9 的「单列」是「排成一条竖列」，**不是**「只显示一半」 |
-  | `窄屏：没有想法被藏起来` | 375×667 → `page.locator('.idea').count()` **等于**这一轮造出来的条数（14）—— 把「藏掉右格 → 每两条只剩一条」钉死（那种错法上面两条断言都发现不了：一屏仍然有 ≥5 条、「单列」也成立） |
+  | `窄屏 <768px：单列` | 375×667 → 第 1 排的**两条**想法都在（`.cell--left .idea` 与 `.cell--right .idea` 各 1 个）；**先把两个盒子的 `boundingBox()` 断言成非 null**（被 `display:none` 藏起来的元素量不到位置，`boundingBox()` 是 `null`），再比：**x 相同**（同一列）、**y 不同**（上下堆叠）—— 规格 §D9 的「单列」是「排成一条竖列」，**不是**「只显示一半」 |
+  | `窄屏：没有想法被藏起来` | 375×667 → **可见**的想法数 == 这一轮造出来的条数（14）：`await expect(page.locator('.idea:visible')).toHaveCount(14);`<br>⚠️ **不能用 `page.locator('.idea').count()`** —— Playwright 的 `count()` 数的是**匹配到的 DOM 节点**、**不看可见性**，用 `display:none` 藏起来的 `.idea` 照样数得到 ⇒ 那个错法下它仍然是 14、**照样绿**。<br>⚠️ 同理，「一屏能看到 ≥10 / ≥5」那两条数的是**在视口里**的卡片（`:visible` 只说明「没被藏」，屏幕外但没藏的也算 —— 见上面那两行） |
   | `窄屏：钉死的外壳只有 2 行` | 375×667 → 顶栏（`.home__topbar`）与输入框（`.composer`）都可见；**过滤行不在视口里**（它随内容滚走了）→ 复用文件里现成的 `intersectsViewport(box, viewport)`（`:353-361`）断言过滤行的矩形**与视口不相交** |
-  | `窄屏：一屏能看到 ≥5 条想法` | 375×667 → `.idea` 的可见数量 `>= 5` |
+  | `窄屏：一屏能看到 ≥5 条想法` | 375×667 → **在视口里**的 `.idea` 数量 `>= 5`（判据同上：`:visible` 只说明「没被藏」，还要与视口矩形相交才算「一屏能看到」） |
   | `卡片只有一整块正文，没有标题层` | `page.locator('.idea h2.title').count()` === 0 |
   | `编号紧挨时间` | `.idea .meta__num` 与 `.idea .meta__time` 的水平距离 ≤ 20px，且 num 的 x < time 的 x |
   | `主页顶栏的「⋯」能直接进回收站` | 点「⋯」→ 点「回收站」→ URL 是 `/trash` |
@@ -2597,6 +2638,7 @@
   | `窄屏：顶栏的新触发器够大` | 375×667 → 用文件里现成的 `expectTapTarget` 助手量「⋯」「🔍」与项目下拉触发器：宽高都 ≥ 32px（规格 §6.10 末句：新加的下拉触发器、发送按钮同样适用） |
   | `宽屏：新记的一条落在最下面，且左右按奇偶交替` | 1920×1080 → 这一轮已造 **14** 条（Step 2 的 `prepare`）→ 提交第 1 条新想法 → 它是**最后**一张卡、`.meta__num` 是 **'15'**（奇数位）→ 落在**左格**；再提交第 2 条 → `.meta__num` 是 **'16'**（偶数位）→ 落在**右格** —— 规格 §D5「第 2k+1 条进左格、第 2k+2 条进右格」+ §9 行为第 1 条。⚠️ **奇偶必须按实际条数推**：14+1=15 是奇数位（左格），别写死成右格 |
   | `宽屏：编辑一条靠前的想法，它跳到最下面，其下方卡片左右互换` | 1920×1080 → 编辑**第一条**想法并保存 → 它跳到最后一张卡；原来在它下面那条的 x **左右互换**了（规格 §9 行为第 2 条，**这是被明确批准的取舍**，不是 bug） |
+  | `管理页铺满，Webhook 表单保持窄` | 1280×800 → 打开 `/trash` 与 `/projects`：`.page` 的右边缘离视口右边缘 ≤ 24px（**铺满**，`.page` 已经没有 `max-width` 了）；打开 `/webhooks`：`.page--narrow` 的宽度 ≤ 720px（**表单保持窄**，规格 §D10 / §9 视觉验收） |
 
 - [ ] **Step 4: 跑 e2e**
 
@@ -2676,6 +2718,14 @@
   Task 12 的 `slice` 方向与它自己的测试描述矛盾（丢错了端 → 集合中间留洞）；
   Task 15 的「状态过滤组」关键元素要求可见且在视口内，而 Task 13 又把过滤行移进滚动容器（窄屏随内容滚走 → 不在视口里）→
   改成 `keyElements` 按视口给（窄屏不给这一条）。
+- **第 3 轮审查又修掉的四处**：
+  ① Task 12 改了 `prependOlder` 的签名与语义，却没安排改 **7 个既有调用点**与约 **12 条既有断言**
+  （含不在 Files 清单里的 `web/src/pages/HomePage.spec.ts:2153`）—— 照原计划做，Task 12 自己的 `npm test` 闸门必红；
+  ② Task 15 的「窄屏：没有想法被藏起来」用 `count()` 判定 —— Playwright 的 `count()` **不看可见性**，
+  藏起来的 `.idea` 照样数得到 ⇒ 它对要钉的那个错法**无效**；改成 `:visible` + `boundingBox()` 非 null；
+  ③ 新增 e2e 的写法片段漏了 `await expect(route.ready(page)).toBeVisible();` —— 列表是异步拉来的，
+  不等就量会**假红**；
+  ④ 管理页「铺满 / 表单保持窄」的视觉验证没有落地（Task 14 把它指向 Task 15，Task 15 里没有）→ 补了一条 e2e。
 - **第 2 轮审查又修掉的四处**：
   ① 窄屏单列**不能把右格藏掉** —— 网格只剩一列之后两个格子本来就自动上下堆叠，藏掉右格等于手机上每两条想法只剩一条（且没有任何闸门能发现）；
   ② Task 3 补上 `SearchIndexTests.cs` 的 `InsertIdea`（删掉 `idea.title` 列之后它的裸 SQL 会报 `no such column`）；
