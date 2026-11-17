@@ -150,8 +150,15 @@ export function flattenLines(lines: HighlightLine[]): HighlightSegment[] {
 /**
  * 去掉片段序列首尾的空白（组件的视觉标题是 trim 过的）。
  *
- * 只动首尾两段：中间的空白是正文的一部分，不能动。
- * 命中区间从词元起、到词元止，不会以空白开头或结尾，所以 trim 切不到高亮。
+ * trim 要**跨片段**做：首尾的空白可能横跨好几段 —— 标题里的空行、
+ * flattenLines 补的换行分隔符，各自都是独立的片段。
+ * 只动首尾两段的话，夹在中间的「整段空白」会留下来，trim 出来的标题
+ * 与 `title?.trim()` 对不上（`textContent` 与 aria-label 里会带着换行）。
+ *
+ * 做法：先算出整段纯文本里「非空白」的区间，再按区间重新切片段。
+ * 命中区间从词元起、到词元止，不会以空白开头或结尾 —— 在边界上被切掉的
+ * 只会是未命中的空白片段，高亮不会丢。（实现仍按「区间与片段的交集」切，
+ * 就算命中真的压到了边界，剩下的那截还是 marked，不会静默丢高亮。）
  *
  * @param segments 片段序列。
  */
@@ -159,19 +166,38 @@ export function trimSegments(segments: HighlightSegment[]): HighlightSegment[] {
   if (segments.length === 0) {
     return [];
   }
-  const trimmed = segments.map((segment) => ({ ...segment }));
-  trimmed[0].text = trimmed[0].text.replace(/^\s+/, '');
-  const last = trimmed.length - 1;
-  trimmed[last].text = trimmed[last].text.replace(/\s+$/, '');
 
-  // 首尾 trim 完可能整段没了（整行都是空白）—— 丢掉，别渲染空片段。
-  while (trimmed.length > 0 && trimmed[0].text === '') {
-    trimmed.shift();
+  const plain = segments.map((segment) => segment.text).join('');
+  const start = plain.search(/\S/);
+  if (start < 0) {
+    // 全是空白：trim 完什么都不剩。
+    return [];
   }
-  while (trimmed.length > 0 && trimmed[trimmed.length - 1].text === '') {
-    trimmed.pop();
+
+  const trailing = plain.match(/\s+$/);
+  // `match.index` 的类型是 `number | undefined`（正则没开 `d` 标志时 JS 的类型面保守）；
+  // 带尾随空白时 index 一定有值，`?? plain.length` 兜的是类型面不是运行时。
+  const end = trailing?.index ?? plain.length;
+
+  const result: HighlightSegment[] = [];
+  let cursor = 0;
+  for (const segment of segments) {
+    const segmentStart = cursor;
+    const segmentEnd = segmentStart + segment.text.length;
+    cursor = segmentEnd;
+
+    const from = Math.max(segmentStart, start);
+    const to = Math.min(segmentEnd, end);
+    if (to <= from) {
+      // 整段落在 trim 掉的区间里（空行、换行分隔符）—— 丢掉。
+      continue;
+    }
+    result.push({
+      text: segment.text.slice(from - segmentStart, to - segmentStart),
+      marked: segment.marked,
+    });
   }
-  return trimmed;
+  return result;
 }
 
 /** 一行的纯文本（把它的片段拼起来）。 */

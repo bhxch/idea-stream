@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SearchMatch } from '../api/types';
-import { highlightLines, splitTitleAndBody } from './highlight';
+import { flattenLines, highlightLines, splitTitleAndBody, trimSegments } from './highlight';
+import type { HighlightSegment } from './highlight';
 
 /** 造一处命中（默认在正文里）。 */
 function match(start: number, length: number, field: SearchMatch['field'] = 'content'): SearchMatch {
@@ -65,6 +66,55 @@ describe('highlightLines', () => {
 
     expect(lines[0].segments).toEqual([{ text: '咖啡', marked: true }]);
     expect(lines[1].segments).toEqual([{ text: '水温', marked: true }]);
+  });
+});
+
+describe('trimSegments', () => {
+  /** 把多行原文走一遍真实管线：highlightLines → flattenLines，得到组件喂给 trimSegments 的形状。 */
+  function segmentsOf(text: string, matches: SearchMatch[] = []) {
+    return flattenLines(highlightLines(text, matches));
+  }
+
+  it('trim 跨片段：标题前面跟着的空行要一起去掉', () => {
+    // 标题字段里带换行（只有走 API 写入的条目才有）：空行各自是一个片段，
+    // 只动首尾两段的旧写法去不掉夹在中间的换行片段 —— trim 出来的标题
+    // 与 title?.trim() 对不上（textContent / aria-label 里带着换行）。
+    const segments = segmentsOf('\n\n咖啡笔记');
+
+    expect(trimSegments(segments)).toEqual([{ text: '咖啡笔记', marked: false }]);
+  });
+
+  it('trim 跨片段：尾部的空行与换行分隔符也要去掉', () => {
+    const segments = segmentsOf('咖啡笔记\n\n');
+
+    expect(trimSegments(segments)).toEqual([{ text: '咖啡笔记', marked: false }]);
+  });
+
+  it('命中贴着边界：被切之后剩下的那截还是 marked', () => {
+    // 命中区间从词元起、到词元止，不该被空白 trim 切到 —— 但实现按「区间与
+    // 片段的交集」切，就算哪天命中真的压到了边界，剩下的那截还是 marked。
+    const segments: HighlightSegment[] = [
+      { text: '  ', marked: false },
+      { text: '咖啡', marked: true },
+    ];
+
+    expect(trimSegments(segments)).toEqual([{ text: '咖啡', marked: true }]);
+  });
+
+  it('中间的空白不动（那是正文的一部分）', () => {
+    const segments: HighlightSegment[] = [
+      { text: '咖啡', marked: true },
+      { text: ' \n ', marked: false },
+      { text: '水温', marked: true },
+    ];
+
+    expect(trimSegments(segments)).toEqual(segments);
+  });
+
+  it('全是空白：trim 完什么都不剩', () => {
+    const segments = segmentsOf(' \n\t ');
+
+    expect(trimSegments(segments)).toEqual([]);
   });
 });
 
