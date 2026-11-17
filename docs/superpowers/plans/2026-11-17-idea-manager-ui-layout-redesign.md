@@ -2176,10 +2176,19 @@
 
   | 文件:行 | 现在 | 改成 |
   |---|---|---|
-  | `web/src/stores/ideas.spec.ts:202` | `prependOlder(makeIdeas(PAGE_SIZE + 1));` | `prependOlder({ items: makeIdeas(PAGE_SIZE + 1), stale: false, hasMore: true });` |
+  | `web/src/stores/ideas.spec.ts:202` | `prependOlder(makeIdeas(PAGE_SIZE + 1));` | `prependOlder({ items: makeIdeas(PAGE_SIZE), stale: false, hasMore: true });` —— **改成 100 条** |
   | `web/src/stores/ideas.spec.ts:288` / `:302` / `:327` / `:362` | `prependOlder(page.items);` | `prependOlder(page);` |
   | `web/src/stores/ideas.spec.ts:311` | `prependOlder([]);` | `prependOlder({ items: [], stale: false, hasMore: false });` |
   | `web/src/pages/HomePage.spec.ts:2153` | `prependOlder(page.items);` | `prependOlder(page);`（⚠️ **这个文件不在本 task 原来的 Test 清单里** —— 已补进 Files） |
+
+  ⚠️ **`:202` 那处必须改成 100 条，否则同一张表自相矛盾**：新的 `prependOlder` 是
+  「**加多少就是多少**」（`scrolledItems.value += page.items.length`），
+  而「丢掉探针」发生在 **`fetchOlderIdeas`** 里（它把满页 101 条裁成 100 条）。
+  这个用例**直接**调 `prependOlder`、绕过了 `fetchOlderIdeas` ——
+  塞 101 条的话深度会记 101、列表会变成 `3 + 101 = 104`，
+  与下面那三条断言的 100 基准对不上。
+  改成 `makeIdeas(PAGE_SIZE)`（100 条，与 `fetchOlderIdeas` 交过来的一致）之后，下面的期望值才成立。
+  （另一种自洽的写法是保留 101 条、那三条断言也不改；**二选一，别混着写**。）
 
   | 文件:行 | 断言 | 改成 |
   |---|---|---|
@@ -2192,6 +2201,24 @@
   | `web/src/composables/useHistoryScroll.spec.ts:165` / `:301` | `toBe(PAGE_SIZE + 1)` | `toBe(PAGE_SIZE)` |
   | `web/src/composables/useHistoryScroll.spec.ts:407` | `const grown = (PAGE_SIZE + 1) * 10;` | `const grown = PAGE_SIZE * 10;`（那一页现在只拼进 100 条） |
   | `web/src/pages/HomePage.spec.ts:2155` | `expect(scrolledItems.value).toBe(PAGE_SIZE + 1);`（上面那句注释「往回翻回来的那一页是**整页**（PAGE_SIZE + 1 条）」） | `toBe(PAGE_SIZE);`，注释改成「满页丢掉探针，净增 100 条」 |
+  | `web/src/pages/HomePage.spec.ts:2171` | `expect(limit).toBe(PAGE_SIZE + 1 + (PAGE_SIZE + 1));`（SSE 重拉的 limit = `loadedLimit(scrolledItems)`） | `toBe(PAGE_SIZE + 1 + PAGE_SIZE);` —— 深度从 101 变 100，`loadedLimit(100)` = 201 |
+  | `web/src/pages/HomePage.spec.ts:2492-2493` | 注释「服务端给的这一页是**整页**（PAGE_SIZE + 1 条）—— 一条都不丢：丢的那一条正好是紧挨着已加载区域的那条（列表中间会留一个洞）」 | **因果整个反了**，要改：「服务端给的这一页是**满页**，我们丢掉**最老**的那一条（探针）—— 它落在已加载区域的**外侧**，下一轮会要回来，集合中间不会留洞」 |
+  | `web/src/pages/HomePage.spec.ts:2494` | `expect(wrapper.findAll('.idea')).toHaveLength((PAGE_SIZE + 1) * 2);` | `toHaveLength(PAGE_SIZE + 1 + PAGE_SIZE);`（101 + 100 = 201） |
+  | `web/src/pages/HomePage.spec.ts:2495` | `expect(wrapper.findAll('.idea')[0].attributes('data-idea-id')).toBe('idea-older-0');` | `toBe('idea-older-1');` —— **探针落在这一页的最老那端**（mock 的 `makeOlderIdeas` 按下标升序返回 `idea-older-0 …`，数组第 0 个就是最老的那条），丢的是它 |
+  | `web/src/pages/HomePage.spec.ts:2512` | 注释「更旧的一页插到了视口**上方**（101 条 × 300px）」 | 改成「100 条 × 300px」 |
+  | `web/src/pages/HomePage.spec.ts:2514` | `expect(scroller.scrollTop).toBe((PAGE_SIZE + 1) * 300);` | `toBe(PAGE_SIZE * 300);`（高度差 = 拼进去的 100 条 × 300px） |
+  | `web/src/pages/HomePage.spec.ts:2544` | `expect(scroller.scrollTop).toBe((PAGE_SIZE + 1) * 300);` | `toBe(PAGE_SIZE * 300);`（同 `:2514`） |
+  | `web/src/pages/HomePage.spec.ts:2591` | `expect(ideas.value).toHaveLength((PAGE_SIZE + 1) * 2);` | `toHaveLength(PAGE_SIZE + 1 + PAGE_SIZE);` |
+  | `web/src/pages/HomePage.spec.ts:2592` | `expect(ideas.value[0].id).toBe('idea-older-0');` | `toBe('idea-older-1');`（同上：探针被丢） |
+  | `web/src/pages/HomePage.spec.ts:2606` | 注释「深度是「用户往上翻过了多少条」：这一页 101 条（整页）。」 | 改成「这一页 100 条（满页丢掉探针）」 |
+  | `web/src/pages/HomePage.spec.ts:2608` | `expect(scrolledItems.value).toBe(PAGE_SIZE + 1);` | `toBe(PAGE_SIZE);` |
+  | `web/src/pages/HomePage.spec.ts:2656` | `expect(wrapper.findAll('.idea')).toHaveLength((PAGE_SIZE + 1) * 2);` | `toHaveLength(PAGE_SIZE + 1 + PAGE_SIZE);` |
+
+  ⚠️ **上面这几处 mock 的「往回翻那一页」都是满页**（`mockPagedIdeas(PAGE_SIZE + 1)` 与
+  `mockPendingOlderIdeas()` 的默认值都是 `makeOlderIdeas(PAGE_SIZE + 1)` = 101 条），
+  所以它们都会被裁成 100 条 —— 上面的新值成立。
+  ⚠️ `:2495`/`:2592` 这类「第一条是谁」的断言**漏改的后果最坑**：它会让人以为
+  prepend 的顺序逻辑错了，去改 `toRows` 或排序 —— 改错方向。
 
   ⚠️ **有一处**不用改**：`web/src/stores/ideas.spec.ts:355-368` 那条「一直往回翻……一条不漏：翻出来的正好是库里那 250 条」。
   满页丢掉的那一条落在**已加载区域的外侧**，下一轮的请求窗口会把它要回来（规格 §6.4 的验算），
@@ -2718,6 +2745,13 @@
   Task 12 的 `slice` 方向与它自己的测试描述矛盾（丢错了端 → 集合中间留洞）；
   Task 15 的「状态过滤组」关键元素要求可见且在视口内，而 Task 13 又把过滤行移进滚动容器（窄屏随内容滚走 → 不在视口里）→
   改成 `keyElements` 按视口给（窄屏不给这一条）。
+- **第 4 轮（终审）又修掉的两处**（都在 Task 12 新加的那张「既有调用点与既有断言」表上）：
+  ① 表自身矛盾 —— `:202` 的替换调用仍塞 101 条，而 `:203`/`:210`/`:211` 的期望值改成了 100 基准；
+  新的 `prependOlder` 是「加多少就是多少」，探针的裁剪在 `fetchOlderIdeas` 里 ⇒ 照原表改那条用例仍红
+  → `:202` 改成传 100 条（与 `fetchOlderIdeas` 交过来的一致）；
+  ② 同一张表漏了 `web/src/pages/HomePage.spec.ts` 里另外 **9 条会变值的断言**与 **3 段会变味的注释**
+  （`:2171`/`:2492-2493`/`:2494`/`:2495`/`:2512`/`:2514`/`:2544`/`:2591`/`:2592`/`:2606`/`:2608`/`:2656`）→
+  补齐并给出新值（201 / `'idea-older-1'` / 30000 / 100）。
 - **第 3 轮审查又修掉的四处**：
   ① Task 12 改了 `prependOlder` 的签名与语义，却没安排改 **7 个既有调用点**与约 **12 条既有断言**
   （含不在 Files 清单里的 `web/src/pages/HomePage.spec.ts:2153`）—— 照原计划做，Task 12 自己的 `npm test` 闸门必红；
