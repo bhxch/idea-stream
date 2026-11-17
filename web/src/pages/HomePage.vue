@@ -13,6 +13,7 @@ import ProjectSidebar from '../components/ProjectSidebar.vue';
 import ProjectTabs from '../components/ProjectTabs.vue';
 import { showToast } from '../components/ToastHost.vue';
 import { useDeepLink } from '../composables/useDeepLink';
+import { useHistoryScroll } from '../composables/useHistoryScroll';
 import { useScrollFollow } from '../composables/useScrollFollow';
 import { useTagMode } from '../composables/useTagMode';
 import { sortIdeas, type IdeaFilter } from '../lib/filter';
@@ -21,15 +22,12 @@ import { applyEvent, findAnchorIndex } from '../lib/merge';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
 import {
   applyLocalUpsert,
-  fetchOlderIdeas,
   focusIdeaId,
-  hasMore,
   ideas,
   loadedLimit,
   loadIdeas,
   loading,
   loadingMore,
-  releaseOlderIdeas,
   removeLocal,
   scrolledItems,
 } from '../stores/ideas';
@@ -914,104 +912,18 @@ function onClearSelection(): void {
  */
 const historySentinel = ref<HTMLElement | null>(null);
 
-/** 哨兵的观察者（页面没了就要断开）。 */
-let historyObserver: IntersectionObserver | undefined;
-
 /**
- * 页面已经卸载了。
+ * 往回翻历史的无限滚动（接近顶部就预加载更旧的一页，prepend 后把视口钉回原处）。
  *
- * 往回翻的请求在飞的时候用户可能直接离开页面 —— 那一页回来后没人看了，
- * 也不能再写进 store（store 是模块级的，下一个页面还在用它）。所以在
- * `await` 之后要重新看一眼这个标志。
+ * 这一块（哨兵观察、防重复、过期丢弃、视口修正）与页面其余部分没有共享状态，
+ * 整块搬进了 composable —— HomePage 里只留两个 ref 与两个生命周期入口。
  */
-let unmounted = false;
-
-/**
- * 往回翻：取更旧的一页，拼到列表**前面**。
- *
- * 三件事：
- * 1. 防重复触发：已经在翻了就不再发（`loadingMore`）；这也替代了
- *    「加载完成前把哨兵摘掉」的做法 —— 哨兵一直观察着，靠这个开关挡住
- *    重复请求就行；
- * 2. 没有更旧的了就不发（`hasMore`）：翻到底了就别再打后端；
- * 3. prepend 之后把视口钉回原来那条 —— 内容插到视口**上方**会把用户
- *    正在看的那条往下推，不补 `scrollTop` 的话预加载反而让视口跳了。
- */
-async function loadOlder(): Promise<void> {
-  if (loadingMore.value || !hasMore.value) {
-    return;
-  }
-  const container = scrollContainer.value;
-  // 过滤条件先记下来：等这一页的时候条件可能变（见下面）。
-  const requestedFilter = activeFilter.value;
-  let older: Idea[];
-  try {
-    // offset = 已经加载的条数：服务端从**最新**一端数（设计文档 §11.1）。
-    older = await fetchOlderIdeas(requestedFilter, ideas.value.length);
-  } catch (error) {
-    // 失败必须给一条提示：不然就是一次没人管的 Promise rejection ——
-    // 用户只看到「往上翻没反应」，不知道是翻完了还是请求挂了。
-    reportError(error, '加载更早的想法失败');
-    return;
-  }
-  if (older.length === 0) {
-    // 到底了。hasMore 由 store 自己写（fetchOlderIdeas）—— 这里不要再写一遍：
-    // 若这一页是**过期**的（期间有过更新的列表请求），store 什么都没写，
-    // 这里再写就是把过期结果写进共享状态（hasMore 是新页面刚算好的）。
-    return;
-  }
-  if (unmounted) {
-    // 页面已经没了：这一页没人看，也不该写进共享的 store。
-    // 深度要还回去 —— 这一页没进列表，深度不能替它记着。
-    // （若这一页其实已经过期 —— store 没入过账 —— release 自己会跳过。）
-    releaseOlderIdeas(older.length);
-    return;
-  }
-  if (requestedFilter !== activeFilter.value) {
-    // 等这一页的时候过滤条件变了：这一页是按**旧**条件要的，拼到新列表上
-    // 就是把不匹配当前条件的条目塞给用户。重拉会按新条件重新要一份，
-    // 这一页直接丢掉（深度也还回去：它没进列表）。
-    releaseOlderIdeas(older.length);
-    return;
-  }
-  // prepend 之前量一次内容高度：之后靠它算出「多了多少」，好把视口钉回原处。
-  //
-  // 量在**赋值之前**（而不是请求之前）：这一来一回期间到达的内容（SSE 在
-  // 底部追加的条目、加载提示的出现与消失）也得算进「之前的高度」—— 不然
-  // 差额里会多出那部分，视口就偏了。先 `await nextTick()` 把待渲染的改动
-  // 落进 DOM，量到的才是真的高度。
-  await nextTick();
-  const before = container?.scrollHeight ?? 0;
-  ideas.value = [...older, ...ideas.value];
-  // 必须等 DOM 更新完再量：重渲染之前量到的还是旧高度，补出来的位置是错的。
-  await nextTick();
-  if (container) {
-    container.scrollTop += container.scrollHeight - before;
-  }
-}
-
-/**
- * 观察往回翻的哨兵：接近顶部就预加载更旧的一页。
- *
- * `rootMargin` 的 `'400px 0px 0px 0px'` = **顶部**提前 400px 就触发：
- * 列表遍历方向的尽头是顶部（底部是当下，新内容靠 SSE 进来），
- * 「快到底时预加载」在这里就是「快到顶时预加载」。
- *
- * `root` 是消息流那个滚动容器（不是 window）：列表是在它里面滚的。
- */
-function observeHistorySentinel(): void {
-  historyObserver = new IntersectionObserver(
-    (entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        void loadOlder();
-      }
-    },
-    { root: scrollContainer.value, rootMargin: '400px 0px 0px 0px' },
-  );
-  if (historySentinel.value) {
-    historyObserver.observe(historySentinel.value);
-  }
-}
+const history = useHistoryScroll({
+  container: scrollContainer,
+  sentinel: historySentinel,
+  filter: () => activeFilter.value,
+  reportError,
+});
 
 /* ------------------------------------------------------------------ *
  * SSE：别的设备改了东西，这里同步过来
@@ -1240,21 +1152,18 @@ onMounted(() => {
   void init();
   stream = connectEvents({ onEvent, onResync });
   // 往回翻的哨兵：接近顶部就预加载更旧的一页。
-  observeHistorySentinel();
+  history.observe();
 });
 
 onBeforeUnmount(() => {
   // 页面没了：在飞的往回翻请求回来之后就别再写 store 了（store 是模块级的，
-  // 下一个页面还在用它，那一页没人看）。
-  unmounted = true;
+  // 下一个页面还在用它，那一页没人看）—— composable 里的 disposed 标志管这个。
+  history.dispose();
   // 离开页面就把连接关了：不然事件流会一直往一个没人看的页面上推。
   stream?.close();
   stream = null;
   // 待执行的重拉也别做了：页面都没了，重拉回来的数据没人看。
   cancelReloads();
-  // 哨兵也别观察了：没人看的时候它进了视野也只会白白发请求。
-  historyObserver?.disconnect();
-  historyObserver = undefined;
 });
 </script>
 
