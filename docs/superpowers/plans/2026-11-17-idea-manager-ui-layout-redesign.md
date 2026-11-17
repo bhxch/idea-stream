@@ -30,6 +30,8 @@
 - **断点**：侧栏 `1024px`（沿用现状）、两列 `768px`、触摸目标统一 `767px`（把现有的 `640px` 一并改掉，规格 §D9 / §6.10）。
 - **注释与文档用中文**，与仓库现有风格一致；每个公开类型/方法都要有 XML 文档注释 / TSDoc 说明「为什么」。
 - **E2E 一轮 = 一个端口 + 一个库**，端口从 5300 起（见 `web/e2e/README.md`）。用例必须 `import { test, expect } from './fixtures'`（从 `@playwright/test` 导入则每例的自动复位不生效）。
+- **因结构变化而改写的既有断言，要逐条说明理由**（规格 §9 回归第 1 条）：理由写在**该 task 的提交说明**里 —— 「结构变了，断言没写错」。
+  这条对**前端单测与 e2e 都适用**（规格只提了前端单测，但 e2e 的断言同样要说明）。
 
 ### 闸门命令
 
@@ -45,11 +47,17 @@
 
 规格说了「必须做到什么」，没说「边界输入怎么办」。下面八条是最可能咬人的地方 —— **每条都要有对应的测试钉住**（在下面指定的 task 里加）：
 
-1. **旧库的 `idea_fts` 还是 4 列，而代码用 3 个 bm25 权重** —— FTS5 虚表的列清单建表时定死，`IF NOT EXISTS` 改不了；权重个数与列数不匹配时 `/api/search` 对每个旧库用户 500。行为：拿一个**旧形状**的库启动，`/api/search` 正常返回 200 且有命中，索引表被重建成 3 列。→ **Task 1**。
+1. **旧库的 `idea_fts` 还是 4 列，而代码用 3 个 bm25 权重** —— FTS5 虚表的列清单建表时定死，`IF NOT EXISTS` 改不了，形状不对就永远是 4 列。行为：拿一个**旧形状**的库启动，索引表被重建成 3 列、`/api/search` 正常返回 200 且有命中。
+   ⚠️ **后果不是 500**（规格 §4.3 A 写的是 500，**实测不成立**：用本仓库自己的 SQLite 3.53.3 试过 ——
+   `bm25(4 列表, 3 个权重)` **不报错**，多余的权重忽略、缺少的按默认 1.0 处理）。
+   真实后果是**相关度静默错位**：4 列上 3 个权重落到 title=5.0 / content=5.0 / tags=3.0，
+   项目名那列拿默认的 1.0；旧库里那个永远为空的 `title` 列也一直在。→ **Task 1**。
 2. **bm25 的权重个数与 `idea_fts` 的列数悄悄对不上** —— 加一列忘了改权重，搜索结果的相关度会静默错掉（不报错）。行为：权重个数 == `PRAGMA table_info(idea_fts)` 的列数。→ **Task 1**。
 3. **SSE 帧校验里留着 `record.title === null || typeof record.title === 'string'`** —— 服务器不再发 `title` 时 `record.title` 是 `undefined`，`undefined === null` 为假 → **每一帧都被判成畸形而丢弃** → 界面再也不更新（静默但致命）。行为：一帧**不带 `title` 键**的想法快照必须被接受并交给 `onEvent`。→ **Task 6**。
 4. **老客户端仍然发 `title`** —— .NET 的 System.Text.Json 默认忽略未知成员，所以 `{"content":"x","title":"y"}` 必须**静默忽略**那个字段（内容正常保存、返回 201、响应里没有 `title`），**不为此报错**（规格 §4.3 F / §7.8）。→ **Task 2**。
-5. **老 webhook 模板里写着 `{{idea.title}}`** —— 占位符被删掉后它必须**渲染成空串**（不是报错、不是把占位符原样留着）。→ **Task 4**。
+5. **老 webhook 模板里写着 `{{idea.title}}`** —— 占位符被删掉后它必须**渲染成空串**（不是报错、不是把占位符原样留着）。
+   ⚠️ 渲染器本身**不提供**这个语义：键不存在 = 「未识别的占位符」→ **原样保留**；只有「键在、值为 null」才渲染成空串。
+   所以要拿到空串，渲染器得认识「这个占位符已下线」—— 见 Task 4 的 `RetiredPlaceholders`。→ **Task 4**。
 6. **旧库里 `idea` 表还留着 `title TEXT NULL` 列** —— `CREATE TABLE IF NOT EXISTS` 意味着旧库保留那一列（永远 NULL，代码不再读写），**代码不得依赖这一列在不在**。行为：旧库升级后 `/api/ideas` 正常，代码里不再 SELECT/INSERT 这一列。→ **Task 3**。
 7. **往回翻加载更早的一页时 prepend 的条数是奇数** —— 现在每页实际要 101 条（`PAGE_SIZE + 1`，多要的那条是探针），奇数 → **每翻一页整墙左右互换**。行为：满页时丢掉**最老**的那一条（探针），净增 100 条（偶数）→ 已有卡片不换边。→ **Task 12**。
 8. **悬停才显形的按钮成了「唯一入口」** —— 键盘 Tab 到它时必须也显形（`:focus-within`）；而**没有悬停能力**的设备（`(hover: none)`）与窄屏（≤767px）一律常驻。行为：窄屏与无 hover 能力的设备上勾选框与 🏷🗑 始终可见；键盘聚焦时也可见。→ **Task 10**。
@@ -66,7 +74,7 @@
 | `web/src/lib/text.spec.ts` | 上述的单测 |
 | `web/src/lib/rows.ts` | `toRows(ideas)`：把想法切成「一排两个格子」（`<script setup>` 里不能 `export`，所以单独一个文件） |
 | `web/src/lib/rows.spec.ts` | 上述的单测 |
-| `web/src/components/ProjectDropdown.vue` | 窄屏顶栏的项目下拉（数据源与 `ProjectTabs` 同一份） |
+| `web/src/components/ProjectDropdown.vue` | 窄屏顶栏的项目下拉（数据源与侧栏同一份：`projects` + `currentId`，排序方式仍由后端给） |
 | `web/src/components/MoreMenu.vue` | 顶栏的「⋯」下拉菜单（项目管理 / 回收站 / Webhook） |
 
 **服务端修改（Task 1–4）**
@@ -81,12 +89,14 @@
 | `server/IdeaApp/Infrastructure/IdeaRepository.cs` | `SelectColumns` / `Insert` / `UpdateContent` / `Read` 去掉 title（reader 下标前移） |
 | `server/IdeaApp/Infrastructure/IdeaMatches.cs` | 命中字段去掉 `"title"` |
 | `server/IdeaApp/Infrastructure/EventPlaceholders.cs` | 删掉 `idea.title` 占位符 |
+| `server/IdeaApp/Infrastructure/TemplateRenderer.cs` | 加一张「已下线占位符」表：`{{idea.title}}` 渲染成**空串**（未识别的占位符仍然原样保留） |
 | `server/IdeaApp/Application/WebhookService.cs` | Telegram 预设模板改用 `{{idea.content}}` |
 | `server/IdeaApp/Domain/Idea.cs`、`Domain/IdeaEvent.cs` | `Idea` / `IdeaSnapshot` 去掉 `Title` |
 | `server/IdeaApp/Application/IdeaService.cs` | `Create` / `Update` / `Merge` 去掉 title 参数；删 `NormalizeTitle` |
 | `server/IdeaApp/Contracts/Dtos.cs`、`Contracts/Requests.cs` | `IdeaDto` / 三个请求体去掉 `Title` |
 | `server/IdeaApp/Endpoints/IdeaEndpoints.cs`、`Endpoints/BulkIdeaEndpoints.cs` | 端点不再传 title |
 | `server/IdeaApp/Infrastructure/OpenApiEventTransformer.cs` | 手写的 `IdeaSnapshot` schema 去掉 `title` |
+| `server/IdeaApp.Tests/SkillDocGuardTests.cs` | **新增**一条字段级守卫（契约与手册里都没有 idea 的 `title`） |
 
 **前端修改（Task 6–7、9–14）**
 
@@ -97,7 +107,8 @@
 | `web/src/lib/highlight.ts` | 删掉 `splitTitleAndBody` / `trimSegments` / `trimLeadingNewlines` |
 | `web/src/components/MessageItem.vue` | 卡片改成「正文 + 底部 meta 行」；去掉 `<h2 class="title">` |
 | `web/src/components/MessageList.vue` | 输出「一排两个格子」 |
-| `web/src/components/FilterBar.vue` | 窄屏紧凑形态；`defineExpose` 暴露搜索框聚焦 |
+| `web/src/components/FilterBar.vue` | 窄屏紧凑形态（状态分组容器保持可见）；`defineExpose` 暴露搜索框聚焦 |
+| `web/src/components/ProjectTabs.vue`（**删除**） | 窄屏的项目切换改成顶栏下拉后没人用了，连同它那条 e2e 用例一起删 |
 | `web/src/components/MergeDialog.vue` | 用正文首行代替标题 |
 | `web/src/pages/HomePage.vue` | 骨架、顶栏、两列、窄屏外壳 |
 | `web/src/stores/ideas.ts` | 往回翻裁掉探针；`OlderPage` 加 `hasMore` |
@@ -127,10 +138,10 @@
 - Modify: `server/IdeaApp/Infrastructure/schema.sql:12-24`（`idea` 表**本 task 不动**）、`:77-83`（`idea_fts` 的 DDL）
 - Modify: `server/IdeaApp/Infrastructure/SqliteDatabase.cs:125-149`（`Initialize()`：应用 schema **之前**加形状检查）
 - Modify: `server/IdeaApp/Infrastructure/SearchIndex.cs:40`（`CurrentVersion`）、`:102-121`（`UpsertIdea`）、`:124-145`（`InsertIdeaRow`）、`:247-299`（`LoadIdeaRows`）、`:312-347`（`InsertIdeaRows`）、`:355-360`（`IdeaIndexRow`）
-- Modify: `server/IdeaApp/Infrastructure/SearchRepository.cs:199-242`（`IdeasPageSql`）、`:481-491`（`ReadIdea`）
+- Modify: `server/IdeaApp/Infrastructure/SearchRepository.cs:70-117`（`Ideas()` 里读项目名的下标）、`:199-242`（`IdeasPageSql`）、`:481-491`（`ReadIdea`）
 - Modify: `server/IdeaApp/Infrastructure/IdeaMatches.cs:42-56`（`For`）
-- Modify: `server/IdeaApp/Infrastructure/IdeaRepository.cs:394-438`（`Insert` 的索引调用）、`:441-484`（`UpdateContent` 的索引调用）
-- Test: `server/IdeaApp.Tests/SearchIndexTests.cs`（追加）、`server/IdeaApp.Tests/SearchEndpointTests.cs`（改期望）、`server/IdeaApp.Tests/SearchIndexConsistencyTests.cs`（改 FTS 直插语句）
+- Modify: `server/IdeaApp/Infrastructure/IdeaRepository.cs:394-438`（`Insert` 的索引调用）、`:441-484`（`UpdateContent` 的索引调用）、`:585-601`（`ReplaceTags` 的索引调用）
+- Test: `server/IdeaApp.Tests/SearchIndexTests.cs`（**追加 + 清理**，见下）、`server/IdeaApp.Tests/SearchEndpointTests.cs`（改期望）
 
 **Interfaces:**
 - Consumes: 无（本 task 是第一段的最底层，不依赖别的 task）
@@ -228,10 +239,12 @@
 
   | 测试 | 断言 |
   |---|---|
-  | `Search_works_on_a_database_upgraded_from_the_old_schema` | **在 `factory.CreateClient()` 之前**把旧形状的 `idea_fts`（4 列）造进 `factory.DatabasePath` → `CreateClient()` 启动应用（`Initialize()` → `EnsureIndexed`）→ `POST /api/ideas` 造一条正文含「咖啡」的想法 → `GET /api/search?q=咖啡` 返回 **200** 且命中那条想法（不是 500，也不是空） |
+  | `Search_works_on_a_database_upgraded_from_the_old_schema` | **在 `factory.CreateClient()` 之前**把旧形状的 `idea_fts`（4 列）造进 `factory.DatabasePath` → `CreateClient()` 启动应用（`Initialize()` → `EnsureIndexed`）→ `POST /api/ideas` 造一条正文含「咖啡」的想法 → `GET /api/search?q=咖啡` 返回 **200** 且命中那条想法 |
 
-  > 这条测试钉的就是「旧库用户一搜就 500」那个坑：形状没检查的话，
-  > 旧库的 `idea_fts` 仍是 4 列，而代码用 3 个 bm25 权重 → 权重个数与列数不匹配。
+  > ⚠️ **这条测试单独用是钉不住形状检查的**：`bm25(4 列表, 3 个权重)` 在本仓库的 SQLite 3.53.3 上
+  > **不报错**（实测：多余的权重忽略、缺少的按默认 1.0 处理），所以「搜索 200 且命中」在**没有**形状检查时
+  > **也是绿的**。它是一条**回归保护**（确保升级过程不把搜索搞挂），
+  > 真正钉住形状的是（a）里那条 `PRAGMA table_info(idea_fts)` 的列名断言。
   > 造旧形状的库的做法见上面（a）里的那段代码。
 
   **（c）相关度排序按新权重重调** —— 修改 `server/IdeaApp.Tests/SearchEndpointTests.cs` 里已有的两条用例：
@@ -239,7 +252,7 @@
   | 用例 | 改法 |
   |---|---|
   | `Search_ideas_group_is_sorted_by_relevance`（原：标题命中排在正文命中的前面） | 改成：**正文命中的那条排在项目命中的那条前面**。两条数据：① 正文「咖啡」、项目「工作」；② 正文「今天天气不错」、项目「咖啡项目」。期望顺序 `[第一条, 第二条]` |
-  | `Search_offset_skips_the_most_relevant_ones`（原：标题/正文/正文三条） | 改成同样两条（正文命中 + 项目命中），期望顺序 `[第一条, 第二条]`；其余断言（先取全量再逐页对照）**不动** |
+  | `Search_offset_skips_the_most_relevant_ones`（原：标题/正文/正文三条） | 改成同样两条（正文命中 + 项目命中），期望顺序 `[第一条, 第二条]`；⚠️ **`:640` 的 `Assert.Equal(3, ordered.Length)` 要一并改成 `Assert.Equal(2, ordered.Length)`**（数据从三条变两条，这个断言必须跟着变，否则必红）；其余断言（先取全量再逐页对照）**不动** |
 
   > 这两条断言的意义：正文权重从 1.0 提到 5.0 之后，正文命中才压得过项目命中。
   > **实测过**（SQLite 的 bm25）：权重 `1.0, 5.0, 3.0` 时顺序是 `[项目命中, 正文命中]`，
@@ -258,7 +271,9 @@
 - [ ] **Step 2: 跑测试确认它失败**
 
   Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SearchIndexTests|FullyQualifiedName~SearchEndpointTests"`
-  Expected: 失败（新用例红；`Search_weights_match_the_index_column_count` 会因为 `SearchRepository.IdeaFtsWeights` 还不存在而**编译失败**）。
+  Expected: 失败 ——（a）里的形状用例红（旧库的 `idea_fts` 还是 4 列）；
+  `Search_weights_match_the_index_column_count` 会因为 `SearchRepository.IdeaFtsWeights` 还不存在而**编译失败**。
+  ⚠️（b）里的端到端用例**不会红**（bm25 权重数不匹配不报错，见上面的说明）—— 它是回归保护，不是形状检查的证据。
 
 - [ ] **Step 3: 改 schema 的 `idea_fts` DDL**
 
@@ -331,14 +346,34 @@
 
   ⚠️ **`SearchIndexInitializer` 不用改代码** —— 它读的是 `SearchIndex.CurrentVersion`，版本号一升，下次启动就会整体重建（清空三张索引表 + 重灌）。它的职责与本 task 的变化无关。
 
-- [ ] **Step 6: 改 `IdeaRepository` 里两处索引调用**
+- [ ] **Step 6: 清理 `SearchIndexTests.cs` 里的 title 残留与硬编码版本号**
 
-  在 `server/IdeaApp/Infrastructure/IdeaRepository.cs`：
+  `server/IdeaApp.Tests/SearchIndexTests.cs` 直接往 `idea_fts` 与 `idea` 表里直插，
+  那些 SQL 与 DDL 是一一对应的 —— 本 task 改了表结构，这些语句必须一起改：
+
+  | 位置 | 改什么 |
+  |---|---|
+  | `:153` | `INSERT OR REPLACE INTO search_meta(key, value) VALUES ('index.version', '1');` → 值改成 `SearchIndex.CurrentVersion`（**别写死 '1'**：版本号升到 2 之后，写死的 '1' 会让 `EnsureIndexed` 真的重建 → 哨兵行被删 → `EnsureIndexed_skips_the_rebuild_when_another_instance_rebuilt_it_meanwhile` 断言 `IdeaFtsRowIds() == [999999]` 失败） |
+  | `:154` | `INSERT INTO idea_fts(rowid, title, content, tags, project) VALUES (999999, '哨兵', '', '', '');` → 去掉 title 列与实参 |
+  | `:233` | `SearchIndex.UpsertIdea(connection, null, id, title, content, tags, projectName);` → 少传 title 实参 |
+  | `:431` | 哨兵行的 `INSERT INTO idea_fts(rowid, title, content, tags, project)` → 去掉 title 列 |
+  | `:498` | `private sealed record IndexRow(string Title, string Content, string Tags, string Project);` → 去掉 `Title` |
+  | `:505`、`:523` | `SELECT title, content, tags, project FROM idea_fts …` → `SELECT content, tags, project …`，**读列的下标同步前移** |
+  | `:557-564` | `ReadIdeaTitle` 辅助方法（`SELECT title FROM idea`）**整个删掉**，连同 `:228` 的调用 |
+
+  ⚠️ **不要把这份清理派给 `SearchIndexConsistencyTests.cs`** —— 那个文件里**没有任何 title 相关语句**
+  （它只用 `MatchFts` / `ReadFtsText(..., "tags")`），它在本 task 里**不需要改**。
+
+- [ ] **Step 7: 改 `IdeaRepository` 里三处索引调用**
+
+  在 `server/IdeaApp/Infrastructure/IdeaRepository.cs` —— `SearchIndex.UpsertIdea` 一共**三处**调用
+  （少改一处就编译不过）：
   - `Insert`（`:434-437` 附近）：`SearchIndex.UpsertIdea(connection, transaction, idea.Id, idea.Title, idea.Content, tags, ...)` → 去掉 `idea.Title` 那一段。
   - `UpdateContent`（`:470-479` 附近）：同理，去掉 `idea.Title`。
+  - `ReplaceTags`（`:591-601` 附近，读回 `Idea` 之后那次）：同理，去掉 `idea.Title`。
   - ⚠️ **本 task 不动 `SelectColumns` / `Read` / `Insert` 里的 title 列** —— 业务表还有那一列（Task 3 才去掉）。这里只是索引不再写它。
 
-- [ ] **Step 7: 改 `SearchRepository`（SELECT 与 bm25 权重）**
+- [ ] **Step 8: 改 `SearchRepository`（SELECT 与 bm25 权重）**
 
   在 `server/IdeaApp/Infrastructure/SearchRepository.cs`：
   - `IdeasPageSql`（`:216-242`）：
@@ -352,25 +387,32 @@
   - `ReadIdea`（`:482-491`）：删掉 `Title:` 那一行，**reader 下标全部前移一位**：
     content 从 3 → 2、done 从 4 → 3、createdAt 从 5 → 4、updatedAt 从 6 → 5、deletedAt 从 7 → 6。
     ⚠️ `ReadIdea` 构造的是 `Idea`（领域记录）—— **本 task 里 `Idea` 仍有 `Title` 字段**（Task 3 才删），所以这里给 `Title: null` 占位。
+  - ⚠️ **`Ideas()`（`:94`）里还有第三处按位置读列**：
+    `rows.Add((ReadIdea(reader), reader.GetString(8)));` —— 那个 `8` 是**项目名**那一列。
+    去掉 `i.title` 之后项目名落到 **7**（`8` 变成 `score` 列），
+    **不改就去读一个 REAL/NULL → `InvalidCastException` → `/api/search` 对所有用户 500**。
+    改成 `reader.GetString(7)`。
+  - ⚠️ **本仓库一共有三处按位置读列**：`Ideas()` 的项目名、`ReadIdea`、`IdeaRepository.Read`。
+    改 SELECT 时**三处一起数**（少改一处不会编译报错，只会在运行时炸）。
   - `IdeaFtsWeights`（`internal static readonly double[]`）加在 `SearchRepository` 类的顶部。
 
-- [ ] **Step 8: 改 `IdeaMatches`（命中字段去掉 title）**
+- [ ] **Step 9: 改 `IdeaMatches`（命中字段去掉 title）**
 
   在 `server/IdeaApp/Infrastructure/IdeaMatches.cs:42-56`：删掉 `Add(matches, "title", idea.Title, keyword);`。
   类注释里「标题、正文、标签名、项目名四个字段各算一遍」改成「正文、标签名、项目名三个字段各算一遍」；
   `Add` 的 `field` 参数文档改成（`content` / `tags` / `project`）。
 
-- [ ] **Step 9: 跑测试确认它们通过**
+- [ ] **Step 10: 跑测试确认它们通过**
 
   Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q`
   Expected: 全部 PASS（**包括原有的全部测试** —— 索引重建在每个测试实例建库时都会跑一次，不能把现有测试搞红）。
 
-- [ ] **Step 10: 跑 AOT 冒烟**
+- [ ] **Step 11: 跑 AOT 冒烟**
 
   Run: `bash server/scripts/aot-smoke.sh`
   Expected: PASS。**这一步不能省** —— 本 task 没加新类型，但 `SearchRepository` 的改动不能引入反射式序列化。
 
-- [ ] **Step 11: 提交**
+- [ ] **Step 12: 提交**
 
   ```bash
   git add server/IdeaApp/Infrastructure/schema.sql server/IdeaApp/Infrastructure/SqliteDatabase.cs \
@@ -381,12 +423,16 @@
   git commit -m "fix(search): 全文索引去掉标题列，旧库按形状重建
 
   FTS5 虚表的列清单是建表时定死的，CREATE ... IF NOT EXISTS 改不了 ——
-  旧库的 idea_fts 永远是 4 列。而 bm25() 的权重个数必须等于列数：
-  3 个权重配 4 列会让 /api/search 对每个旧库用户 500。
+  旧库的 idea_fts 永远是 4 列（含 title）。
 
   所以在建表之前先比对 PRAGMA table_info(idea_fts) 的列名，对不上就 DROP，
   让新的 DDL 按 3 列重建；版本号同时升到 2 触发整表重建（光 DROP 不重建
   索引就永远是空的）。
+
+  ⚠️ 权重个数与列数对不上**不会报错**（SQLite 3.53.3 实测：多余的权重忽略、
+  缺少的按默认 1.0 处理）—— 后果是相关度静默错位：4 列上 3 个权重落到
+  title / content / tags，项目名那列拿默认 1.0。旧库里那个永远为空的
+  title 列也一直在。
 
   正文权重从 1.0 提到 5.0：标题列没了之后正文权重 1 会被标签 5 / 项目 3
   压过去，「正文里写了咖啡」的那条排在「项目名带咖啡」的那条后面。"
@@ -479,6 +525,15 @@
   - `Update_idea_with_empty_title_clears_title`（整个用例消失）
   - `IdeaApiTests` 里对 `title` 的 JSON 断言（`:30` 那条 `Assert.Equal(JsonValueKind.Null, root.GetProperty("title").ValueKind)` 改成断言 `title` 键不存在）
 
+  ⚠️ **`JsonSerializationTests.cs` 会编译不过**：它用**命名参数**构造 `IdeaDto`，
+  `:22` 的 `Title: "标题",` 与 `:53` 的 `Title: null,` 在 `IdeaDto` 去掉这个参数后是
+  **CS1739（没有形参名为 Title）** —— 整个测试项目编译不过，闸门根本跑不起来。
+  两处的 `Title:` 实参都删掉。
+
+  ⚠️ **`Update_idea_with_null_content_keeps_the_body` 不要新增**：既有的
+  `IdeaApiTests.cs:349` 已经有 `Update_idea_with_null_content_keeps_existing_content`
+  （PATCH `{"content": null}` → 200，正文原样保留），语义完全一样 —— 复用它即可，别写第二条。
+
   在 `server/IdeaApp.Tests/EventPublishingTests.cs` 里：
   - 删掉 `Update_idea_publishes_both_changed_fields_when_title_and_content_change`；
   - 把 `Update_idea_publishes_changed_fields` 改成只测正文（`changed` 里是 `["content"]`，**不含 `"title"`**）；
@@ -490,7 +545,19 @@
 
   在 `server/IdeaApp.Tests/OpenApiDocumentTests.cs` 里：
   - 删掉「`title` 必须可空（string | null）」那两条断言（`:191-192`）；
-  - 加一条：`Assert.False(Required(snapshot).Contains("title"))` 且快照的 properties 里**没有** `title` 键。
+  - 加一条：`Assert.False(Required(snapshot).Contains("title"))` 且快照的 properties 里**没有** `title` 键；
+  - **再加一条把规格 §4.4 第 1 条变成可执行断言的**（用文件里已有的 `CommittedDocumentAsync()` 与 `RepoPaths.Contract`）：
+
+    | 测试 | 断言 |
+    |---|---|
+    | `The_committed_contract_has_no_idea_title_property` | 读**提交进仓库的** `openapi/idea-v1.json`：遍历 `components.schemas`，`IdeaDto` / `IdeaSnapshot` / `CreateIdeaRequest` / `UpdateIdeaRequest` / `MergeIdeasRequest` 这五个 schema 的 `properties` 里都**没有** `title` 键；且整份文档的**正文里不出现「标题」二字**（`info.title` 是 "Idea Manager"、ProblemDetails 的 `title` 是 ProblemDetails 的字段名，都不算） |
+
+    > 为什么要「遍历五个 schema」而不是只查一个：规格 §4.4 第 1 条写的是
+    > 「**全文搜不到** idea 的 title（ProblemDetails 的 `title` 与文档标题不算）」——
+    > 那是**整份契约**的断言，只查一个 schema 挂一漏万。
+    > 「不出现「标题」二字」这条能盖住 `OpenApiEventTransformer.cs` 里那份**手写**的
+    > `IdeaSnapshot` schema —— 它的 `title` 属性的 description 里就写着「标题。可以是 null（未命名想法）…」
+    > （当前 `openapi/idea-v1.json:2087`），只查 `properties` 的键名会漏掉它。
 
 - [ ] **Step 2: 跑测试确认它失败**
 
@@ -733,12 +800,16 @@
 
 **Files:**
 - Modify: `server/IdeaApp/Infrastructure/EventPlaceholders.cs:9`（类注释）、`:28-41`（`Build` 的字典）
+- Modify: `server/IdeaApp/Infrastructure/TemplateRenderer.cs:9-12`（类注释）、`:36-38` 之后（新增「已下线占位符」表）、`:78-86`（`RenderPlain` 的替换分支）、`:288-297`（`Resolve` 的替换分支）
 - Modify: `server/IdeaApp/Application/WebhookService.cs:330`（Telegram 预设模板）
-- Test: `server/IdeaApp.Tests/TemplateRendererTests.cs:31`（`SampleEvent` 的 `Title`）、`:223`（占位符白名单）、`:304`（`changed` 断言）
+- Test: `server/IdeaApp.Tests/TemplateRendererTests.cs:31`（`SampleEvent` 的 `Title`）、`:37`（`SampleEvent` 的 `changed` 默认值）、`:223`（占位符白名单）、`:304`（`changed` 断言）
 
 **Interfaces:**
 - Consumes: Task 2 的 `IdeaSnapshot`（没有 Title 了）
-- Produces: `EventPlaceholders.Build` 的字典**不再有 `idea.title` 这个键**（其余键不变：`event` / `timestamp` / `project` / `project.id` / `idea.id` / `idea.content` / `idea.tags` / `idea.done` / `changed` / `idea.url`）。
+- Produces:
+  - `EventPlaceholders.Build` 的字典**不再有 `idea.title` 这个键**（其余键不变：`event` / `timestamp` / `project` / `project.id` / `idea.id` / `idea.content` / `idea.tags` / `idea.done` / `changed` / `idea.url`）；
+  - `TemplateRenderer` 里多一张「已下线占位符」表（`private static readonly HashSet<string> RetiredPlaceholders`，内容是 `"idea.title"`）——
+    命中它的占位符**渲染成空串**，而不是「原样保留」。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -748,16 +819,30 @@
   |---|---|
   | `The_placeholder_table_has_no_idea_title` | `EventPlaceholders.Build(evt, null)` 的键集合里**没有** `"idea.title"` |
   | `A_template_with_a_removed_placeholder_renders_as_empty` | **Review Focus 第 5 条**：模板正文是 `{"text":"[{{idea.title}}] {{idea.content}}"}`，事件里那条想法**有正文** → 渲染结果是 `{"text":"[] 正文"}` —— **渲染成空串，不是报错、也不是把占位符原样留着** |
+  | `An_unknown_placeholder_is_still_kept_verbatim` | **别把语义改坏**：模板正文是 `{"text":"{{unknown}}"}` → 渲染结果仍是 `{"text":"{{unknown}}"}`（未识别的占位符**原样保留**，这是既有语义，`:83-88` 已经钉着） |
   | `The_telegram_preset_template_does_not_use_idea_title` | `WebhookService` 的 Telegram 预设模板里**不含** `{{idea.title}}` |
 
-  同时把 `:223` 那份占位符白名单里的 `"idea.title"` 删掉（白名单必须与实际提供的键**完全相等**）；
-  `SampleEvent`（`:31`）里的 `Title: "标题",` 删掉；`:304` 的 `SampleEvent(changed: ["title", "done"])` 改成 `["done"]`，
-  `:307` 的断言 `Assert.Equal("title,done", values["changed"])` 改成 `Assert.Equal("done", values["changed"])`。
+  同时：
+  - `:223` 那份占位符白名单里的 `"idea.title"` **删掉**（白名单是「**包含**」的断言 ——
+    `Assert.True(values.ContainsKey(key))`，不是「完全相等」；删掉这一项就不再断言它存在，
+    上面那条 `The_placeholder_table_has_no_idea_title` 断言的是它**不在**）；
+  - `SampleEvent`（`:31`）里的 `Title: "标题",` 删掉；
+  - ⚠️ `SampleEvent` 的**默认** `changed`（`:37` 的 `Changed: changed ?? ["title", "done"]`）改成 `["done"]` ——
+    「标题」这个字段名已经不存在了，示例事件不该还带一个；
+  - `:304` 的 `SampleEvent(changed: ["title", "done"])` 改成 `["done"]`，
+    `:307` 的断言 `Assert.Equal("title,done", values["changed"])` 改成 `Assert.Equal("done", values["changed"])`。
 
 - [ ] **Step 2: 跑测试确认它失败**
 
   Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q --filter "FullyQualifiedName~TemplateRendererTests"`
-  Expected: 失败（`idea.title` 还在字典里；`SampleEvent` 编译不过 —— `IdeaSnapshot` 没有 Title 了）。
+  Expected: 失败 —— `SampleEvent` 编译不过（`IdeaSnapshot` 没有 Title 了）；
+  `A_template_with_a_removed_placeholder_renders_as_empty` 会红：**渲染器现在把没键的占位符原样保留**，
+  实际输出是 `{"text":"[{{idea.title}}] 正文"}` 而不是 `{"text":"[] 正文"}`。
+  ⚠️ **这不是 bug，是要靠 Step 4 新增的「已下线占位符」机制补上的** —— 渲染器原本的语义是
+  「键在、值为 null → 空串；键**不在** → 原样保留」（`TemplateRenderer.cs:44-46` 的 XML 文档、
+  `:83-88` 的 `RenderPlain`、`:293-297` 的 `Resolve` 三处都这么写）。
+  规格 §4.3 D 要的是空串，而「键消失」落到的是「原样保留」那一档 —— 两句话对不上，
+  **本 task 用一张「已下线占位符」表把这两句话接上**。
 
 - [ ] **Step 3: 改 `EventPlaceholders`**
 
@@ -765,7 +850,50 @@
   - 删掉 `["idea.title"] = evt.Idea?.Title,`；
   - 类注释（`:9`）里「（<c>event</c>、<c>idea.title</c>…）」改成「（<c>event</c>、<c>idea.content</c>…）」。
 
-- [ ] **Step 4: 改 Telegram 预设模板**
+- [ ] **Step 4: 给渲染器加「已下线占位符」表**
+
+  在 `server/IdeaApp/Infrastructure/TemplateRenderer.cs`：
+
+  1. 在 `PlaceholderPattern`（`:36-38`）之后加一张表：
+
+     ```csharp
+     /// <summary>
+     /// 已经下线、但老模板里可能还留着的占位符。
+     ///
+     /// 能力去掉之后，这些占位符不再出现在 <see cref="EventPlaceholders"/> 的字典里 ——
+     /// 但渲染器**不能**把它们当「未识别的占位符」原样保留：老模板的正文里会冒出
+     /// 「{{idea.title}}」这样的字面量。规格 §4.3 D 要的是**渲染成空串**。
+     ///
+     /// <para>
+     /// 为什么单开一张表：渲染器原本的语义是「键在、值为 null → 空串；键不在 →
+     /// 原样保留」。占位符下线时键会消失，于是落进「原样保留」那一档 ——
+     /// 这张表把「已下线」与「拼错了」区分开。
+     /// </para>
+     /// </summary>
+     private static readonly HashSet<string> RetiredPlaceholders =
+         new(StringComparer.Ordinal) { "idea.title" };
+     ```
+
+  2. `RenderPlain` 的替换分支（`:81-88`）与 `Resolve`（`:289-297`）**两处都要改**：
+
+     ```csharp
+     if (!values.TryGetValue(name, out var value))
+     {
+         // 未识别的占位符：原样保留 —— **但已下线的占位符渲染成空串**。
+         return RetiredPlaceholders.Contains(name) ? string.Empty : match.Value;
+     }
+     ```
+
+     ⚠️ **两处都要改**：JSON 模板走 `Resolve`（`:289`），纯文本模板走 `RenderPlain`（`:72`）——
+     只改一处的话，另一条路径上的老模板还是会露出字面量。
+
+  3. 类注释（`:9-12`）里「未识别的占位符**原样保留** —— 模板是用户手写的，名字拼错不该让投递炸掉」
+     补一句：「**已下线的占位符**（见 {@link RetiredPlaceholders}）渲染成空串 ——
+     老模板不该在正文里露出占位符的字面量」；
+     `RenderJson` / `RenderPlain` 的 `values` 参数文档（`:44-46`）里
+     「字典里**没有**这个键才是「未识别的占位符」，原样保留」补上「（已下线的除外，见 RetiredPlaceholders）」。
+
+- [ ] **Step 5: 改 Telegram 预设模板**
 
   在 `server/IdeaApp/Application/WebhookService.cs:330`，把
 
@@ -779,24 +907,28 @@
   """{"chat_id":-1003800671233,"message_thread_id":89,"text":"[{{project}}] {{event}}\n{{idea.content}}\n#{{idea.tags}}"}"""
   ```
 
-- [ ] **Step 5: 跑测试确认它们通过**
+- [ ] **Step 6: 跑测试确认它们通过**
 
   Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q`
-  Expected: 全部 PASS。
+  Expected: 全部 PASS（**包括** `An_unknown_placeholder_is_still_kept_verbatim` ——
+  「未识别的占位符原样保留」这条既有语义不能被改坏）。
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 7: 提交**
 
   ```bash
-  git add server/IdeaApp/Infrastructure/EventPlaceholders.cs server/IdeaApp/Application/WebhookService.cs \
-          server/IdeaApp.Tests/TemplateRendererTests.cs
+  git add server/IdeaApp/Infrastructure/EventPlaceholders.cs server/IdeaApp/Infrastructure/TemplateRenderer.cs \
+          server/IdeaApp/Application/WebhookService.cs server/IdeaApp.Tests/TemplateRendererTests.cs
   git commit -m "feat(webhook): 占位符去掉 idea.title
 
   想法不再有标题，{{idea.title}} 这个占位符也就没有意义了。Telegram 预设
   模板改成用 {{idea.content}}。
 
-  已经配了 {{idea.title}} 的老模板会渲染成空串 —— 不是报错（缺失字段渲染
-  为空是既有语义）。这是有意为之的能力删除，但要在变更说明里点明：
-  老模板要自己把 {{idea.title}} 换成 {{idea.content}}。"
+  渲染器加了「已下线占位符」表：这些占位符不再出现在事件字典里，但老模板
+  里还留着 —— 渲染成空串，而不是让正文里冒出 {{idea.title}} 这样的字面量。
+  「未识别的占位符原样保留」那条既有语义不变（名字拼错不该让投递炸掉），
+  现在只有已下线的占位符走空串这条路。
+
+  这是有意为之的能力删除：老模板要自己把 {{idea.title}} 换成 {{idea.content}}。"
   ```
 
 ---
@@ -804,21 +936,39 @@
 ### Task 5: skill 手册与契约同步
 
 **Files:**
-- Modify: `skills/idea-manager/references/api.md:30-31`（端点速查表）、`:103`（合并端点）、`:183`/`:185`/`:199`（逐端点字段表）、`:232`（`matches.field` 取值）
+- Modify: `skills/idea-manager/references/api.md:30-31`（端点速查表）、`:60`（相关度说明）、`:93`（检索范围说明）、`:103`（合并端点）、`:183`/`:185`/`:199`（逐端点字段表）、`:232`（`matches.field` 取值）
 - Modify: `skills/idea-manager/references/calling.md:40`、`:54`（curl 示例）
-- Modify: `skills/idea-manager/references/scenarios.md:11`、`:111`、`:139`、`:160`
-- Modify: `skills/idea-manager/references/webhooks.md:71`（占位符表）、`:126`（示例模板）
+- Modify: `skills/idea-manager/references/scenarios.md:11`、`:111`、`:135`、`:139`、`:144`、`:160`
+- Modify: `skills/idea-manager/references/webhooks.md:71`（占位符表）、`:89`（事件说明）、`:126`（示例模板）
 - Modify: `skills/idea-manager/SKILL.md:105`
-- Test: `server/IdeaApp.Tests/SkillDocGuardTests.cs`（不改测试代码，只让它绿）
+- Test: `server/IdeaApp.Tests/SkillDocGuardTests.cs`（**新增一条字段级守卫**，见 Step 1）
 
 **Interfaces:**
 - Consumes: Task 2 的契约（`openapi/idea-v1.json`）、Task 4 的占位符集合
 - Produces: 无代码（手册与契约一致，`SkillDocGuardTests` 与 `OpenApiDocumentTests` 全绿）
 
-- [ ] **Step 1: 跑守卫测试确认它失败**
+- [ ] **Step 1: 先补一条字段级守卫（现有的守卫查不到字段）**
 
-  Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SkillDocGuardTests|FullyQualifiedName~OpenApiDocumentTests"`
-  Expected: 失败（`SkillDocGuardTests` 会拿手册跟 `openapi/idea-v1.json` 对照 —— 契约改了手册没改就红）。
+  ⚠️ **`SkillDocGuardTests` 现有的 17 个用例只比对端点路径、错误码表与文档结构**，
+  **没有任何一条比对请求体/响应体的字段** —— 删掉 `title` 既不改路径也不改错误码，
+  那些用例**仍然是绿的**。规格 §4.3 F 承诺的「契约改了手册没改就红」在字段层面
+  **没有任何自动守卫**（实测：`rg "requestBody|properties" server/IdeaApp.Tests/SkillDocGuardTests.cs` 无输出）。
+
+  所以先在 `server/IdeaApp.Tests/SkillDocGuardTests.cs` 里**新增一条**：
+
+  | 测试 | 断言 |
+  |---|---|
+  | `Manual_and_contract_have_no_idea_title_field` | ① **契约**：读 `openapi/idea-v1.json`（用 `OpenApiDocumentTests` 里那套 `RepoPaths.Contract` 读法），`IdeaDto` / `IdeaSnapshot` / `CreateIdeaRequest` / `UpdateIdeaRequest` / `MergeIdeasRequest` 五个 schema 的 `properties` 里都**没有** `title` 键；② **手册**：扫 `skills/idea-manager/references/{api,calling,scenarios,webhooks}.md` 与 `skills/idea-manager/SKILL.md`，断言**不出现** `` `title` ``（表格里的字段名）与 `"title"`（JSON 键） |
+
+  ⚠️ **扫描要排除 `references/errors.md`** —— 那里面的 `"title"` 是 **ProblemDetails 的字段名**
+  （`errors.md:12`），跟想法的标题无关（规格 §4.5 明说别误伤）。
+  ⚠️ 契约那半条**在 Task 2 做完之后就已经是绿的**（契约里确实没有 title 了）——
+  真正会红的是**手册那半条**：手册里现在还有 12 处 title。
+
+  Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SkillDocGuardTests"`
+  Expected: **失败**（手册那半条红 —— 手册里还有 12 处 title）。
+
+  > 这一条守卫是**长期**的：以后契约里加/删字段而手册没跟上，它会红。
 
 - [ ] **Step 2: 改 `api.md`**
 
@@ -828,18 +978,26 @@
   - 合并端点（`:103`）：`ids`（数组）、\`content\`、\`title\` → `ids`（数组）、\`content\`。
   - 逐端点字段表（`:183`/`:185`/`:199`）：**三行 `title` 行整个删掉**（`POST /api/ideas`、`PATCH /api/ideas/{id}`、`POST /api/ideas/merge` 各一行）。
   - `matches.field` 的取值列表（`:232`）：`"title" / "content" / "tags" / "project"` → `"content" / "tags" / "project"`。
+  - ⚠️ **两处散文里也提到标题**（守卫扫的是全文，光改表格不够）：
+    - `:60`「**按相关度排**：标题命中比正文命中更相关。」→「**按相关度排**：正文命中比标签、项目命中更相关。」
+    - `:93`「**搜的不只是正文**：标题、正文、标签名、项目名都在索引里」→「**搜的不只是正文**：正文、标签名、项目名都在索引里」。
+  - **在请求体字段表下面补一句**（规格 §4.3 F 要求「变更说明里要点明这条行为」）：
+    「老客户端仍然发 `title` 会被**静默忽略**（内容正常保存、不报错）—— 想法已经没有标题这个字段了。」
 
 - [ ] **Step 3: 改 `calling.md` 与 `scenarios.md`**
 
   - `calling.md:40`、`:54`：curl 示例里的 `{"content":"…","title":"带特殊字符","tags":["笔记"]}` → 去掉 `"title":"带特殊字符",`；
   - `scenarios.md:11`：同款；
   - `scenarios.md:111`：合并场景的示例 `{"ids":[…],"content":"合并后的正文","title":"合并"}` → 去掉 `"title":"合并"`；
-  - `scenarios.md:139`：`{"title":"新标题"}` → 这个例子讲的是「PATCH 只发要改的字段」，改成 `{"content":"新正文"}`；
+  - `scenarios.md:135`：`# 只改标题：正文键整个别发` → `# 只改正文：其它键整个别发`；
+  - `scenarios.md:139`：`{"title":"新标题"}` → `{"content":"新正文"}`（这个例子讲的是「PATCH 只发要改的字段」）；
+  - `scenarios.md:144`：`想清掉标题给空串 —— 那是「清成无标题」。` → 这句讲的是 title 的三态语义，**整句删掉**；
   - `scenarios.md:160`：webhook 模板示例里的 `{{idea.title}}` → `{{idea.content}}`。
 
 - [ ] **Step 4: 改 `webhooks.md` 与 `SKILL.md`**
 
   - `webhooks.md:71`：占位符表里 `{{idea.id}} / {{idea.title}} / {{idea.content}}` → `{{idea.id}} / {{idea.content}}`（并把「想法的 id / 标题 / 正文」改成「想法的 id / 正文」）；
+  - `webhooks.md:89`：`改正文/标题、换标签、标记完成；` → `改正文、换标签、标记完成；`；
   - `webhooks.md:126`：示例模板 `{{idea.title}}: {{idea.content}}` → `{{idea.content}}`；
   - `SKILL.md:105`：那句「（想法的 \`title\` 空串 = 清成无标题；webhook 的 \`headers\` 给 \`{}\` = 清空请求头）」→ 删掉前半句，改成「（webhook 的 \`headers\` 给 \`{}\` = 清空请求头）」。
 
@@ -847,6 +1005,9 @@
 
   Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SkillDocGuardTests|FullyQualifiedName~OpenApiDocumentTests"`
   Expected: 全部 PASS。
+
+  ⚠️ **别指望现有的守卫会替你发现字段没同步** —— 它只查路径与错误码；
+  真正兜住「字段」的是 Step 1 新加的那条 `Manual_and_contract_have_no_idea_title_field`。
 
 - [ ] **Step 6: 提交**
 
@@ -856,10 +1017,12 @@
           skills/idea-manager/SKILL.md
   git commit -m "docs(skill): 手册与契约同步：想法没有标题了
 
-  SkillDocGuardTests 会拿手册跟 openapi/idea-v1.json 对照 —— 契约改了手册
-  没改（或反过来）就红。这两件事必须一起做。
+  手册里补一句：老客户端仍然发 title 会被静默忽略（内容正常保存、不报错）。
 
-  手册里也要点明：老客户端仍然发 title 会被静默忽略（内容正常保存）。"
+  顺带给守卫补一条字段级的检查：现有的守卫只比对端点路径与错误码，
+  查不到请求体/响应体的字段 —— 契约改了字段而手册没跟上，不会有任何
+  测试发现。新守卫断言契约的五个 idea 相关 schema 与手册里都没有
+  title（errors.md 里的 ProblemDetails.title 不算）。"
   ```
 
 ---
@@ -874,7 +1037,7 @@
 - Modify: `web/src/components/MergeDialog.vue:55-60`（预览里的标题行）
 - Modify: `web/src/pages/HomePage.vue:571-591`（`onSubmit` 里的 `title: null`）
 - Create: `web/src/lib/text.ts`、`web/src/lib/text.spec.ts`
-- Test: `web/src/api/events.spec.ts:89`（fixture 的 `title: null`）、`:218`（`changed: 'title'`）、`:286`（坏帧用例）、`web/src/api/types.spec.ts`、`web/src/lib/highlight.spec.ts`、`web/src/components/MessageItem.spec.ts`、`web/src/components/MergeDialog.spec.ts`、`web/src/pages/HomePage.spec.ts`
+- Test: `web/src/api/events.spec.ts:89`（fixture 的 `title: null`）、`:218`（`changed: 'title'`）、`:286`（坏帧用例）、`web/src/api/types.spec.ts`、`web/src/lib/highlight.spec.ts`、`web/src/components/MessageItem.spec.ts`、`web/src/components/MergeDialog.spec.ts`、`web/src/components/MessageList.spec.ts`、`web/src/pages/HomePage.spec.ts`、`web/src/pages/TrashPage.spec.ts`、`web/src/stores/ideas.spec.ts`、`web/src/lib/merge.spec.ts`、`web/src/lib/filter.spec.ts`、`web/src/composables/useHistoryScroll.spec.ts`
 
 **Interfaces:**
 - Consumes: Task 2 的服务端契约（不再发 `title`）
@@ -958,7 +1121,33 @@
   改 `web/src/pages/HomePage.spec.ts`：
   - fixture（`:154`）里的 `title: null,` 删掉；
   - `titledIdea`（`:220`）改成 `const plainIdea: Idea = { ...idea, content: '原正文' };`（或直接用 `idea`）；
-  - `:1305`/`:1381` 那两条断言 `.title` 的改成断言 `.body` 的文本。
+  - `:1305`/`:1381` 那两条断言 `.title` 的改成断言 `.body` 的文本；
+  - ⚠️ **`:564-569` 那条「提交想法」的请求体断言**：它断言的是**整个请求体**，
+    `title: null,` 那一行要从**期望值**里删掉 —— 实际调用里已经没有这个键了，
+    留着就是「期望有、实际没有」→ 断言红。
+
+  **（e）其余 spec 里带 `Idea` 字面量的 `title` 也要清掉** ——
+  `Idea` 接口少了 `title` 之后，对象字面量里多余的 `title` 会触发 TS 的
+  **TS2353「对象字面量只能指定已知的属性」**，而 `web/tsconfig.json` 的 `include`
+  是 `["src/**/*", …]` → **spec 文件也在 `vue-tsc` 的检查范围内** → 本 task 的
+  `npm run typecheck` 闸门会红。逐个清掉：
+
+  | 文件 | 位置 |
+  |---|---|
+  | `web/src/api/events.spec.ts` | `:89` 的 `title: null,` |
+  | `web/src/components/MessageItem.spec.ts` | `:11` 的 `title: null,`；`:61`/`:80`/`:91`/`:109`/`:127`/`:143`/`:203`/`:239` 那些 `title: '标题'` 的 override |
+  | `web/src/components/MessageList.spec.ts` | `:11` 的 `title: null,` |
+  | `web/src/components/MergeDialog.spec.ts` | `:11` 的 `title: null,` |
+  | `web/src/pages/HomePage.spec.ts` | `:154` 的 `title: null,`、`:220` 的 `titledIdea` |
+  | `web/src/pages/TrashPage.spec.ts` | `:23` 的 `title: null,` |
+  | `web/src/stores/ideas.spec.ts` | `:30` 的 `title: null,` |
+  | `web/src/lib/merge.spec.ts` | `:11` 的 `title: null,` |
+  | `web/src/lib/filter.spec.ts` | `:17` 的 `title: null,` |
+  | `web/src/composables/useHistoryScroll.spec.ts` | `:80` 的 `title: null,` |
+
+  ⚠️ `merge.spec.ts` 与 `filter.spec.ts` **在别的 task 里一次都没出现过** ——
+  只靠「别处顺手改」是改不掉的，这张表就是它们的归属。
+  （Task 11 / Task 12 会再次碰其中三个文件，届时说明「已经在本 task 删过了」。）
 
 - [ ] **Step 2: 跑测试确认它失败**
 
@@ -1056,7 +1245,9 @@
   Expected: 全部 PASS。
 
   Run: `cd web && npm run typecheck`
-  Expected: 无错误（`Idea` 少了 `title`、`SearchMatch.field` 少了 `'title'` —— 下游用到它们的地方本 task 都已经改掉了）。
+  Expected: 无错误（`Idea` 少了 `title`、`SearchMatch.field` 少了 `'title'` ——
+  下游用到它们的地方本 task 都已经改掉了，**包括上面那张表里的 10 个 spec 文件** ——
+  少改一个就是 TS2353）。
 
 - [ ] **Step 10: 提交**
 
@@ -1092,6 +1283,8 @@
 - Modify: `web/e2e/fixtures.ts:45`（`RESET_ARTIFACT`）、`:53`（`Idea` 接口）、`:103`（`CreateIdeaInput`）、`:214`（`createIdea`）、`:219`（`updateIdea`）、`:242-249`（`mergeIdeas`）、`:358-386`（`clearIdeas`）、`:443-448`（`Seed.idea` / `Seed.doneIdea`）、`:496-512`（`seed` 实现）
 - Modify: `web/e2e/search.spec.ts:60-71`（「搜索：能搜到标题里的词」）、`:107`（带标题的那条想法）
 - Modify: `web/e2e/layout.spec.ts:100-133`（home 路由的造数据与就绪探针）、`:127-131`（`textBlocks`）
+- Modify: `web/e2e/fixtures.spec.ts:38-46`（复位自检：断言 `artifact.title` → `artifact.content`）
+- Modify: `web/e2e/ideas.spec.ts:96-97`、`:108-109`、`:113`、`:450-451`、`:477`（依赖「视觉标题」的断言）
 - Modify: `web/e2e/COVERAGE.md`（「想法带 title 时…」那两行）
 - Modify: `web/e2e/README.md:231`（选择器策略里 `aria-label="选择 <标题>"` 那行）
 - Test: `server/IdeaApp.Tests/SseTests.cs:35`、`:54`、`:425`（`CreateIdeaAsync` 的 title 参数）、`server/IdeaApp.Tests/TrashTests.cs:601`、`server/IdeaApp.Tests/SettingsTests.cs:222`
@@ -1123,6 +1316,11 @@
   Run: `bash web/e2e/run-e2e.sh --fresh e2e/search.spec.ts`
   Expected: 失败（「搜索：能搜到标题里的词」那条用例红 —— 想法没有标题了，造不出带标题的想法）。
 
+  Run: `bash web/e2e/run-e2e.sh --fresh e2e/ideas.spec.ts e2e/fixtures.spec.ts`
+  Expected: 失败 —— `fixtures.spec.ts` 的 `expect(artifact.title).toBe(RESET_ARTIFACT)` 红
+  （`Idea` 接口没有 `title` 了 → 恒为 `undefined`）；`ideas.spec.ts` 里 6 处依赖
+  **视觉标题**的断言也红（Task 6 把 `<h2 class="title">` 拆了、正文改成全文）。
+
   Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SseTests|FullyQualifiedName~TrashTests|FullyQualifiedName~SettingsTests"`
   Expected: 编译失败或失败（`CreateIdeaAsync` 还带 `title` 参数）。
 
@@ -1140,12 +1338,34 @@
   - `Seed.idea` / `Seed.doneIdea`（`:443-448`）：选项类型里的 `title?: string | null` 删掉；
   - `seed` 实现（`:496-512`）：请求体里删掉 `title: options.title ?? null,` 与 `title: null,`。
 
+  **复位自检在另一个文件里** —— `web/e2e/fixtures.spec.ts`：
+  - `:38` 的注释「残渣形态：有想法的项目留一条标题为 e2e-reset 的想法」改成「留一条**正文**为 e2e-reset 的想法」；
+  - `:45` 的 `expect(artifact.title).toBe(RESET_ARTIFACT);` 改成 `expect(artifact.content).toBe(RESET_ARTIFACT);`。
+  ⚠️ **规格 §4.3 H 说的「复位用的 `RESET_ARTIFACT` 断言改到 content 上」指的就是这里** ——
+  断言在 `fixtures.spec.ts` 里，不在 `fixtures.ts` 里。漏掉它，e2e 一轮就红在这儿。
+
 - [ ] **Step 3: 改 `web/e2e/search.spec.ts`**
 
   - 删掉整条用例「搜索：能搜到标题里的词」（`:60-71`）；
   - 「搜索：结果带高亮」（`:107`）那条想法的 `title: '采购清单'` 删掉。
 
-- [ ] **Step 4: 改 `web/e2e/layout.spec.ts`**
+- [ ] **Step 4: 改 `web/e2e/ideas.spec.ts`（依赖视觉标题的断言）**
+
+  Task 6 把 `<h2 class="title">` 拆了、正文改成全文之后，`ideas.spec.ts` 里 6 处断言失效
+  （**它们不能拖到 Task 15 才改** —— 本 task 的 e2e 闸门要全绿）：
+
+  | 位置 | 现在断言的 | 改成 |
+  |---|---|---|
+  | `:96`、`:108` | `item.getByRole('heading', { name: '第一行：今天想到一个点子', exact: true })` | `expect(item).toContainText('第一行：今天想到一个点子')`（`article` 里现在有全文） |
+  | `:97`、`:109` | `expect(item.getByTitle('点击编辑')).toHaveText('第二行：再补一句细节')` | `toHaveText('第一行：今天想到一个点子\n第二行：再补一句细节')` —— **正文现在是全文**（首行不再被摘走当标题） |
+  | `:450`、`:451` | 合并结果的 heading + 只剩第二行 | 同上：断言 `article` 里**包含完整的合并正文** |
+  | `:477` | `getByRole('heading', { name: '我自己整理过的正文' })` | `expect(ideaItem(page, ideas[0].id)).toContainText('我自己整理过的正文')` |
+  | `:113` | `seed.idea('原来的正文', { title: '一条想法' })` | 去掉 `{ title: '一条想法' }`（`Seed` 的选项类型里已经没有 `title` 了） |
+
+  ⚠️ **这些是「结构变了，断言没写错」** —— 按 Global Constraints 的要求，
+  每一条调整的理由要在本 task 的提交说明里写清。
+
+- [ ] **Step 5: 改 `web/e2e/layout.spec.ts`**
 
   - `prepare`（`:100-111`）：造那条想法时删掉 `title: '排版探测标题',`；
   - `ready`（`:112`）：`page.getByText('排版探测标题', { exact: true }).first()` → 改成正文里的一个文本：`page.getByText('排版探测想法', { exact: false }).first()`（正文是「排版探测想法：第一行\n第二行正文…」）；
@@ -1153,13 +1373,13 @@
     - `'想法条目的标题'` 那一条**删掉**（`<h2 class="title">` 没了）；
     - `'超长不换行标题'` 那一条改成 `'超长不换行正文'`，定位器从 `.idea .title` 改成 `.idea .body`。
 
-- [ ] **Step 5: 改服务端测试里的 helper**
+- [ ] **Step 6: 改服务端测试里的 helper**
 
   - `server/IdeaApp.Tests/SseTests.cs`：`CreateIdeaAsync`（`:425`）的 `string? title = null` 参数删掉，请求体里的 `title` 删掉；调用点 `:35`、`:54` 的第三个实参「标题」删掉；
   - `server/IdeaApp.Tests/TrashTests.cs:601` 的 helper：同款（看有没有 title 参数，有就删）；
   - `server/IdeaApp.Tests/SettingsTests.cs:222` 的 helper：同款（`:225` 的请求体里 `title = "标题"` 删掉）。
 
-- [ ] **Step 6: 跑测试确认它们通过**
+- [ ] **Step 7: 跑测试确认它们通过**
 
   Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q`
   Expected: 全部 PASS。
@@ -1167,7 +1387,7 @@
   Run: `bash web/e2e/run-e2e.sh --fresh`
   Expected: 全部 PASS。
 
-- [ ] **Step 7: 改 `web/e2e/COVERAGE.md` 与 `web/e2e/README.md`**
+- [ ] **Step 8: 改 `web/e2e/COVERAGE.md` 与 `web/e2e/README.md`**
 
   - `COVERAGE.md`：删掉那两行「想法带 title 时…」的用例记录，并把用例总数与覆盖矩阵按**实际**用例数对齐（⚠️ 不要照抄任何一个数字 —— 现有文件里的数字与 git log 里的数字本来就不一致）。
   - `README.md`（`:231`）：选择器策略里的
@@ -1175,17 +1395,21 @@
     → `- \`aria-label="选择 <正文首行>"\`（想法条目的复选框）`
     （勾选框的可访问名现在取正文首行，见 Task 6）。
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 9: 提交**
 
   ```bash
-  git add web/e2e/fixtures.ts web/e2e/search.spec.ts web/e2e/layout.spec.ts web/e2e/COVERAGE.md \
-          web/e2e/README.md \
+  git add web/e2e/fixtures.ts web/e2e/fixtures.spec.ts web/e2e/search.spec.ts web/e2e/ideas.spec.ts \
+          web/e2e/layout.spec.ts web/e2e/COVERAGE.md web/e2e/README.md \
           server/IdeaApp.Tests/SseTests.cs server/IdeaApp.Tests/TrashTests.cs server/IdeaApp.Tests/SettingsTests.cs
   git commit -m "test(e2e): 夹具与用例去掉标题
 
   想法不再有标题，夹具里的 title 字段与那条「搜索：能搜到标题里的词」的
   用例一起消失。复位留下的残渣想法，断言要改到正文上（标题那一列已经
-  不存在了）。
+  不存在了）—— 那条断言在 fixtures.spec.ts 里，不在 fixtures.ts 里。
+
+  ideas.spec.ts 里 6 处断言原来指向 <h2 class=\"title\"> 与「正文只剩第二行」：
+  结构变了（标题层拆掉、正文改成全文），断言没写错，所以改成断言 article
+  里包含完整正文。
 
   排版用例的就绪探针从「标题」改到正文，<h2 class=\"title\"> 没了之后
   那个「关键文本块」条目也要重写。"
@@ -1275,7 +1499,8 @@
 - Modify: `web/src/pages/HomePage.vue:1170-1280`（模板）、`:1282-1431`（样式）
 - Create: `web/src/components/ProjectDropdown.vue`、`web/src/components/MoreMenu.vue`
 - Delete: `web/src/components/ProjectTabs.vue`、`web/src/components/ProjectTabs.spec.ts`（窄屏的项目切换改成下拉后它没人用了）
-- Modify: `web/e2e/layout.spec.ts`（删掉「窄屏项目 Tab 条的渐隐带…」那条用例与它的 `measureFade` 辅助函数）
+- Modify: `web/e2e/layout.spec.ts`（删掉「窄屏项目 Tab 条的渐隐带…」那条用例与它的 `measureFade` 辅助函数；删掉 `containers` 里的 `.project-tabs__list` 与 `INTENTIONAL_H_SCROLL` 里的同名条目）
+- Modify: `web/e2e/COVERAGE.md`（`:56` 的文件清单、`:123`/`:124` 的矩阵行、`:415`/`:420` 的漏项说明里对 `ProjectTabs.vue` 的引用）
 - Test: `web/src/components/ProjectDropdown.spec.ts`（新建）、`web/src/components/MoreMenu.spec.ts`（新建）、`web/src/pages/HomePage.spec.ts`
 
 **Interfaces:**
@@ -1285,7 +1510,7 @@
   // web/src/components/ProjectDropdown.vue
   /**
    * 窄屏顶栏的项目下拉。
-   * 数据源与 ProjectTabs 同一份（projects + currentId），宽屏侧栏不在这里重复。
+   * 数据源与侧栏同一份（projects + currentId），宽屏侧栏不在这里重复。
    */
   defineProps<{
     /** 项目列表（顺序由后端给，前端不重排）。 */
@@ -1364,7 +1589,19 @@
   - 触发器：一个 `<button>`，`aria-expanded` 绑 `open`，文本是当前项目名（或「全部项目」）+ `▾`；
   - 面板：`v-if="open"` 的一块绝对定位的层，**第一项是「全部项目」**，其余是 `projects`（顺序照 `projects` 数组 —— 后端已经按排序方式排好了，前端不重排）；
   - 每一项是一个 `<button>`，点了就 `emit('select', id)` 并收起面板；
-  - 面板的 CSS 照 `TagFilter.vue` 的 `.tag-filter__panel` 抄（`position: absolute`、`min-width: 180px`、`border: 1px solid var(--border)` 等），**只用现有主题变量**。
+  - 面板的 CSS 照 `TagFilter.vue` 的 `.tag-filter__panel` 抄（`position: absolute`、`min-width: 180px`、`border: 1px solid var(--border)` 等），**只用现有主题变量**；
+  - ⚠️ **触发器要满足触摸目标**（规格 §6.10 末句：「新加的下拉触发器、发送按钮同样适用」）：
+    ```css
+    @media (max-width: 767px) {
+      .project-dropdown__trigger {
+        min-width: 32px;
+        min-height: 32px;
+      }
+    }
+    ```
+    ⚠️ 触点目标这条**不能只在 Task 15 的 e2e 里才发现** —— 布局 e2e 有一轮全页扫描
+    （`layout.spec.ts` 的「移动端点按目标」用例，扫 `button, a[href], input, …`），
+    它扫到这些新按钮就会红。
 
 - [ ] **Step 4: 新建 `MoreMenu.vue`**
 
@@ -1372,7 +1609,17 @@
 
   - 触发器：`<button aria-expanded="open">⋯</button>`（要有可访问名：`aria-label="更多"`）；
   - 面板里三项：「项目管理」「回收站」「Webhook」，每项一个 `<button>`，点了发对应事件并收起；
-  - ⚠️ 菜单项的**文字**要与 `PageNav.vue` 里的链接文字一致（「想法 / 项目 / 回收站 / Webhook」），但这里**不含「想法」**（主页本身就是想法页）。
+  - ⚠️ 菜单项的**文字**要与 `PageNav.vue` 里的链接文字一致（「想法 / 项目 / 回收站 / Webhook」），但这里**不含「想法」**（主页本身就是想法页）；
+  - ⚠️ **触发器与菜单项都要满足触摸目标**（规格 §6.10 末句）：
+    ```css
+    @media (max-width: 767px) {
+      .more-menu__trigger,
+      .more-menu__item {
+        min-width: 32px;
+        min-height: 32px;
+      }
+    }
+    ```
 
 - [ ] **Step 5: 改 `HomePage.vue` 的模板**
 
@@ -1429,6 +1676,14 @@
   - 删掉 `web/src/components/ProjectTabs.vue` 与 `web/src/components/ProjectTabs.spec.ts`；
   - `web/e2e/layout.spec.ts` 里那条「窄屏项目 Tab 条的渐隐带不淡掉还看得清的字」用例（连同它的
     `measureFade` 辅助函数与 `measureFade` 的类型）**一起删掉** —— Tab 条没了，这条用例没有对象；
+  - ⚠️ **`web/e2e/layout.spec.ts` 里还有两处指着 `.project-tabs__list`**：
+    `INTENTIONAL_H_SCROLL`（`:94`）与 home 路由的 `containers`（`:124`）——
+    组件删了之后这个定位器打不中任何元素，而 `expectNoUnexpectedHorizontalScroll`
+    对不存在的元素做 `evaluate` 会**抛错** → 布局 e2e 红。两处都删掉；
+  - ⚠️ **`web/e2e/COVERAGE.md` 里还有 5 处引用 `ProjectTabs.vue`**（`:56` 的文件清单、
+    `:123`/`:124` 的覆盖矩阵行、`:415`/`:420` 的漏项说明）—— 一起改掉；
+  - ⚠️ **连带后果**：Tab 条上的「＋ 新建项目 / ⋯ 菜单」两个按钮随组件一起消失，
+    窄屏下新建项目只剩「⋯ → 项目管理」两步（规格 §D11 接受这个入口结构，但这里要写明）。
   - ⚠️ 删之前**先看一遍**那条用例测的是什么（Tab 条的渐隐带不许淡掉还看得清的字）：
     它的**意图**（「渐隐带不许吃掉可读的字」）在新的下拉上**不适用**（下拉面板是浮层，不滚动），
     所以是**连意图一起作废**，不是换个选择器继续测。
@@ -1521,6 +1776,11 @@
   | `the_tag_and_delete_buttons_are_marked_as_hover_only` | `.meta__action--tags` 与 `.meta__action--delete` 存在，且带 `data-hover-only` 属性（供 CSS 与 e2e 判定「悬停才显形」） |
   | `the_checkbox_is_marked_as_hover_only` | `input.select` 带 `data-hover-only` 属性 |
   | `the_delete_button_still_asks_for_confirmation` | 点删除 → 先弹确认，点「确认删除」才发出 `delete` 事件（**别把二次确认丢了**） |
+
+  ⚠️ **`mountItem` 辅助函数要补 `position`**（`web/src/components/MessageItem.spec.ts:20-31`）：
+  `position` 是**必填** prop，`@vue/test-utils` 的 `mount()` 在类型层面要求必填 prop 必须出现在
+  `props` 里 —— 不补的话 `npm run typecheck`（vue-tsc）会报「缺少属性 position」。
+  做法：在 `mountItem` 的 `props` 里加一行 `position: 1,`（放在 `selected: false,` 后面）。
 
   > `data-hover-only` 是一个**纯标记**属性：真正的显隐由 CSS 媒体查询 + `:hover` / `:focus-within` 决定
   > （规格 §6.6：「悬停显形：纯 CSS，不引入 JS」）。这个属性只给 e2e 与单测一个可断言的锚点。
@@ -1717,6 +1977,19 @@
   - 新增 `.row`：`display: grid; grid-template-columns: 1fr 1fr; gap: 9px;`（两列之间的间距 9–10px）；
   - 新增 `.cell`：`min-width: 0;`（不让长内容把格子撑破）；
   - `.empty` 保留。
+  - ⚠️ **窄屏（<768px）是单列**（规格 §D9 的断点表：`< 768px → 1 列`、`768–1023px → 2 列`、
+    `≥1024px → 2 列 + 侧栏`）—— 375px 屏上两列的话每格只有约 175px 宽，
+    正文 3 行截断后卡片又高又碎，规格 §6.10 的「单卡约 110px、一屏约 5 张卡」也前提不对：
+    ```css
+    @media (max-width: 767px) {
+      .row {
+        grid-template-columns: 1fr;   /* 窄屏单列 */
+      }
+    }
+    ```
+    ⚠️ **单列时那一排的右格要空着** —— `toRows` 照样按「一排两条」切，
+    窄屏的第二格用 `display: none`（或 `.cell--right:empty { display: none }`）藏掉，
+    **不要**改 `toRows` 的切排逻辑（编号与奇偶是跟视口无关的）。
 
 - [ ] **Step 5: 跑测试确认它们通过**
 
@@ -1794,12 +2067,22 @@
   | `prependOlder_adds_an_even_number_of_items` | 预置 100 条 → prepend 一个满页（100 条）→ 列表长度 200，**净增 100（偶数）** |
   | `prependOlder_keeps_the_list_contiguous` | 预置 100 条（id 1..100，最新的是 100）→ prepend 满页 → 列表的 id 是 1..200 的连续序列（**中间没有洞**） |
 
-  在 `web/src/composables/useHistoryScroll.spec.ts` 里追加：
+  **位置序号的奇偶** —— 放在 **`web/src/lib/rows.spec.ts`**（不是 `useHistoryScroll.spec.ts`）：
+  位置序号是**渲染层**算的（`MessageList.vue` 的 `rowIndex * 2 + 1`，Task 11 引入 `lib/rows.ts`），
+  `useHistoryScroll` 只负责取页 + prepend + 视口补偿，**压根不知道「位置序号」** ——
+  把用例放在那儿只能自己重算一遍序号，测不到任何生产逻辑。
 
   | 测试 | 断言 |
   |---|---|
-  | `prepending_a_full_page_keeps_the_parity_of_the_existing_items` | 列表里已有 4 条（位置序号 1..4）→ prepend 2 条 → 原来那 4 条的位置序号变成 3..6（+2），**位置的奇偶不变**（1→3、2→4、3→5、4→6） |
-  | `prepending_an_odd_page_flips_the_parity` | 已有 2 条 → prepend 3 条（奇数）→ 位置序号 +3 → **奇偶翻转** |
+  | `toRows_keeps_the_parity_when_an_even_number_of_items_is_prepended` | 用 `toRows` 直接验：已有 4 条（位置序号 1..4）→ 在**头部** prepend 2 条 → 原来那 4 条的位置序号变成 3..6（+2），**奇偶不变**（1→3、2→4、3→5、4→6） |
+  | `toRows_flips_the_parity_when_an_odd_number_of_items_is_prepended` | 已有 2 条 → prepend 3 条（奇数）→ 位置序号 +3 → **奇偶翻转** |
+
+  **锚点校正（规格 §6.5 的第二套补偿）** —— 放在 `web/src/composables/useHistoryScroll.spec.ts`：
+
+  | 测试 | 断言 |
+  |---|---|
+  | `prepend_uses_the_anchor_to_correct_the_viewport` | 给 `useHistoryScroll` 传假的 `captureAnchor` / `restoreAnchor`：prepend **之前**记下的锚点（`{ id, top }`）被原样交给 `restoreAnchor`（断言 `restoreAnchor` 被调用，且参数是 prepend 前记下的那个 id） |
+  | `prepend_does_nothing_when_the_anchor_is_gone` | `captureAnchor` 返回 `null` → `restoreAnchor(null)` 不抛异常，且 `scrollTop` **不被二次补偿**（没有锚点就别乱动） |
 
   > **位置序号与奇偶的关系（实现前先读这一段）**：规格 §D4 定义「位置序号 = 1 是最老的那条（屏幕最上）」，
   > §6.4 说「prepend 之后编号会 +P」并且「prepend 的条数必须是偶数，否则整墙左右互换」。
@@ -1810,8 +2093,9 @@
 
 - [ ] **Step 2: 跑测试确认它失败**
 
-  Run: `cd web && npm test -- src/stores/ideas.spec.ts src/composables/useHistoryScroll.spec.ts`
-  Expected: 失败（`fetchOlderIdeas` 现在返回整页 101 条；`prependOlder` 的签名还是 `prependOlder(items: Idea[])`）。
+  Run: `cd web && npm test -- src/stores/ideas.spec.ts src/lib/rows.spec.ts src/composables/useHistoryScroll.spec.ts`
+  Expected: 失败（`fetchOlderIdeas` 现在返回整页 101 条；`prependOlder` 的签名还是 `prependOlder(items: Idea[])`；
+  锚点那两条因为回调还不存在而红）。
 
 - [ ] **Step 3: 改 `stores/ideas.ts`**
 
@@ -1821,14 +2105,22 @@
     - 拿到 `result` 之后：
       ```ts
       // 满页 → 丢掉**最老**的那一条（探针），净增 100 条（偶数）。
-      // ⚠️ 丢的是最老的那条（result 的最后一个）：服务端按 updated_at 升序返回，
-      // 多要的那条落在这一页的最老那端。丢最老的那条不会在集合中间留洞 ——
-      // 丢掉的那条落在已加载区域的**外侧**，下一轮的请求窗口会把它要回来。
-      // 反过来丢**最新**的那条才会留洞（洞永远补不上，还会多出一条重复）。
+      //
+      // ⚠️ **要丢的是 result 的第一个元素**（服务端按 updated_at 升序返回，最老的在顶）：
+      // 多要的那一条落在这一页的**最老**那端 —— 丢它不会在集合中间留洞
+      // （丢掉的那条落在已加载区域的**外侧**，下一轮的请求窗口会把它要回来）。
+      //
+      // ⚠️ **别写成 slice(0, result.length - 1)**：那丢的是这一页**最新**的那一条 ——
+      // 它紧挨着已加载区域，丢掉就在集合中间留洞（洞永远补不上，还会多出一条重复）。
+      // 仓库里已经踩过一次这个坑（`slice(0, PAGE_SIZE)`），`stores/ideas.ts` 的注释里写着。
       const full = result.length >= PROBE_LIMIT;
-      const items = full ? result.slice(0, result.length - 1) : result;
+      const items = full ? result.slice(1) : result;
       return { items, stale: generation < appliedGeneration, hasMore: full };
       ```
+      **验算**（与规格 §6.4 一致）：总数 C、已加载 k 条（距离区间 `[C-k, C)`）→
+      本轮请求返回距离 `[C-k-101, C-k)` 的 101 条 → **丢掉最老的那个（距离 C-k-101，
+      也就是数组下标 0）** → 收下 `[C-k-100, C-k)` 的 100 条 → 已加载变成 `[C-k-100, C)`
+      的 k+100 条 ✓ 连续 ✓；下一轮 offset = k+100 → 同样丢最老的那条 ✓。
     - 注释里原来那段「这一页**整页收下**，一条都不丢」的说明要改掉（现在满页会丢一条）；
   - `prependOlder`（`:217-229`）：签名改成 `prependOlder(page: OlderPage): void`：
     ```ts
@@ -1947,13 +2239,39 @@
   - **宽屏形态不变**（三个分段按钮照旧显示）—— 用 CSS 控制两套形态的显隐：
     ```css
     /* 宽屏：三个分段按钮 */
-    .filter-bar__status { display: flex; gap: 4px; }
+    .filter-bar__status-segments { display: flex; gap: 4px; }
     .filter-bar__status-trigger { display: none; }
     /* 窄屏：收成一个下拉 */
     @media (max-width: 767px) {
-      .filter-bar__status { display: none; }
+      .filter-bar__status-segments { display: none; }
       .filter-bar__status-trigger { display: inline-flex; }
       .filter-bar__search { flex: 1 1 auto; width: auto; }
+    }
+    ```
+    ⚠️ **`.filter-bar__status` 这个 `role="group" aria-label="状态过滤"` 的容器本身不能被 `display: none`** ——
+    隐藏的是**它里面的**分段按钮（`.filter-bar__status-segments`），容器要一直显示，
+    窄屏时它包着那个下拉触发器。
+    原因：布局 e2e 的关键元素检查里有
+    `{ name: '状态过滤组', locator: page.getByRole('group', { name: '状态过滤' }) }`，
+    而检查要求元素**可见**且在视口里（`toBeVisible()`）—— 容器整个 `display: none` 的话，
+    窄屏那一档（375/768/1280/1920 每个视口都跑）**必红**；
+    容器可见、只把分段按钮藏起来，两种形态都能命中同一个 group。
+    → 所以模板要改成：
+    ```html
+    <div class="filter-bar__status" role="group" aria-label="状态过滤">
+      <div class="filter-bar__status-segments">
+        <button v-for="option in STATUS_OPTIONS" …>…</button>
+      </div>
+      <button class="filter-bar__status-trigger" type="button" :aria-expanded="open">…</button>
+    </div>
+    ```
+  - ⚠️ **下拉触发器也要满足触摸目标**（规格 §6.10 末句「新加的下拉触发器…同样适用」）：
+    ```css
+    @media (max-width: 767px) {
+      .filter-bar__status-trigger {
+        min-width: 32px;
+        min-height: 32px;
+      }
     }
     ```
   - 搜索框：宽屏 `width: 160px` 不变；**窄屏撑开剩余宽度**（`flex: 1 1 auto; width: auto;`）；
@@ -2051,7 +2369,7 @@
 **Files:**
 - Modify: `web/src/styles/base.css:76-86`（`.page`）
 - Modify: `web/src/pages/TrashPage.vue`、`web/src/pages/ProjectsPage.vue`、`web/src/pages/WebhooksPage.vue`、`web/src/pages/ProjectWebhooksPage.vue`（容器 class）
-- Modify: `web/src/components/PageNav.vue:105`、`web/src/components/ProjectTabs.vue:322`、`web/src/components/BatchBar.vue:197`（640px → 767px）
+- Modify: `web/src/components/PageNav.vue:105`、`web/src/components/BatchBar.vue:197`（640px → 767px）
 - Test: `web/src/pages/TrashPage.spec.ts`、`web/src/pages/ProjectsPage.spec.ts`、`web/src/components/PageNav.spec.ts`
 
 **Interfaces:**
@@ -2111,9 +2429,11 @@
 
   把 `@media (max-width: 640px)` 改成 `@media (max-width: 767px)`：
   - `web/src/components/PageNav.vue:105`；
-  - `web/src/components/ProjectTabs.vue:322`；
   - `web/src/components/BatchBar.vue:197`；
   - `web/src/components/MessageItem.vue`（Task 10 已经改成 767px，确认一遍）。
+  - ⚠️ **不要动 `web/src/components/ProjectTabs.vue`** —— 它在 Task 9 已经**被删掉**了
+    （窄屏的项目切换改成下拉之后没人用它）。在 `git add` 里带上一个不存在的路径会直接报错：
+    `fatal: pathspec 'web/src/components/ProjectTabs.vue' did not match any files`。
 
   ⚠️ **为什么统一**（规格 §D9）：触摸目标的 32×32 规则原来挂在 640px，而新的两列断点是 768px ——
   641–767px 这一段会「既按手机渲染又不满足触摸目标」。统一到 767px 就没这个缝了。
@@ -2132,7 +2452,7 @@
   ```bash
   git add web/src/styles/base.css web/src/pages/TrashPage.vue web/src/pages/ProjectsPage.vue \
           web/src/pages/WebhooksPage.vue web/src/pages/ProjectWebhooksPage.vue \
-          web/src/components/PageNav.vue web/src/components/ProjectTabs.vue web/src/components/BatchBar.vue
+          web/src/components/PageNav.vue web/src/components/BatchBar.vue
   git commit -m "style(web): 管理页铺满，触摸目标断点统一到 767px
 
   回收站、项目管理/Webhook 三个页面的 .page 都卡着 max-width: 960px 居中
@@ -2179,10 +2499,15 @@
   - `prepare`：多造几条想法（**宽屏一屏要能看到 ≥10 条** —— 造 14 条）；
   - `keyElements`：
     - 「标题「想法」」保留（`getByRole('heading', { name: '想法', exact: true })`）；
-    - 「状态过滤组」改成窄屏形态的名字（`getByRole('group', { name: '状态过滤' })` 在窄屏收成下拉后**这个 group 还在**吗？
-      → **让它还在**：状态下拉的面板里用 `role="group" aria-label="状态过滤"` 包住三项，`getByRole('group', { name: '状态过滤' })` 两种形态都能命中）；
+    - 「状态过滤组」**保持原样**：`page.getByRole('group', { name: '状态过滤' })`。
+      ⚠️ 窄屏收成下拉之后它**仍然要能命中且可见** —— Task 13 把
+      `role="group" aria-label="状态过滤"` 留在 `.filter-bar__status` 容器上、
+      只把里面的分段按钮（`.filter-bar__status-segments`）藏起来，
+      所以宽窄屏都是同一个可见的 group。**不要**把这条关键元素改掉；
     - 加「顶栏的「⋯」菜单」：`page.getByRole('button', { name: '更多' })`；
-  - `containers`：加 `.home__content`（保留）、`.home__topbar`（新）；
+  - `containers`：加 `.home__topbar`（新）；`.home__content` 保留；
+    ⚠️ `.project-tabs__list` **在 Task 9 已经删掉**（组件没了，定位器打不中任何元素，
+    `expectNoUnexpectedHorizontalScroll` 对不存在的元素做 `evaluate` 会抛错 → e2e 红）；
   - `textBlocks`：删掉「想法条目的标题」，改成「想法条目的正文」（`page.locator('.idea .body').first()`）；
     ⚠️ **正文现在会被截断** → 它**不能**再进 `textBlocks`（那会红）。改放进 `textBlocksWhenEditing`。
 
@@ -2195,7 +2520,9 @@
   | `宽屏：侧栏贴左，主区铺到右边缘` | 1920×1080 → `.home__sidebar` 的左边距 ≈ 0（`boundingBox().x <= 2`）；`.home__content` 的右边缘离视口右边缘 ≤ 24px（主区四周留 10–12px + 内容区留白） |
   | `宽屏：一屏能看到 ≥10 条想法` | 1920×1080 → `.idea` 的可见数量 `>= 10` |
   | `宽屏：想法排成两列` | 1920×1080 → 第 1 排的左格与右格**都在视口里**，且左格的 x 小于右格的 x |
-  | `窄屏：钉死的外壳只有 2 行` | 375×667 → 顶栏（`.home__topbar`）与输入框（`.composer`）都可见；**过滤行不在视口里**（它随内容滚走了）→ 断言 `.filter-bar` 的 `boundingBox().y > 667` 或不在视口内 |
+  | `平板 768×1024：两列、无侧栏` | 768×1024 → `.home__sidebar` **不可见**（断点 1024px 以下没有侧栏）；第 1 排的左格与右格**都在视口里**且 x 不同（规格 §D9：768–1023px → 2 列、无侧栏） |
+  | `窄屏 <768px：单列` | 375×667 → 同一排里的第二条想法**不在**右格（窄屏是单列，规格 §D9）：第 1 排的 `.cell--right` 里**没有** `.idea`；第 2 条想法的 x 与第 1 条**相同**（同一列） |
+  | `窄屏：钉死的外壳只有 2 行` | 375×667 → 顶栏（`.home__topbar`）与输入框（`.composer`）都可见；**过滤行不在视口里**（它随内容滚走了）→ 复用文件里现成的 `intersectsViewport(box, viewport)`（`:353-361`）断言过滤行的矩形**与视口不相交** |
   | `窄屏：一屏能看到 ≥5 条想法` | 375×667 → `.idea` 的可见数量 `>= 5` |
   | `卡片只有一整块正文，没有标题层` | `page.locator('.idea h2.title').count()` === 0 |
   | `编号紧挨时间` | `.idea .meta__num` 与 `.idea .meta__time` 的水平距离 ≤ 20px，且 num 的 x < time 的 x |
@@ -2203,6 +2530,9 @@
   | `窄屏点 🔍 滚回列表顶部并聚焦搜索框` | 375×667 → 先滚到底，点顶栏的 🔍 → `document.activeElement` 是那个 searchbox（用 `page.evaluate` 读 `document.activeElement?.getAttribute('aria-label')`） |
   | `桌面端：勾选框与 🏷🗑 悬停才显形，键盘聚焦也显形` | 1280×800 → 不悬停时 `.idea .select` 的 `opacity` 为 0；悬停那条卡片后为 1；**Tab 聚焦到它时也为 1**（用 `page.keyboard.press('Tab')` 循环直到焦点落在它身上，或直接 `locator.focus()` 后读 opacity） |
   | `窄屏：勾选框与 🏷🗑 常驻` | 375×667 → `.idea .select` 的 `opacity` 为 1（不悬停） |
+  | `窄屏：顶栏的新触发器够大` | 375×667 → 用文件里现成的 `expectTapTarget` 助手量「⋯」「🔍」与项目下拉触发器：宽高都 ≥ 32px（规格 §6.10 末句：新加的下拉触发器、发送按钮同样适用） |
+  | `宽屏：新记的一条落在最下面，且左右按奇偶交替` | 1920×1080 → 提交一条想法 → 它是**最后**一张卡（列表最下边）；它落在**右格**（偶数位）—— 规格 §9 行为第 1 条 |
+  | `宽屏：编辑一条靠前的想法，它跳到最下面，其下方卡片左右互换` | 1920×1080 → 编辑**第一条**想法并保存 → 它跳到最后一张卡；原来在它下面那条的 x **左右互换**了（规格 §9 行为第 2 条，**这是被明确批准的取舍**，不是 bug） |
 
 - [ ] **Step 4: 跑 e2e**
 
@@ -2213,6 +2543,12 @@
   按规格 §6.10 的估算（宽屏正文 3 行 ≈ 58px + meta ≈ 24px + 间距 ≈ 9px → 单卡约 95px，1080px 高的视口扣掉顶栏与输入条约 110px → 约 10 条）。
   差几条就调 §6.9 的尺寸（圆角 10px / 内边距 9px 11px 7px / 正文 12.5px / 行高 1.55 / meta 10.5px），
   **不要**改验收标准。
+
+  ⚠️ **两档的估算前提不同**（规格 §D9 + §6.10）：
+  - **宽屏（两列）**：1080px 高的视口扣掉顶栏与输入条约 110px → 约 10 条（两列的话一屏是 10 张卡）；
+  - **窄屏（单列，<768px）**：375×667 扣掉顶栏与输入条约 90px → 约 5 张卡
+    （窄屏 meta 行 ≥32px、正文 3 行约 58px → 单卡约 110px，规格 §6.10 的原话）。
+  ⚠️ 「窄屏 ≥5 条」是按**单列**估的 —— 如果窄屏还是两列，这条根本达不到（375px 屏每格才 175px 宽）。
 
 - [ ] **Step 5: 更新 `web/e2e/COVERAGE.md`**
 
@@ -2245,10 +2581,15 @@
   卡片正文现在会被 3 行截断，「关键文本块没被裁掉」那条断言改成只对编辑态
   生效 —— 编辑框里必须能看到全文，非编辑态的正文不再受这条约束。
 
-  新增：宽屏侧栏贴左且主区铺到右边缘、一屏 ≥10 条、两列交错、窄屏钉死的
-  外壳只有 2 行（过滤行随内容滚走）、一屏 ≥5 条、卡片没有标题层、编号紧挨
-  时间、顶栏「⋯」一步进回收站、窄屏 🔍 聚焦搜索框、悬停显形与键盘聚焦、
-  窄屏常驻。"
+  新增：宽屏侧栏贴左且主区铺到右边缘、一屏 ≥10 条、两列交错、平板 768×1024
+  两列无侧栏、窄屏 <768px 单列、窄屏钉死的外壳只有 2 行（过滤行随内容滚走）、
+  一屏 ≥5 条、卡片没有标题层、编号紧挨时间、顶栏「⋯」一步进回收站、窄屏 🔍
+  聚焦搜索框、悬停显形与键盘聚焦、窄屏常驻、顶栏新触发器够大、新记的一条
+  落在最下面且左右按奇偶交替、编辑老想法后它跳到最下面且下方卡片左右互换
+  （规格 §9 明确批准的取舍）。
+
+  「窄屏钉死的外壳只有 2 行」那条：过滤行随内容滚走之后它在视口**上方**，
+  y 是负数 —— 断言用的是「矩形与视口不相交」，不是「y > 667」。"
   ```
 
 ---
@@ -2261,8 +2602,15 @@
 2. **跑一次完整闸门**：`bash verify.sh` + `cd web && npm test && npm run typecheck` + `bash web/e2e/run-e2e.sh --fresh`。
 3. **确认工作树干净**：`.superpowers/` 与 `.temp/` 不在提交里（`git status --ignored=no` 看一眼）。
 
-## 自查（写这份计划时对照规格逐条过了一遍）
+## 自查（写这份计划时对照规格逐条过了一遍；审查后按两份审查意见又过了一遍）
 
 - **规格覆盖**：§4.3 A–J 逐项落到了 Task 1–8；§5 D1–D11、§6.1–6.11、§7 的 8 条、§8 的 4 条、§9 的三组验收落到了 Task 9–15。
-- **签名一致**：`IdeaDto` / `IdeaSnapshot` / `CreateIdeaRequest` / `UpdateIdeaRequest` / `MergeIdeasRequest` / `IdeaService.Create|Update|Merge` / `IdeaRepository.UpdateContent` / `SearchIndex.UpsertIdea` / `SearchIndex.IdeaIndexRow` / `SearchRepository.IdeaFtsWeights` 在各 task 之间一致。
+- **签名一致**：`IdeaDto` / `IdeaSnapshot` / `CreateIdeaRequest` / `UpdateIdeaRequest` / `MergeIdeasRequest` / `IdeaService.Create|Update|Merge` / `IdeaRepository.UpdateContent` / `SearchIndex.UpsertIdea` / `SearchIndex.IdeaIndexRow` / `SearchRepository.IdeaFtsWeights` / `stores.ideas.OlderPage` / `stores.ideas.prependOlder` / `lib.rows.toRows` 在各 task 之间一致。
 - **Review Focus**：八条都有对应的测试，且放在拥有那段代码的 task 里（第 1、2 条在 Task 1，第 3 条在 Task 6，第 4 条在 Task 2，第 5 条在 Task 4，第 6 条在 Task 3，第 7 条在 Task 12，第 8 条在 Task 10）。
+- **审查后修掉的三处「计划自己打架」**（这一轮审查发现的）：Task 9 删了 `ProjectTabs.vue` 而 Task 14 还在改它（`git add` 会报 pathspec 错误）；
+  Task 13 把状态分组整个 `display: none` 而 Task 15 的关键元素检查要它可见；
+  Task 12 的 `slice` 方向与它自己的测试描述矛盾（丢错了端 → 集合中间留洞）。
+- **两处规格里的事实错误**（已在计划里按实测纠正，并写明依据）：
+  ① 「bm25 权重个数与列数不匹配 → `/api/search` 500」—— 用本仓库自己的 SQLite 3.53.3 实测**不报错**（多余的权重忽略、缺少的按默认 1.0），真实后果是相关度静默错位；
+  ② 「占位符被删掉 → 老模板渲染成空串」—— 渲染器原本的语义是「键不在 → 原样保留」，空串要靠 Task 4 新增的「已下线占位符」表才成立。
+  这两处的**动作**（形状检查 + 重建、占位符下线 + 渲染成空串）仍然照规格做，改的只是「失败模式」的描述与对应的测试写法。
