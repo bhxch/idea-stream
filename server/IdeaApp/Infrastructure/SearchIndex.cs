@@ -40,6 +40,22 @@ public static class SearchIndex
     public const string CurrentVersion = "1";
 
     /// <summary>
+    /// 回填路径里标签名之间的分隔符：ASCII 的 SOH（<c>U+0001</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 为什么不用空格：<c>group_concat</c> 把标签名拼成一段文本，
+    /// 再按空格切回标签名列表时，**标签名本身含空格**就会被切错
+    /// （标签 <c>["a b", "c"]</c> 会被切成 <c>["a", "b", "c"]</c>）。
+    /// 用一个标签名里几乎不可能出现的控制字符当分隔符，拆分就没有歧义。
+    /// <para>
+    /// ⚠️ 它只影响**回填路径内部**怎么把标签名拆回列表；
+    /// 写进 <c>idea_fts</c> 的仍然是「标签名按名称排序后用单个空格连起来」的文本，
+    /// 与逐条 <see cref="UpsertIdea"/> 写出来的逐字节相同（见 <see cref="InsertIdeaRows"/>）。
+    /// </para>
+    /// </remarks>
+    private const char TagSeparator = '\u0001';
+
+    /// <summary>
     /// 原文 → 索引里存的文本（切分后的词元串，词元间用单个空格）。
     /// </summary>
     /// <param name="text">原文（可为 null —— 想法大多没有标题）。</param>
@@ -178,6 +194,12 @@ public static class SearchIndex
 
         // 旧索引行按同一个项目范围整体删掉 —— rowid 来自 idea 表，
         // 范围与上面读到的完全一致（都不筛 deleted_at：软删的想法照样在索引里）。
+        //
+        // ⚠️ **删除范围与写回范围必须一致**，否则索引行会静默消失：
+        // 删除范围是「project_id = 该项目的**全部**想法」（不 JOIN project），
+        // 所以写回范围必须是同一集合 —— 写回用的是 LEFT JOIN（见 LoadIdeaRows）。
+        // 之前写回用的是 INNER JOIN：想法的项目行不在了（项目被硬删而想法还在）时，
+        // 索引行被删掉却不会写回来 —— 那条想法从此搜不到，也没有任何报错。
         Execute(
             connection,
             transaction,
@@ -214,18 +236,27 @@ public static class SearchIndex
     /// （实测会得到「zebra apple mango」这种顺序），顺序不稳的话
     /// 同一份数据每次重建出来的索引文本都不一样。
     /// 排序口径与仓储层读标签的那份一致（<c>COLLATE NOCASE ASC</c>）。
+    /// <para>
+    /// ⚠️ <strong>项目名用 LEFT JOIN 取</strong>：删除范围是「project_id = 该项目的全部想法」
+    /// （不 JOIN project，见 <see cref="ReindexProjectIdeas"/>），写回范围必须与它一致。
+    /// 用 INNER JOIN 时，「项目行没了但想法还在」的念头会从写回范围里消失 ——
+    /// 索引行被删掉却不会写回来（静默丢失）。LEFT JOIN 下这种想法照样写回，
+    /// 项目名列写空串（库里查不到的项目名不写进索引）。
+    /// </para>
     /// </remarks>
-    private static List<IdeaIndexRow> LoadIdeaRows(
+    internal static List<IdeaIndexRow> LoadIdeaRows(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         string? projectId)
     {
         var sql =
             "SELECT i.rowid, i.title, i.content, p.name, " +
-            "(SELECT group_concat(name, ' ') FROM (" +
+            // 标签名之间用 SOH（char(1)）连接：标签名本身含空格时，
+            // 按空格拆分会把它拆错（["a b", "c"] → ["a", "b", "c"]）。
+            "(SELECT group_concat(name, char(1)) FROM (" +
             "    SELECT t.name FROM idea_tag it JOIN tag t ON t.id = it.tag_id " +
             "    WHERE it.idea_id = i.id ORDER BY t.name COLLATE NOCASE ASC, t.name ASC)) " +
-            "FROM idea i JOIN project p ON p.id = i.project_id";
+            "FROM idea i LEFT JOIN project p ON p.id = i.project_id";
         if (projectId is not null)
         {
             sql += " WHERE i.project_id = $projectId";
@@ -249,17 +280,18 @@ public static class SearchIndex
             {
                 var tagText = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
 
-                // group_concat 用单个空格连接标签名，按空格切回标签名列表；
-                // 「按空格切开再按空格连回去」是恒等变换，
-                // 索引文本与直接切标签名原文完全一致。
-                var tags = tagText.Length == 0 ? Array.Empty<string>() : tagText.Split(' ');
+                // 按 SOH 拆回标签名列表：分隔符不会出现在标签名里，拆出来就是真标签名。
+                var tags = tagText.Length == 0
+                    ? Array.Empty<string>()
+                    : tagText.Split(TagSeparator);
 
                 rows.Add(new IdeaIndexRow(
                     reader.GetInt64(0),
                     reader.IsDBNull(1) ? null : reader.GetString(1),
                     reader.GetString(2),
                     tags,
-                    reader.GetString(3)));
+                    // 项目行不在了（LEFT JOIN 出来是 NULL）→ 项目名列写空串。
+                    reader.IsDBNull(3) ? string.Empty : reader.GetString(3)));
             }
         }
 
@@ -311,7 +343,12 @@ public static class SearchIndex
     }
 
     /// <summary>重写一条想法索引行要用的数据（rowid 直接来自查询，省一次 FindRowId 往返）。</summary>
-    private sealed record IdeaIndexRow(
+    /// <remarks>
+    /// internal：测试要钉住「回填路径重建出来的标签名列表」——
+    /// 标签名含空格时，按空格拆分会把它拆错，而这种错误在索引文本上看不出来
+    /// （切完再拼回去恰好还原）。字段是 internal 的话，测试能直接看它。
+    /// </remarks>
+    internal sealed record IdeaIndexRow(
         long RowId,
         string? Title,
         string Content,

@@ -185,6 +185,145 @@ public sealed class SearchIndexTests : IDisposable
     }
 
     [Fact]
+    public void EnsureIndexed_writes_every_row_when_the_data_spans_several_chunks()
+    {
+        // 回填是「一条读全 + 按块多行 INSERT」。块的大小有上限（参数个数有硬上限），
+        // 所以数据多了就会跨块 —— 只造一条想法的话，
+        // 「只写了第一块」「块边界算错了」这类错误一个都测不出来。
+        //
+        // 250 条 > 单块上限（199 行/块）→ 必然跨块（199 + 51）。
+        const int count = 250;
+
+        InsertProject("p1", "工作");
+
+        // 标签先建好（标签字典按名字唯一，同一个名字只能有一行）。
+        // 名字里带空格是故意的：标签名含空格时拆分最容易出错。
+        var tagIds = new long[7];
+        for (var i = 0; i < tagIds.Length; i++)
+        {
+            tagIds[i] = InsertTag($"标签 {i}");
+        }
+
+        for (var i = 0; i < count; i++)
+        {
+            var id = $"i{i:D3}";
+            InsertIdea(id, "p1", $"标题 {i}", $"正文 {i}：手冲咖啡的关键");
+            LinkTag(id, tagIds[i % tagIds.Length]);
+        }
+
+        SearchIndexInitializer.EnsureIndexed(Database);
+
+        // 行数一条不少。
+        Assert.Equal(count, CountIdeaFts());
+
+        // 回填写出来的每一行，都要与**逐条** UpsertIdea 写出来的逐字节相同：
+        // 两条路径写的是同一件事，跨块时尤其容易在块的拼接处出错
+        // （漏一行、串一行、参数绑错位）。
+        var backfilled = ReadIdeaFtsRows();
+
+        using (var connection = Database.Open())
+        {
+            foreach (var id in IdeaIds())
+            {
+                var title = ReadIdeaTitle(id);
+                var content = ReadIdeaContent(id);
+                var tags = ReadTagNamesOfIdea(id);
+                var projectName = ReadProjectName("p1");
+
+                SearchIndex.UpsertIdea(connection, null, id, title, content, tags, projectName);
+
+                var rowId = RowIdOfIdea(id);
+                Assert.Equal(backfilled[rowId], ReadIdeaFtsRow(rowId));
+            }
+        }
+
+        // 幂等：再回填一次（版本对不上 → 整体重建）不会多出行，
+        // 写出来的内容也与第一次**逐字节相同**。
+        SetIndexVersion("0");
+        SearchIndexInitializer.EnsureIndexed(Database);
+
+        Assert.Equal(count, CountIdeaFts());
+        Assert.Equal(backfilled, ReadIdeaFtsRows());
+    }
+
+    [Fact]
+    public void EnsureIndexed_keeps_a_tag_name_that_contains_a_space()
+    {
+        // 标签名本身含空格时，回填路径必须能把它**原样**拆回标签名列表。
+        //
+        // 之前回填用 group_concat 拼一段文本再按空格切：标签 ["a b", "c"] 会被切成
+        // ["a", "b", "c"] —— 拆错了。索引文本上看不出来（切完再拼回去恰好还原），
+        // 但那个列表本身是错的（是个陷阱）。
+        InsertProject("p1", "工作");
+        InsertIdea("i1", "p1", null, "手冲记录");
+
+        LinkTag("i1", InsertTag("a b"));
+        LinkTag("i1", InsertTag("c"));
+
+        SearchIndexInitializer.EnsureIndexed(Database);
+
+        // 回填路径重建出来的标签名列表：两个（"a b" 是一个标签，不是两个）。
+        using (var connection = Database.Open())
+        {
+            var rows = SearchIndex.LoadIdeaRows(connection, null, projectId: null);
+            var row = Assert.Single(rows);
+
+            Assert.Equal(new[] { "a b", "c" }, row.Tags);
+        }
+
+        // 索引文本：标签名按名称排序后用空格连起来 → "a b c"。
+        Assert.Equal(SearchIndex.ToIndexText("a b c"), ReadIdeaFtsTags(RowIdOfIdea("i1")));
+
+        // 逐条增量写出来的文本必须与回填**逐字节相同**（两条路径同一口径）。
+        using (var connection = Database.Open())
+        {
+            SearchIndex.UpsertIdea(connection, null, "i1", null, "手冲记录", new[] { "a b", "c" }, "工作");
+        }
+
+        Assert.Equal(SearchIndex.ToIndexText("a b c"), ReadIdeaFtsTags(RowIdOfIdea("i1")));
+    }
+
+    [Fact]
+    public void ReindexProjectIdeas_keeps_the_rows_of_ideas_whose_project_row_is_gone()
+    {
+        // 「项目被硬删而想法还在」时，重建这个项目的索引行**不能**把那条想法的索引行弄丢。
+        //
+        // 删除范围是「project_id = 该项目的全部想法」（不 JOIN project），
+        // 写回范围必须与它一致 —— 之前写回用的是 INNER JOIN，
+        // 项目行不在时那条想法压根不会被写回：索引行被删掉就没了（静默丢失）。
+        InsertProject("p1", "工作");
+        InsertIdea("i1", "p1", null, "手冲咖啡的关键");
+
+        using var connection = Database.Open();
+        SearchIndex.UpsertIdea(connection, null, "i1", null, "手冲咖啡的关键", Array.Empty<string>(), "工作");
+
+        // 前置断言：索引行确实在（不然「重建后还在」是白成立的）。
+        Assert.Equal(new[] { RowIdOfIdea("i1") }, MatchIdeaFts("\"咖 啡\""));
+
+        // 把项目行删掉，只留下想法。
+        //
+        // 外键（idea.project_id → project.id）是开着的，不关掉它就删不掉项目行。
+        // PRAGMA foreign_keys 在事务里是空操作 —— 这里没有事务，OK。
+        using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA foreign_keys=OFF;";
+            pragma.ExecuteNonQuery();
+        }
+
+        using (var delete = connection.CreateCommand())
+        {
+            delete.CommandText = "DELETE FROM project WHERE id = 'p1';";
+            delete.ExecuteNonQuery();
+        }
+
+        SearchIndex.ReindexProjectIdeas(connection, null, "p1");
+
+        // 索引行还在：那条想法照样搜得到（项目名那一列写空串 —— 库里已经没有这个项目了）。
+        Assert.Equal(new[] { RowIdOfIdea("i1") }, MatchIdeaFts("\"咖 啡\""));
+        Assert.Equal(string.Empty, ReadIdeaFtsRow(RowIdOfIdea("i1")).Project);
+    }
+
+    [Fact]
     public void UpsertIdea_makes_the_idea_findable()
     {
         InsertProject("p1", "工作");
@@ -352,6 +491,118 @@ public sealed class SearchIndexTests : IDisposable
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT tags FROM idea_fts WHERE rowid = $rowId;";
         command.Parameters.AddWithValue("$rowId", rowId);
+        return (string?)command.ExecuteScalar() ?? string.Empty;
+    }
+
+    /// <summary>索引行的一行内容（四列的原始文本）。</summary>
+    private sealed record IndexRow(string Title, string Content, string Tags, string Project);
+
+    /// <summary>读 idea_fts 的一整行（四列的原始文本）。</summary>
+    private IndexRow ReadIdeaFtsRow(long rowId)
+    {
+        using var connection = Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT title, content, tags, project FROM idea_fts WHERE rowid = $rowId;";
+        command.Parameters.AddWithValue("$rowId", rowId);
+
+        using var reader = command.ExecuteReader();
+        Assert.True(reader.Read(), $"索引表里没有 rowid = {rowId} 的行");
+
+        return new IndexRow(
+            reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.GetString(3));
+    }
+
+    /// <summary>读 idea_fts 的**全部**行（rowid → 四列原文）。</summary>
+    private Dictionary<long, IndexRow> ReadIdeaFtsRows()
+    {
+        using var connection = Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT rowid, title, content, tags, project FROM idea_fts ORDER BY rowid;";
+
+        var rows = new Dictionary<long, IndexRow>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows[reader.GetInt64(0)] = new IndexRow(
+                reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4));
+        }
+
+        return rows;
+    }
+
+    /// <summary>库里全部的想法 id（按插入顺序）。</summary>
+    private IReadOnlyList<string> IdeaIds()
+    {
+        using var connection = Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id FROM idea ORDER BY rowid;";
+
+        var ids = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            ids.Add(reader.GetString(0));
+        }
+
+        return ids;
+    }
+
+    /// <summary>读一条想法的标题。</summary>
+    private string ReadIdeaTitle(string ideaId)
+    {
+        using var connection = Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT title FROM idea WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", ideaId);
+        return (string?)command.ExecuteScalar() ?? string.Empty;
+    }
+
+    /// <summary>读一条想法的正文。</summary>
+    private string ReadIdeaContent(string ideaId)
+    {
+        using var connection = Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT content FROM idea WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", ideaId);
+        return (string?)command.ExecuteScalar() ?? string.Empty;
+    }
+
+    /// <summary>
+    /// 读一条想法的标签名（按名称排序，大小写不敏感）——
+    /// 与仓储层（<c>ReadTagNames</c>）和回填路径的口径一致。
+    /// </summary>
+    private IReadOnlyList<string> ReadTagNamesOfIdea(string ideaId)
+    {
+        using var connection = Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT t.name FROM idea_tag it JOIN tag t ON t.id = it.tag_id " +
+            "WHERE it.idea_id = $id ORDER BY t.name COLLATE NOCASE ASC, t.name ASC;";
+        command.Parameters.AddWithValue("$id", ideaId);
+
+        var names = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        return names;
+    }
+
+    /// <summary>读项目名。</summary>
+    private string ReadProjectName(string projectId)
+    {
+        using var connection = Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT name FROM project WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", projectId);
         return (string?)command.ExecuteScalar() ?? string.Empty;
     }
 
