@@ -729,7 +729,13 @@ public sealed class SkillDocGuardTests
     /// </para>
     /// <para>
     /// 这条守卫补上那一层：契约的五个想法相关 schema 里不许有 <c>title</c> 属性，
-    /// 手册里也不许再把这个字段当字段名（<c>`title`</c>）或 JSON 键（<c>"title"</c>）写出来。
+    /// 手册里也不许再把这个字段当字段名（<c>`title`</c>）、JSON 键（<c>"title"</c>）
+    /// 或 webhook 占位符（<c>{{idea.title}}</c>）写出来。
+    /// </para>
+    /// <para>
+    /// <b>占位符形态必须一起禁</b>：<c>{{idea.title}}</c> 是服务端刚下线的那一个
+    /// （<c>TemplateRenderer</c> 的 <c>RetiredPlaceholders</c>），
+    /// 也是 agent 最容易照抄回手册的形态 —— 只禁前两种形态，它会从守卫的缝里溜过去。
     /// </para>
     /// <para>
     /// <b>errors.md 不在扫描范围内</b>：那里的 <c>"title"</c> 是
@@ -755,7 +761,7 @@ public sealed class SkillDocGuardTests
                 $"契约的 {name} 里还有 title —— 想法已经没有标题这个字段了。");
         }
 
-        // ② 手册：字段名（`title`）与 JSON 键（"title"）都不许再出现。
+        // ② 手册：字段名（`title`）、JSON 键（"title"）、占位符（{{idea.title}}）都不许再出现。
         foreach (var file in ManualFiles())
         {
             var lines = File.ReadAllLines(file);
@@ -776,15 +782,38 @@ public sealed class SkillDocGuardTests
     }
 
     /// <summary>
-    /// 这一行里出现了「想法的标题字段」吗（字段名 <c>`title`</c> 或 JSON 键 <c>"title"</c>）。
+    /// 这一行里出现了「想法的标题字段」吗（字段名 <c>`title</c>、JSON 键 <c>"title"</c>、
+    /// 占位符 <c>{{idea.title}}</c>）。
     /// </summary>
     /// <remarks>
-    /// 只认这两种形态：表格里的字段名与 JSON 示例里的键。
-    /// 散文里说的「标题」是中文，不在这两种形态之内。
+    /// <para>
+    /// 认这三种形态：表格里的字段名、JSON 示例里的键、webhook 模板里的占位符。
+    /// </para>
+    /// <para>
+    /// 占位符那条用正则（允许 <c>{{ idea.title }}</c> 这种带空格的写法）：
+    /// 只认字面量 <c>{{idea.title}}</c> 的话，加个空格就绕过去了。
+    /// </para>
+    /// <para>
+    /// <b>散文里说的中文「标题」不在这三种形态之内</b> ——
+    /// 手册得能用中文讲「标题字段这件事」（变更说明就要讲），禁掉中文等于禁止写变更说明。
+    /// </para>
     /// </remarks>
     private static bool MentionsTitleField(string line) =>
         line.Contains("`title`", StringComparison.Ordinal)
-        || line.Contains("\"title\"", StringComparison.Ordinal);
+        || line.Contains("\"title\"", StringComparison.Ordinal)
+        || RetiredPlaceholderPattern.IsMatch(line);
+
+    /// <summary>
+    /// 已下线的想法标题占位符：<c>{{idea.title}}</c>（允许中间带空格）。
+    /// </summary>
+    /// <remarks>
+    /// 服务端把这个占位符当**已退役**处理：模板里再写它，渲染成空串
+    /// （<c>TemplateRenderer</c> 的 <c>RetiredPlaceholders</c>）。
+    /// 手册里写回去就等于教 agent 配一个渲染成空的模板。
+    /// </remarks>
+    private static readonly Regex RetiredPlaceholderPattern = new(
+        @"\{\{\s*idea\.title\s*\}\}",
+        RegexOptions.CultureInvariant);
 
     /// <summary>契约里的 schema 定义（按名字取）。</summary>
     /// <remarks>
@@ -813,20 +842,25 @@ public sealed class SkillDocGuardTests
     ];
 
     /// <summary>
-    /// 手册里要扫的文件：索引页 + 四份 references（**不含 errors.md**）。
+    /// 手册里要扫的文件：语料（索引页 + references/ 下递归的全部 .md）**去掉 errors.md**。
     /// </summary>
     /// <remarks>
-    /// errors.md 里的 <c>"title"</c> 是 ProblemDetails 的字段名 ——
+    /// <para>
+    /// 复用 <see cref="Corpus"/> 而不是点名几份文件：将来 references/ 下**新加**一份 .md，
+    /// 它自动进守卫 —— 硬编码名单会让新文档不受这条守卫管
+    /// （既有那条语料守卫只管文件集合对不对，不管内容）。
+    /// </para>
+    /// <para>
+    /// <b>errors.md 要排除</b>：那里的 <c>"title"</c> 是 ProblemDetails 的字段名 ——
     /// 与想法的标题无关，扫进去就是误伤（规格 §4.5 专门点了这一条）。
+    /// </para>
     /// </remarks>
     private static string[] ManualFiles() =>
-    [
-        RepoPaths.SkillIndex,
-        Path.Combine(RepoPaths.SkillReferences, "api.md"),
-        Path.Combine(RepoPaths.SkillReferences, "calling.md"),
-        Path.Combine(RepoPaths.SkillReferences, "scenarios.md"),
-        Path.Combine(RepoPaths.SkillReferences, "webhooks.md"),
-    ];
+        Corpus()
+            .Select(file => file.Path)
+            .Where(path => !string.Equals(
+                path, RepoPaths.SkillErrorsDoc, StringComparison.Ordinal))
+            .ToArray();
 
     /// <summary>
     /// 手册里不许把路径条数写死。
@@ -910,6 +944,14 @@ public sealed class SkillDocGuardTests
         // 「一」是量词不是计数：这种话不是「路径总条数」的陈述。
         Assert.Empty(HardcodedCounts("每次只发一个接口"));
         Assert.Empty(HardcodedCounts("只有一条路径"));
+
+        // 「想法的标题字段」这个探测器：认得出三种形态
+        // （字段名、JSON 键、webhook 占位符），中文「标题」不算。
+        Assert.True(MentionsTitleField("| POST /api/ideas | `title` | 无标题 |"));
+        Assert.True(MentionsTitleField("{\"content\":\"x\",\"title\":\"y\"}"));
+        Assert.True(MentionsTitleField("\"text\":\"{{idea.title}}\""));
+        Assert.True(MentionsTitleField("\"text\":\"{{ idea.title }}\""));
+        Assert.False(MentionsTitleField("老客户端仍然带上标题字段会被静默忽略"));
 
         // 细节文档的提及：认得出中文文件名与带点的名字，也不把标点吃进路径。
         Assert.Equal(

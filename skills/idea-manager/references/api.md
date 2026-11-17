@@ -57,7 +57,8 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 
 - **返回三组**：响应是 `{ query, ideas, projects, tags }`，
   每组都是 `{ items, total, offset, limit, hasMore }`（不是裸数组）。
-- **按相关度排**：正文命中比标签、项目命中更相关。
+- **按相关度排**：正文与标签命中**同权**，项目名命中的权重低一档
+  （得分还受词频与文档长度影响，不是同权就一定同分）。
   这里的 `offset` 是「跳过最相关的前 N 条」，
   而 `GET /api/ideas` 的 `offset` 是「往回翻历史」（从最新一端数）—— **含义不一样**。
 - **默认含回收站**：软删的条目照样搜得到，每条带 `trashed` 标记；
