@@ -93,6 +93,27 @@ public sealed class TrashCleanupWorker(
     }
 
     /// <summary>
+    /// 三条清理条件。索引删除与业务删除是两条独立的语句，但条件必须出自同一份文本 ——
+    /// 各写一遍的话，改一处忘另一处就会留下孤儿索引行，而孤儿行占着 rowid、
+    /// rowid 会被复用，后果是索引串行（规格 §10.3）。
+    /// </summary>
+    private static class CleanupConditions
+    {
+        /// <summary>过期的顶层想法：已删，且它的项目没被删（对 idea 表）。</summary>
+        public const string TopLevelIdeas =
+            "deleted_at IS NOT NULL AND deleted_at < $cutoff " +
+            "AND project_id NOT IN (SELECT id FROM project WHERE deleted_at IS NOT NULL)";
+
+        /// <summary>过期容器项目下的全部想法（对 idea 表；想法的删除时刻可能比项目新）。</summary>
+        public const string ContainerIdeas =
+            "project_id IN (SELECT id FROM project WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff)";
+
+        /// <summary>过期的项目行（对 project 表）。</summary>
+        public const string ExpiredProjects =
+            "deleted_at IS NOT NULL AND deleted_at < $cutoff";
+    }
+
+    /// <summary>
     /// 执行一次清理，返回被删除的条目数（想法 + 项目）。
     /// </summary>
     /// <remarks>
@@ -107,6 +128,7 @@ public sealed class TrashCleanupWorker(
     /// 三条业务 <c>DELETE</c> 之前各有一条删索引的 <c>DELETE</c>：清理是裸 SQL，
     /// 绕过仓储层，不会触发仓储里的索引同步逻辑。索引行必须一起删 ——
     /// 孤儿索引行占着 rowid，而 rowid 会被复用（规格 §10.3）。
+    /// 两类语句的条件出自同一份常量（见 <see cref="CleanupConditions"/>）。
     /// </para>
     /// </remarks>
     public int Cleanup()
@@ -126,37 +148,31 @@ public sealed class TrashCleanupWorker(
         //    留着孤儿索引行不只是脏数据 —— 它占着 rowid，而 idea 表没有显式整数主键、
         //    rowid 会被复用，下一条新想法可能顶到它的位置上，索引就串了（规格 §10.3）。
         Execute(connection, transaction,
-            "DELETE FROM idea_fts WHERE rowid IN (SELECT rowid FROM idea " +
-            "WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff " +
-            "AND project_id NOT IN (SELECT id FROM project WHERE deleted_at IS NOT NULL));",
+            $"DELETE FROM idea_fts WHERE rowid IN (SELECT rowid FROM idea WHERE {CleanupConditions.TopLevelIdeas});",
             cutoff);
 
         var topLevelIdeas = Execute(connection, transaction,
-            "DELETE FROM idea WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff " +
-            "AND project_id NOT IN (SELECT id FROM project WHERE deleted_at IS NOT NULL);",
+            $"DELETE FROM idea WHERE {CleanupConditions.TopLevelIdeas};",
             cutoff);
 
         // 2) 过期容器项目下的全部想法（想法的删除时刻可能比项目新：
         //    比如想法被单独恢复过又删掉，但项目已经过期 —— 容器没了，想法也不能留下）。
         Execute(connection, transaction,
-            "DELETE FROM idea_fts WHERE rowid IN (SELECT rowid FROM idea " +
-            "WHERE project_id IN (SELECT id FROM project WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff));",
+            $"DELETE FROM idea_fts WHERE rowid IN (SELECT rowid FROM idea WHERE {CleanupConditions.ContainerIdeas});",
             cutoff);
 
         var containerIdeas = Execute(connection, transaction,
-            "DELETE FROM idea WHERE project_id IN " +
-            "(SELECT id FROM project WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff);",
+            $"DELETE FROM idea WHERE {CleanupConditions.ContainerIdeas};",
             cutoff);
 
         // 3) 过期的容器项目行（该项目下的 webhook 靠外键的 ON DELETE CASCADE 带走）。
         //    索引行同样先删：它靠 project 行取 rowid。
         Execute(connection, transaction,
-            "DELETE FROM project_fts WHERE rowid IN (SELECT rowid FROM project " +
-            "WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff);",
+            $"DELETE FROM project_fts WHERE rowid IN (SELECT rowid FROM project WHERE {CleanupConditions.ExpiredProjects});",
             cutoff);
 
         var projects = Execute(connection, transaction,
-            "DELETE FROM project WHERE deleted_at IS NOT NULL AND deleted_at < $cutoff;",
+            $"DELETE FROM project WHERE {CleanupConditions.ExpiredProjects};",
             cutoff);
 
         transaction.Commit();
