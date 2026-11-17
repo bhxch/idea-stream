@@ -98,6 +98,19 @@ public static class SearchIndex
 
         Execute(connection, transaction, "DELETE FROM idea_fts WHERE rowid = $rowid;", ("$rowid", rowId));
 
+        InsertIdeaRow(connection, transaction, rowId.Value, title, content, tags, projectName);
+    }
+
+    /// <summary>把一行想法索引数据写进 <c>idea_fts</c>（调用方负责先删掉旧行）。</summary>
+    private static void InsertIdeaRow(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        long rowId,
+        string? title,
+        string content,
+        IReadOnlyList<string> tags,
+        string projectName)
+    {
         Execute(
             connection,
             transaction,
@@ -137,6 +150,84 @@ public static class SearchIndex
 
         Execute(connection, transaction, "DELETE FROM idea_fts WHERE rowid = $rowid;", ("$rowid", rowId));
     }
+
+    /// <summary>
+    /// 重建一个项目下**全部**想法的索引行（含回收站里的）。
+    /// </summary>
+    /// <param name="connection">数据库连接。</param>
+    /// <param name="transaction">所在事务（可为 null = 不在事务里）。</param>
+    /// <param name="projectId">项目 id。</param>
+    /// <remarks>
+    /// 项目改名后「项目名」这一索引列整批失效，只能重写 —— 这件事归在索引这边，
+    /// 而不是放在某个业务仓储里（哪个仓储都不该认识另一家）。
+    /// <para>
+    /// ⚠️ <strong>调用方必须已经把项目行改成新名字</strong>：项目名从库里读
+    /// （<c>p.name</c>），改名先行才能读到新的。
+    /// </para>
+    /// <para>
+    /// 标签名在查询里显式排序后拼接，排序口径与仓储层读标签的那份一致
+    /// （<c>COLLATE NOCASE ASC</c>）—— 重建写出的索引文本必须与增量写写的逐字节一致，
+    /// 不然跨两个标签的短语查询会失灵。
+    /// </para>
+    /// </remarks>
+    public static void ReindexProjectIdeas(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string projectId)
+    {
+        // 先物化、后写入：读与写虽然在同一个连接上，但一边开着 reader 一边改表
+        // 不是值得依赖的行为，读全了再动索引表。
+        //
+        // 一条 SQL 把重写需要的四样凑齐：rowid（索引行靠它定位，直接从查询里拿，
+        // 省掉逐条 FindRowId 的往返）、标题、正文、排序后拼接的标签名、项目名。
+        var rows = new List<IdeaIndexRow>();
+
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText =
+                "SELECT i.rowid, i.title, i.content, p.name, " +
+                "(SELECT group_concat(name, ' ') FROM (" +
+                "    SELECT t.name FROM idea_tag it JOIN tag t ON t.id = it.tag_id " +
+                "    WHERE it.idea_id = i.id ORDER BY t.name COLLATE NOCASE ASC, t.name ASC)) " +
+                "FROM idea i JOIN project p ON p.id = i.project_id " +
+                "WHERE i.project_id = $projectId " +
+                "ORDER BY i.rowid;";
+            command.Parameters.AddWithValue("$projectId", projectId);
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var tagText = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+
+                // group_concat 用单个空格连接标签名，按空格切回标签名列表；
+                // 「按空格切开再按空格连回去」是恒等变换，
+                // 索引文本与直接切标签名原文完全一致。
+                var tags = tagText.Length == 0 ? Array.Empty<string>() : tagText.Split(' ');
+
+                rows.Add(new IdeaIndexRow(
+                    reader.GetInt64(0),
+                    reader.IsDBNull(1) ? null : reader.GetString(1),
+                    reader.GetString(2),
+                    tags,
+                    reader.GetString(3)));
+            }
+        }
+
+        foreach (var row in rows)
+        {
+            Execute(connection, transaction, "DELETE FROM idea_fts WHERE rowid = $rowid;", ("$rowid", row.RowId));
+            InsertIdeaRow(connection, transaction, row.RowId, row.Title, row.Content, row.Tags, row.ProjectName);
+        }
+    }
+
+    /// <summary>重写一条想法索引行要用的数据（rowid 直接来自查询，省一次 FindRowId 往返）。</summary>
+    private sealed record IdeaIndexRow(
+        long RowId,
+        string? Title,
+        string Content,
+        IReadOnlyList<string> Tags,
+        string ProjectName);
 
     /// <summary>
     /// 写入/更新一个项目的索引行。

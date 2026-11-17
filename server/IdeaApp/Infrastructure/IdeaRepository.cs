@@ -628,65 +628,6 @@ public sealed class IdeaRepository(SqliteDatabase db)
     }
 
     /// <summary>
-    /// 重建某个项目下**全部**想法的索引行（项目改名时用）。
-    /// </summary>
-    /// <param name="connection">数据库连接。</param>
-    /// <param name="transaction">所在事务（可为 null = 不在事务里）。</param>
-    /// <param name="projectId">项目 id。</param>
-    /// <param name="projectName">项目名（写进索引的项目名列）。</param>
-    /// <remarks>
-    /// 项目名进了想法的索引列，所以项目改名必须把该项目下所有想法的索引行重建一遍：
-    /// 不重建的话，搜旧项目名还能搜到、搜新项目名搜不到。
-    /// <para>
-    /// 回收站里的想法也要重建：软删不动索引，它们照样在索引里。
-    /// </para>
-    /// <para>
-    /// 想法数量是几百到几千级，逐条重建的成本可忽略。
-    /// </para>
-    /// </remarks>
-    internal static void ReindexProjectIdeas(
-        SqliteConnection connection,
-        SqliteTransaction? transaction,
-        string projectId,
-        string projectName)
-    {
-        foreach (var ideaId in ReadIdeaIdsByProject(connection, transaction, projectId))
-        {
-            // 标题与正文从库里读，标签用读回来的排序版（与回填路径一致）。
-            var idea = ReadIdea(connection, transaction, ideaId);
-
-            SearchIndex.UpsertIdea(
-                connection,
-                transaction,
-                ideaId,
-                idea.Title,
-                idea.Content,
-                idea.Tags,
-                projectName);
-        }
-    }
-
-    /// <summary>读某个项目下全部想法的 id（含回收站里的）。</summary>
-    private static IReadOnlyList<string> ReadIdeaIdsByProject(
-        SqliteConnection connection, SqliteTransaction? transaction, string projectId)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText =
-            "SELECT id FROM idea WHERE project_id = $projectId ORDER BY rowid;";
-        command.Parameters.AddWithValue("$projectId", projectId);
-
-        var ids = new List<string>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            ids.Add(reader.GetString(0));
-        }
-
-        return ids;
-    }
-
-    /// <summary>
     /// 读某个项目下的**全部**想法（含回收站里的），带上标签，
     /// 按 <c>updated_at ASC, id ASC</c> 排序。
     /// </summary>

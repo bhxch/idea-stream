@@ -140,7 +140,8 @@ public sealed class ProjectRepository(SqliteDatabase db)
             SearchIndex.UpsertProject(connection, transaction, id, name);
 
             // 该项目下所有想法的索引行（项目名列变了）。
-            IdeaRepository.ReindexProjectIdeas(connection, transaction, id, name);
+            // 重建归索引管（SearchIndex）：哪个业务仓储都不该认识另一家。
+            SearchIndex.ReindexProjectIdeas(connection, transaction, id);
 
             using var read = connection.CreateCommand();
             read.Transaction = transaction;
