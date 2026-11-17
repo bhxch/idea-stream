@@ -65,19 +65,25 @@ public sealed class SqliteDatabase
     public string DatabasePath { get; }
 
     /// <summary>
-    /// 打开一个连接，并已执行 <c>PRAGMA journal_mode=WAL</c>、<c>PRAGMA foreign_keys=ON</c>
-    /// 与 <c>PRAGMA busy_timeout</c>。
+    /// 打开一个连接，并已执行 <c>PRAGMA busy_timeout</c>、<c>PRAGMA journal_mode=WAL</c>
+    /// 与 <c>PRAGMA foreign_keys=ON</c>。
     /// </summary>
     /// <remarks>
     /// <para>
     /// <c>busy_timeout</c> 的值与设计文档 §16 的描述一致（30 秒）：写锁被占时 SQLite 自己等，
-    /// 而不是立刻回 <c>SQLITE_BUSY</c>。不设它的话，等待其实发生在 Microsoft.Data.Sqlite 的
-    /// 托管层重试里（CommandTimeout 驱动）——行为上等价，但「会等多久」这件事没有落在
-    /// 数据库一层，也不受这里控制；显式设掉，等待时长就成了本文件里可见、可调的一个事实。
+    /// 而不是立刻回 <c>SQLITE_BUSY</c>。
     /// </para>
     /// <para>
-    /// 单用户单实例下写锁竞争本来就少；这条主要防的是启动窗口里
-    /// 回填（<see cref="SearchIndexInitializer"/> 拿写锁重建索引）与第一个请求撞车的抖动。
+    /// ⚠️ <strong>它没有改变任何可观察行为</strong>：Microsoft.Data.Sqlite 的托管层本来就会重试
+    /// （<c>CommandTimeout</c> 默认 30 秒 —— 实测：另一个连接占着写锁时，
+    /// 托管层会一直重试到 <c>CommandTimeout</c> 用完才抛 <c>SQLITE_BUSY</c>）。
+    /// 显式设这条 pragma 只是把「等多久」这件事显式化到数据库一层，让它在本文件里可见、可调；
+    /// 它**不是**「修掉了 400 抖动」之类的修复。
+    /// </para>
+    /// <para>
+    /// <strong>为什么它是第一条 pragma</strong>：<c>journal_mode=WAL</c> 的切换是要拿锁的操作
+    /// （从 delete 模式切到 WAL 要改库头）。排在 <c>busy_timeout</c> 后面的话，
+    /// 那一刻还没有超时设置 —— 拿不到锁就直接 <c>SQLITE_BUSY</c>，享受不到这个等待。
     /// </para>
     /// </remarks>
     public SqliteConnection Open()
@@ -90,6 +96,14 @@ public sealed class SqliteDatabase
 
         connection.Open();
 
+        // busy_timeout 必须是第一条：journal_mode=WAL 的切换要拿锁，
+        // 排在它后面的话，切换那一刻还没有超时设置。
+        using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA busy_timeout=30000";
+            pragma.ExecuteNonQuery();
+        }
+
         using (var pragma = connection.CreateCommand())
         {
             pragma.CommandText = "PRAGMA journal_mode=WAL";
@@ -99,12 +113,6 @@ public sealed class SqliteDatabase
         using (var pragma = connection.CreateCommand())
         {
             pragma.CommandText = "PRAGMA foreign_keys=ON";
-            pragma.ExecuteNonQuery();
-        }
-
-        using (var pragma = connection.CreateCommand())
-        {
-            pragma.CommandText = "PRAGMA busy_timeout=30000";
             pragma.ExecuteNonQuery();
         }
 

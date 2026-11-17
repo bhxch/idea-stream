@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using IdeaApp.Infrastructure;
 using Microsoft.Data.Sqlite;
@@ -98,6 +99,30 @@ public sealed class DatabaseInitTests : IDisposable
 
         command.CommandText = "PRAGMA foreign_keys";
         Assert.Equal(1L, Convert.ToInt64(command.ExecuteScalar()));
+    }
+
+    /// <summary>
+    /// 打开连接后 <c>busy_timeout</c> 必须是 30 秒。
+    /// </summary>
+    /// <remarks>
+    /// SQLite 的<b>默认</b> busy_timeout 是 <b>0</b>（实测：裸连接查
+    /// <c>PRAGMA busy_timeout</c> 得到 0）—— 也就是写锁被占时立刻回
+    /// <c>SQLITE_BUSY</c>，不等。Microsoft.Data.Sqlite 的托管层会重试
+    /// （<c>CommandTimeout</c> 默认 30 秒），但那是在托管层里发生的，
+    /// 数据库层自己看不到这个超时值。显式设掉之后，它就是这条连接上可查的事实。
+    /// <para>
+    /// 这条断言守着「显式设了」这件事本身：删掉那条 pragma，值会回到 0，测试立刻红。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Open_sets_the_busy_timeout_to_30_seconds()
+    {
+        using var connection = Database.Open();
+
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA busy_timeout";
+
+        Assert.Equal(30000L, Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture));
     }
 
     [Fact]
