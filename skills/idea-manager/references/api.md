@@ -27,8 +27,8 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 | 方法 + 路径 | 说明 | 入参 | 请求体字段 | 成功状态码 |
 |---|---|---|---|---|
 | GET /api/ideas | 列表（裸数组，可带关键词与往回翻的分页） | `projectId`、`status`、`tags`、`tagMode`、`q`、`limit`、`offset` | 无 | 200 |
-| POST /api/ideas | 新建一条想法 | 无 | `projectId`、`content`、`title`、`tags` | 201 |
-| PATCH /api/ideas/{id} | 改标题/正文 | 路径参数 `id` | `title`、`content` | 200 |
+| POST /api/ideas | 新建一条想法 | 无 | `projectId`、`content`、`tags` | 201 |
+| PATCH /api/ideas/{id} | 改正文 | 路径参数 `id` | `content` | 200 |
 | DELETE /api/ideas/{id} | 删（进回收站） | 路径参数 `id` | 无 | 204 |
 | PUT /api/ideas/{id}/tags | **覆盖式**设标签 | 路径参数 `id` | `tags`（数组） | 200 |
 | POST /api/ideas/{id}/complete | 标记完成 / 取消完成 | 路径参数 `id` | `done`（布尔，**必填**） | 200 |
@@ -57,7 +57,7 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 
 - **返回三组**：响应是 `{ query, ideas, projects, tags }`，
   每组都是 `{ items, total, offset, limit, hasMore }`（不是裸数组）。
-- **按相关度排**：标题命中比正文命中更相关。
+- **按相关度排**：正文命中比标签、项目命中更相关。
   这里的 `offset` 是「跳过最相关的前 N 条」，
   而 `GET /api/ideas` 的 `offset` 是「往回翻历史」（从最新一端数）—— **含义不一样**。
 - **默认含回收站**：软删的条目照样搜得到，每条带 `trashed` 标记；
@@ -90,7 +90,7 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
   `咖啡 水温` = 有「咖啡」**且**有「水温」。
 - **只有标点的查询 = 没有关键词**：不过滤，全部返回。
   `GET /api/ideas?q=...` 返回全部，`GET /api/search?q=...` 三组都返回全部。
-- **搜的不只是正文**：标题、正文、标签名、项目名都在索引里 ——
+- **搜的不只是正文**：正文、标签名、项目名都在索引里 ——
   按标签名或项目名也能搜到想法。
 
 ### 批量与合并
@@ -100,7 +100,7 @@ curl -sS "$IDEA_BASE_URL/openapi/v1.json" -u "$IDEA_USER:$IDEA_PASS"
 | POST /api/ideas/bulk/complete | 批量标记完成 / 取消完成 | `ids`（数组）、`done`（布尔，**必填**） | 200 |
 | POST /api/ideas/bulk/tags | 批量加标签（默认**并集追加**；`replace: true` = **覆盖式**） | `ids`（数组）、`tags`（数组）、`replace`（布尔） | 200 |
 | POST /api/ideas/bulk/delete | 批量删除（进回收站） | `ids`（数组） | 200 |
-| POST /api/ideas/merge | 多条合并成一条（源想法**硬删**） | `ids`（数组）、`content`、`title` | 200 |
+| POST /api/ideas/merge | 多条合并成一条（源想法**硬删**） | `ids`（数组）、`content` | 200 |
 
 `replace` 不给（或给 `false`）是**并集追加**（原有标签还在）；
 给 `true` 才是**覆盖式** —— 那时 `tags` 给空集就等于**清空全部标签**。
@@ -180,9 +180,7 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
 |---|---|---|---|---|
 | POST /api/ideas | `projectId` | 落到内置收件箱 | 空串 = 同样落收件箱 | 用它 |
 | POST /api/ideas | `content` | **400 `invalid_content`**（正文必填） | 空白 = 400 | 用它 |
-| POST /api/ideas | `title` | 无标题 | 空串 = 无标题 | 用它 |
 | POST /api/ideas | `tags` | 不带标签 | 空数组 = 不带标签 | 用它 |
-| PATCH /api/ideas/{id} | `title` | 不改 | 空串 = **真的清成无标题** | 改成它 |
 | PATCH /api/ideas/{id} | `content` | 不改 | 空串 / 空白 = **400**（正文不能为空，清不掉） | 改成它 |
 | PATCH /api/projects/{id} | `name` | **400 `invalid_project_name`**（必填） | 空串 = 400 | 改成它 |
 | POST /api/projects | `name` | **400 `invalid_project_name`** | 空串 = 400 | 用它 |
@@ -196,7 +194,6 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
 | POST /api/ideas/bulk/delete | `ids` | 空数组 = 200 + `[]`（**什么都没删**） | 空数组 = 同上 | 用它 |
 | POST /api/ideas/merge | `ids` | **400 `invalid_merge_selection`**（至少两条） | 空数组 = 400 | 用它 |
 | POST /api/ideas/merge | `content` | 服务端拼接（正文之间空行分隔） | 空串 = 400 `invalid_content` | 用它 |
-| POST /api/ideas/merge | `title` | 用第一条源想法的标题 | 空串 = 无标题 | 用它 |
 | PUT /api/settings/{key} | `value` | **400 `invalid_sort_mode`** | 空串 = 400 | 用它 |
 | POST /api/webhooks | `name` / `url` / `scope` / `bodyTemplate` | **400**（各有各的码） | 400 | 用它 |
 | POST /api/webhooks | `events` | 不订阅任何事件（合法） | 空数组 = 同上 | 用它 |
@@ -204,6 +201,9 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
 | POST /api/webhooks | `method` | `POST` | 空串 = `POST` | 用它 |
 | POST /api/webhooks | `secret` | 没有密钥 | 空串 = 没有密钥 | 用它 |
 | PATCH /api/webhooks/{id} | 全部键 | 不改 | 见 `webhooks.md` 的三态表 | 用它 |
+
+**老客户端仍然带上标题字段会被静默忽略**（内容正常保存、不报错）——
+想法已经没有标题这个字段了：请求体里多带的那个键，服务端直接丢掉。
 
 补充：
 
@@ -229,7 +229,7 @@ webhook 的字段语义（遮蔽、scope 对齐、body 模板、事件类型）�
   （`GET /api/search` 是例外：它是 `{ query, ideas, projects, tags }`，见上面。）
 - 想法列表的排序恒为 `updated_at` 升序、`id` 升序（**最老的在顶、最新的在底**）。
 - 带**有效**关键词（`q` 非空、且不全是标点）时每条想法多一个 `matches` 数组（命中位置）：
-  `{ field, start, length }`，`field` 是 `title` / `content` / `tags` / `project`，
+  `{ field, start, length }`，`field` 是 `content` / `tags` / `project`，
   `start` 与 `length` 是那个字段里的 **UTF-16 偏移**。
   **没有有效关键词时没有这个键**（不给 `q`、只给空白、只给标点都没有）——
   键在不在，就是「这次是不是带关键词」的信号。

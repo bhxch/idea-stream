@@ -68,7 +68,7 @@ webhook 的 `url` 里可能有凭据（Telegram 的 bot token 就在 URL 的路�
 | `{{event}}` | 事件类型（如 `idea.created`） |
 | `{{timestamp}}` | 事件时间（ISO 8601） |
 | `{{project}}` / `{{project.id}}` | 项目名 / 项目 id |
-| `{{idea.id}}` / `{{idea.title}}` / `{{idea.content}}` | 想法的 id / 标题 / 正文 |
+| `{{idea.id}}` / `{{idea.content}}` | 想法的 id / 正文 |
 | `{{idea.tags}}` | 标签（逗号分隔） |
 | `{{idea.done}}` | 是否完成（`true` / `false`） |
 | `{{changed}}` | 这次改了哪些字段（逗号分隔） |
@@ -86,7 +86,7 @@ webhook 的 `url` 里可能有凭据（Telegram 的 bot token 就在 URL 的路�
 `project.created`、`project.updated`、`project.deleted`。
 
 `events` 给空数组是合法的（= 不订阅任何事件）。注意 `idea.updated` 覆盖
-改正文/标题、换标签、标记完成；`idea.merged` 是合并（源想法被硬删）。
+改正文、换标签、标记完成；`idea.merged` 是合并（源想法被硬删）。
 
 ## 其它字段
 
@@ -123,7 +123,7 @@ cat > webhook.json <<'JSON'
   "url": "https://api.telegram.org/bot<BOT_TOKEN>/sendMessage",
   "method": "POST",
   "headers": {},
-  "bodyTemplate": "{\"chat_id\":-1003800671233,\"message_thread_id\":89,\"text\":\"{{idea.title}}: {{idea.content}}\"}",
+  "bodyTemplate": "{\"chat_id\":-1003800671233,\"message_thread_id\":89,\"text\":\"{{idea.content}}\"}",
   "events": ["idea.created", "idea.updated"],
   "scope": "global"
 }

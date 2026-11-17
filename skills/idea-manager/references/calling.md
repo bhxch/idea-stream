@@ -37,7 +37,7 @@
 
 ```bash
 cat > body.json <<'JSON'
-{"content":"引号 \" 反斜杠 \\ 换行\n第二行","title":"带特殊字符","tags":["笔记"]}
+{"content":"引号 \" 反斜杠 \\ 换行\n第二行","tags":["笔记"]}
 JSON
 
 curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas" \
@@ -51,7 +51,7 @@ curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas" \
 curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas" \
   -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
-{"content":"引号 \" 反斜杠 \\ 换行\n第二行","title":"带特殊字符","tags":["笔记"]}
+{"content":"引号 \" 反斜杠 \\ 换行\n第二行","tags":["笔记"]}
 JSON
 ```
 

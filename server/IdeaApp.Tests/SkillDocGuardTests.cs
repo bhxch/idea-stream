@@ -718,6 +718,117 @@ public sealed class SkillDocGuardTests
     }
 
     /// <summary>
+    /// 想法**没有标题**这个字段：契约与手册都不许再出现它。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 别的守卫只比对端点路径、错误码与文档结构 ——
+    /// <b>没有任何一条比对请求体/响应体的字段</b>。删掉一个字段既不改路径也不改错误码，
+    /// 于是「契约改了字段而手册没跟上」在字段层面<b>一条守卫都红不了</b>：
+    /// agent 照着手册里的旧字段表发请求，服务端静默忽略那个字段。
+    /// </para>
+    /// <para>
+    /// 这条守卫补上那一层：契约的五个想法相关 schema 里不许有 <c>title</c> 属性，
+    /// 手册里也不许再把这个字段当字段名（<c>`title`</c>）或 JSON 键（<c>"title"</c>）写出来。
+    /// </para>
+    /// <para>
+    /// <b>errors.md 不在扫描范围内</b>：那里的 <c>"title"</c> 是
+    /// <b>ProblemDetails 的字段名</b>（与想法的标题无关），别误伤。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Manual_and_contract_have_no_idea_title_field()
+    {
+        // ① 契约：五个想法相关的 schema 里都不许有 title 属性。
+        var schemas = ContractSchemas();
+
+        foreach (var name in IdeaSchemas)
+        {
+            Assert.True(
+                schemas.TryGetValue(name, out var schema),
+                $"契约里没有 {name} 这个 schema —— 守卫没东西可守，先查契约文件。");
+
+            var properties = schema.GetProperty("properties");
+
+            Assert.False(
+                properties.TryGetProperty("title", out _),
+                $"契约的 {name} 里还有 title —— 想法已经没有标题这个字段了。");
+        }
+
+        // ② 手册：字段名（`title`）与 JSON 键（"title"）都不许再出现。
+        foreach (var file in ManualFiles())
+        {
+            var lines = File.ReadAllLines(file);
+
+            for (var index = 0; index < lines.Length; index++)
+            {
+                if (!MentionsTitleField(lines[index]))
+                {
+                    continue;
+                }
+
+                Assert.Fail(
+                    $"{Path.GetFileName(file)} 第 {index + 1} 行还在讲 title 字段：{lines[index].Trim()} —— "
+                    + "想法已经没有标题这个字段了，手册与契约必须一致"
+                    + "（errors.md 里的 ProblemDetails.title 不算）。");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 这一行里出现了「想法的标题字段」吗（字段名 <c>`title`</c> 或 JSON 键 <c>"title"</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 只认这两种形态：表格里的字段名与 JSON 示例里的键。
+    /// 散文里说的「标题」是中文，不在这两种形态之内。
+    /// </remarks>
+    private static bool MentionsTitleField(string line) =>
+        line.Contains("`title`", StringComparison.Ordinal)
+        || line.Contains("\"title\"", StringComparison.Ordinal);
+
+    /// <summary>契约里的 schema 定义（按名字取）。</summary>
+    /// <remarks>
+    /// 取出来的 <see cref="JsonElement"/> 要 **clone 一份**：
+    /// 契约文档在这个方法返回后就被 dispose 了，元素跟着失效。
+    /// </remarks>
+    private static Dictionary<string, JsonElement> ContractSchemas()
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(RepoPaths.Contract));
+
+        return document.RootElement
+            .GetProperty("components")
+            .GetProperty("schemas")
+            .EnumerateObject()
+            .ToDictionary(property => property.Name, property => property.Value.Clone());
+    }
+
+    /// <summary>想法相关的 schema 名字（契约里必须都有，且都不许有 title 属性）。</summary>
+    private static readonly string[] IdeaSchemas =
+    [
+        "IdeaDto",
+        "IdeaSnapshot",
+        "CreateIdeaRequest",
+        "UpdateIdeaRequest",
+        "MergeIdeasRequest",
+    ];
+
+    /// <summary>
+    /// 手册里要扫的文件：索引页 + 四份 references（**不含 errors.md**）。
+    /// </summary>
+    /// <remarks>
+    /// errors.md 里的 <c>"title"</c> 是 ProblemDetails 的字段名 ——
+    /// 与想法的标题无关，扫进去就是误伤（规格 §4.5 专门点了这一条）。
+    /// </remarks>
+    private static string[] ManualFiles() =>
+    [
+        RepoPaths.SkillIndex,
+        Path.Combine(RepoPaths.SkillReferences, "api.md"),
+        Path.Combine(RepoPaths.SkillReferences, "calling.md"),
+        Path.Combine(RepoPaths.SkillReferences, "scenarios.md"),
+        Path.Combine(RepoPaths.SkillReferences, "webhooks.md"),
+    ];
+
+    /// <summary>
     /// 手册里不许把路径条数写死。
     /// </summary>
     /// <remarks>

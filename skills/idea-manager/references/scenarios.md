@@ -8,7 +8,7 @@
 curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas" \
   -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
-{"content":"引号 \" 反斜杠 \\ 换行\n第二行\n<b>标签</b>","title":"带特殊字符","tags":["笔记"]}
+{"content":"引号 \" 反斜杠 \\ 换行\n第二行\n<b>标签</b>","tags":["笔记"]}
 JSON
 ```
 
@@ -108,7 +108,7 @@ JSON
 curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas/merge" \
   -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
-{"ids":["0198f0a1b2c3d4e5f60718293a4b5c6d","0198f0a1b2c3d4e5f60718293a4b5c6e"],"content":"合并后的正文","title":"合并"}
+{"ids":["0198f0a1b2c3d4e5f60718293a4b5c6d","0198f0a1b2c3d4e5f60718293a4b5c6e"],"content":"合并后的正文"}
 JSON
 ```
 
@@ -132,16 +132,15 @@ curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas/0198f0a1b2c3d4e5f607
 ## 8. 改一条想法（只发要改的字段）
 
 ```bash
-# 只改标题：正文键整个别发
+# 只改正文：其它键整个别发
 curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/0198f0a1b2c3d4e5f60718293a4b5c6d" \
   -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
-{"title":"新标题"}
+{"content":"新正文"}
 JSON
 ```
 
 发 `null` = 不改；**发空串是 400 `invalid_content`**（正文不能为空，清不掉）。
-想清掉标题给空串 —— 那是「清成无标题」。
 
 ## 9. 配一个 Telegram webhook
 
@@ -157,7 +156,7 @@ cat > webhook.json <<'JSON'
   "url": "https://api.telegram.org/bot<BOT_TOKEN>/sendMessage",
   "method": "POST",
   "headers": {},
-  "bodyTemplate": "{\"chat_id\":-1003800671233,\"message_thread_id\":89,\"text\":\"{{idea.title}}: {{idea.content}}\"}",
+  "bodyTemplate": "{\"chat_id\":-1003800671233,\"message_thread_id\":89,\"text\":\"{{idea.content}}\"}",
   "events": ["idea.created", "idea.updated"],
   "scope": "global"
 }
