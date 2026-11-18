@@ -1373,11 +1373,17 @@ onBeforeUnmount(() => {
 .home__topbar-title {
   margin: 0;
   font-size: 20px;
+  /* 标题不参与压缩：空间不够时压项目名，不压标题。 */
+  flex: none;
 }
 
 /* 窄屏才显示项目下拉（宽屏用侧栏，不重复）：见下面的媒体查询。 */
 .home__topbar-project {
   display: none;
+  /*
+   * min-width: 0 —— 这一格允许被压窄（否则项目名很长时它顶不动别人，
+   * 整个顶栏会撑出视口）；压窄之后由组件里的省略号截断名字。
+   */
   min-width: 0;
 }
 
@@ -1386,6 +1392,8 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   margin-left: auto;
+  /* 动作区不参与压缩：🔍 与 ⋯ 必须一直点得到。 */
+  flex: none;
 }
 
 /* 宽屏的搜索框在过滤行里，这个只在窄屏出现。 */

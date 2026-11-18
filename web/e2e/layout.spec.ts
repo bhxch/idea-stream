@@ -670,6 +670,63 @@ test.describe('排版与响应式', () => {
     await expectTapTarget(link, '导航条上的「想法」入口');
   });
 
+  // ── 长项目名：窄屏顶栏不能被它撑破 ──────────────────────────────────────
+
+  test('窄屏：长项目名不撑破顶栏（触发器截断、不压到动作区）', async ({ page, seed }) => {
+    // 一个很长的项目名：触发器里放不下（窄屏顶栏只有一行）。
+    const longName = '这是一个特别长的项目名字它长得足以把窄屏顶栏整个撑破看看会不会溢出';
+    await seed.project(longName);
+    await page.setViewportSize({
+      width: MOBILE_VIEWPORT.width,
+      height: MOBILE_VIEWPORT.height,
+    });
+    await page.goto('/');
+    await expect(page.getByRole('heading', { name: '想法', exact: true })).toBeVisible();
+
+    // 切到那个项目：窄屏用顶栏里的下拉切（侧栏在窄屏是藏着的）。
+    await page.locator('.project-dropdown__trigger').click();
+    const panel = page.locator('.project-dropdown__panel');
+    await expect(panel).toBeVisible();
+    // 面板本身也不能超出视口（长名字在面板里同样要截断）。
+    const panelBox = await panel.boundingBox();
+    expect(panelBox, '量不到项目下拉面板的位置').not.toBeNull();
+    expect(
+      panelBox!.x + panelBox!.width,
+      `项目下拉面板的右边缘（${panelBox!.x + panelBox!.width}px）超出了视口（${MOBILE_VIEWPORT.width}px）`,
+    ).toBeLessThanOrEqual(MOBILE_VIEWPORT.width);
+
+    await panel.getByRole('button', { name: longName }).click();
+
+    // 触发器上现在是那个长名字：它必须被截断，且不许压到动作区（🔍 与 ⋯）。
+    const trigger = page.locator('.project-dropdown__trigger');
+    const actions = page.locator('.home__topbar-actions');
+    const triggerBox = await trigger.boundingBox();
+    const actionsBox = await actions.boundingBox();
+    expect(triggerBox, '量不到项目下拉触发器的位置').not.toBeNull();
+    expect(actionsBox, '量不到顶栏动作区的位置').not.toBeNull();
+
+    expect(
+      triggerBox!.x + triggerBox!.width,
+      `项目下拉触发器的右边缘（${triggerBox!.x + triggerBox!.width}px）超出了视口（${MOBILE_VIEWPORT.width}px）`,
+    ).toBeLessThanOrEqual(MOBILE_VIEWPORT.width);
+    expect(
+      triggerBox!.x + triggerBox!.width,
+      '项目下拉触发器压到了顶栏动作区（🔍 / ⋯）上',
+    ).toBeLessThanOrEqual(actionsBox!.x);
+
+    // 名字确实被截断了（否则上面两条断言是空转的）。
+    const current = await page.locator('.project-dropdown__current').evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      textOverflow: getComputedStyle(el).textOverflow,
+    }));
+    expect(current.textOverflow).toBe('ellipsis');
+    expect(
+      current.scrollWidth,
+      '项目名没有被截断（触发器比视口还宽的话，断言是空转的）',
+    ).toBeGreaterThan(current.clientWidth);
+  });
+
   // ── 底部输入框的边框 ──────────────────────────────────────────────────
 
   test('底部输入框只有一层边框：外壳不画边框，输入框自己画一层', async ({ page }) => {

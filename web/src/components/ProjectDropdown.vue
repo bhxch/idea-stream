@@ -115,15 +115,36 @@ onBeforeUnmount(() => {
 <style scoped>
 .project-dropdown {
   position: relative;
+  /* 触发器不许比容器宽：名字太长时靠省略号截断，不把顶栏撑破。 */
+  max-width: 100%;
+}
+
+/*
+ * 触发器：项目名可能被截断。
+ *
+ * 三件要一起：触发器自己是 inline-flex 且不许比容器宽（`max-width: 100%`），
+ * 溢出部分由它 `overflow: hidden` 裁掉；名字那一段（.project-dropdown__current）
+ * 必须是**块级盒** —— 行内盒上 overflow / text-overflow 不生效，
+ * 只写 text-overflow 是白写（名字会一路顶到 🔍 与 ⋯ 上，甚至顶出视口）。
+ */
+.project-dropdown__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .project-dropdown__current {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .project-dropdown__caret {
+  /* 箭头不许被挤掉：它是「这里能下拉」的提示。 */
+  flex: none;
   color: var(--muted);
   font-size: 11px;
 }
@@ -131,7 +152,9 @@ onBeforeUnmount(() => {
 /*
  * 面板：浮在触发器下面的一层。
  *
- * 做法照 TagFilter 的面板（同一类东西，别写出两套）。
+ * 面板样式照 TagFilter 的面板（CSS 层面）：绝对定位、边框、底色、阴影用同一套。
+ * （「点外面收起 / Esc 收起」那段 JS 逻辑与 TagFilter 逐字相同 ——
+ *  Task 13 会连同 TagFilter 一起收敛成 web/src/composables/useDropdown.ts。）
  */
 .project-dropdown__panel {
   position: absolute;
@@ -141,7 +164,14 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /*
+   * 面板宽度的上限：min-width 给它一个「至少这么宽」的底线，
+   * 而它自己的宽度是「内容宽」与「能放下的宽度」里小的那个 ——
+   * 项目名很长时这一项会换行（见 .project-dropdown__item），
+   * 所以面板不会一路撑到视口外面去。
+   */
   min-width: 180px;
+  max-width: calc(100vw - 24px);
   max-height: 260px;
   overflow-y: auto;
   padding: 8px;
@@ -152,14 +182,18 @@ onBeforeUnmount(() => {
 }
 
 .project-dropdown__item {
-  display: flex;
-  align-items: center;
+  /*
+   * 项目名不截断，而是**换行**：面板里要能看清完整的名字
+   * （触发器上那个名字被截断了，这里是它唯一的全文出口）。
+   * `overflow-wrap: anywhere` 让没有空格的长串也能断行。
+   */
+  display: block;
   width: 100%;
   padding: 4px 8px;
   border: none;
   border-radius: 6px;
   text-align: left;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .project-dropdown__item:hover {
