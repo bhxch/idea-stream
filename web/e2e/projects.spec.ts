@@ -6,7 +6,7 @@
  *   - 内置收件箱（inbox）不可删除；
  *   - 项目排序：切到手动排序 → 拖拽重排 → sortOrder 变了 → 刷新后仍保持
  *     （项目管理页与宽屏侧栏两处都能拖）；
- *   - 宽屏（侧栏）与窄屏（顶部 Tab）两种形态下切换项目、当前项目高亮；
+ *   - 宽屏（侧栏）与窄屏（顶栏的项目下拉）两种形态下切换项目、当前项目高亮；
  *   - 项目里想法的标签增删与标签补全；
  *   - 项目级 webhook 页的入口（每个项目行一个「Webhook」链接）；
  *   - 空状态文案。
@@ -50,7 +50,7 @@ test.describe('项目管理页：新建 / 改名 / 删除', () => {
     expect((await api.listProjects()).length).toBe(before);
   });
 
-  test('新建的项目在宽屏侧栏与窄屏顶部 Tab 里都能看到', async ({ page }) => {
+  test('新建的项目在宽屏侧栏与窄屏顶栏的项目下拉里都能看到', async ({ page }) => {
     await page.goto('/projects');
     await page.getByLabel('新项目名称').fill('侧栏也要看到');
     await page.getByRole('button', { name: '新建项目' }).click();
@@ -62,10 +62,13 @@ test.describe('项目管理页：新建 / 改名 / 删除', () => {
     await expect(sidebar).toBeVisible();
     await expect(sidebar.getByRole('button', { name: /侧栏也要看到/ })).toBeVisible();
 
-    // 窄屏：同一份数据收成顶部的 Tab。
+    // 窄屏：同一份数据收成顶栏里的项目下拉（浮层，不滚动）。
     await page.setViewportSize({ width: 600, height: 800 });
-    const tabs = page.getByRole('navigation');
-    await expect(tabs.getByRole('button', { name: /侧栏也要看到/ })).toBeVisible();
+    await page.locator('.project-dropdown__trigger').click();
+    await expect(page.locator('.project-dropdown__panel')).toBeVisible();
+    await expect(
+      page.locator('.project-dropdown__panel').getByRole('button', { name: '侧栏也要看到' }),
+    ).toBeVisible();
   });
 
   test('重命名项目：保存后页面与后端都换成新名字', async ({ page, api, seed }) => {
@@ -263,8 +266,8 @@ test.describe('项目排序', () => {
   });
 });
 
-test.describe('宽屏侧栏与窄屏顶部 Tab', () => {
-  test('宽屏：侧栏可见、Tab 条不可见；点侧栏切项目并高亮', async ({ page, seed }) => {
+test.describe('宽屏侧栏与窄屏顶栏的项目下拉', () => {
+  test('宽屏：侧栏可见、顶栏下拉不可见；点侧栏切项目并高亮', async ({ page, seed }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     const a = await seed.project('项目甲');
     await seed.idea('甲的想法', { projectId: a.id });
@@ -273,10 +276,11 @@ test.describe('宽屏侧栏与窄屏顶部 Tab', () => {
 
     await page.goto('/');
 
-    // 宽屏下只有一个导航地标露着（窄屏的 Tab 条被媒体查询藏了）。
+    // 宽屏下只有一个导航地标露着（窄屏的项目下拉是个按钮，不是地标）。
     await expect(page.getByRole('navigation')).toHaveCount(1);
     const sidebar = page.getByRole('navigation', { name: '项目' });
     await expect(sidebar).toBeVisible();
+    await expect(page.locator('.project-dropdown__trigger')).toBeHidden();
 
     await page.getByRole('button', { name: /项目甲/ }).click();
 
@@ -295,7 +299,7 @@ test.describe('宽屏侧栏与窄屏顶部 Tab', () => {
     await expect(page.getByRole('button', { name: /项目甲/ })).not.toHaveClass(/is-active/);
   });
 
-  test('窄屏：Tab 条可见、侧栏不可见；点 Tab 切项目并高亮', async ({ page, seed }) => {
+  test('窄屏：顶栏的项目下拉可见、侧栏不可见；点下拉里的项目切项目', async ({ page, seed }) => {
     await page.setViewportSize({ width: 600, height: 800 });
     const a = await seed.project('项目甲');
     await seed.idea('甲的想法', { projectId: a.id });
@@ -304,19 +308,22 @@ test.describe('宽屏侧栏与窄屏顶部 Tab', () => {
 
     await page.goto('/');
 
-    // 窄屏下也只有一个导航地标露着（这次是顶部的 Tab 条）。
-    await expect(page.getByRole('navigation')).toHaveCount(1);
-    const tabs = page.getByRole('navigation');
-    await expect(tabs.getByRole('button', { name: /项目甲/ })).toBeVisible();
+    // 窄屏下没有导航地标露着（侧栏被藏了，项目切换在下拉里）。
+    await expect(page.getByRole('navigation')).toHaveCount(0);
+    const trigger = page.locator('.project-dropdown__trigger');
+    await expect(trigger).toBeVisible();
+    await expect(trigger).toHaveText(/全部项目/);
 
-    await tabs.getByRole('button', { name: /项目甲/ }).click();
+    await trigger.click();
+    const panel = page.locator('.project-dropdown__panel');
+    await expect(panel).toBeVisible();
+    await panel.getByRole('button', { name: '项目甲' }).click();
 
     await expect(page.getByText('甲的想法')).toBeVisible();
     await expect(page.getByText('乙的想法')).toBeHidden();
 
-    // 当前项目高亮（Tab 上也是同一个 is-active 标记）。
-    await expect(tabs.getByRole('button', { name: /项目甲/ })).toHaveClass(/is-active/);
-    await expect(tabs.getByRole('button', { name: /^全部/ })).not.toHaveClass(/is-active/);
+    // 当前项目显示在触发器上（面板点了就收起，触发器上的名字是唯一可见的那个）。
+    await expect(page.locator('.project-dropdown__trigger')).toHaveText(/项目甲/);
   });
 });
 

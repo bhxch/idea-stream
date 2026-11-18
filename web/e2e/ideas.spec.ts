@@ -11,7 +11,7 @@
  * - 不用固定时长等待，一律等状态（toBeVisible / toHaveCount / toHaveText）；
  * - 选择器优先 role / 文本 / label，其次是应用**已有**的钩子
  *   （data-idea-id、aria-label="选择 …" 等）——想法条目上还没有 data-testid
- *   （项目侧栏与 Tab 条上有了，见 projects.spec.ts）。
+ *   （项目侧栏与窄屏的项目下拉上有了，见 projects.spec.ts）。
  */
 import { test, expect } from './fixtures';
 import type { Locator, Page } from '@playwright/test';

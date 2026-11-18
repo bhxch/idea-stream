@@ -275,7 +275,13 @@ beforeEach(async () => {
 
   router = createRouter({
     history: createMemoryHistory(),
-    routes: [{ path: '/', component: { template: '<div />' } }],
+    // 「⋯」菜单里的「回收站」「Webhook」要跳到这两个路由上，
+    // 路由表里没有它们的话 push 会被 vue-router 拒绝（路径不变，断言就假绿）。
+    routes: [
+      { path: '/', component: { template: '<div />' } },
+      { path: '/trash', component: { template: '<div />' } },
+      { path: '/webhooks', component: { template: '<div />' } },
+    ],
   });
   await router.push('/');
   await router.isReady();
@@ -524,15 +530,34 @@ function stubItemRects(): () => void {
 }
 
 describe('HomePage', () => {
-  it('同一份项目数据渲染两次：宽屏侧栏与窄屏 Tab 都在（互斥显示靠 CSS 媒体查询）', async () => {
+  it('同一份项目数据渲染两次：宽屏侧栏与窄屏的项目下拉都在（互斥显示靠 CSS 媒体查询）', async () => {
     const wrapper = mount(HomePage);
     await flushPromises();
 
     expect(wrapper.find('.project-sidebar').exists()).toBe(true);
-    expect(wrapper.find('.project-tabs').exists()).toBe(true);
+    // 窄屏的项目切换收成顶栏里的下拉（横向 Tab 条已经删掉了）。
+    expect(wrapper.find('.project-dropdown').exists()).toBe(true);
     // 两边渲染的是同一批项目。
     expect(wrapper.get('.project-sidebar').text()).toContain('新项目');
-    expect(wrapper.get('.project-tabs').text()).toContain('新项目');
+    await wrapper.get('.project-dropdown__trigger').trigger('click');
+    expect(wrapper.get('.project-dropdown__panel').text()).toContain('新项目');
+  });
+
+  it('主页顶栏的「⋯」菜单里有「回收站」与「Webhook」，点「回收站」跳到回收站页', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('.more-menu__trigger').trigger('click');
+    const panel = wrapper.get('.more-menu__panel');
+    expect(panel.text()).toContain('回收站');
+    expect(panel.text()).toContain('Webhook');
+
+    const trash = panel.findAll('button').find((button) => button.text() === '回收站');
+    expect(trash, '菜单里没有「回收站」这一项').toBeTruthy();
+    await trash!.trigger('click');
+    await flushPromises();
+
+    expect(router.currentRoute.value.path).toBe('/trash');
   });
 
   it('点「标记完成」会落库，并用返回的想法刷新本地状态', async () => {

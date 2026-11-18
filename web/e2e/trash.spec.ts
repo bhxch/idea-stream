@@ -201,10 +201,8 @@ test.describe('回收站 /trash', () => {
     await expect(entry).toHaveCount(0);
 
     // 回到**原项目**：选中那个项目，它出现在那个项目的列表里。
-    // 定位写 `nav[aria-label="项目"]`：主页面有**两套**项目导航 ——
-    // 宽屏侧栏是 aria-label="项目"，窄屏 Tab 条是 aria-label="项目切换"。
-    // 两套渲染的是同一批项目，所以只写 `[data-project-id=...]` 会命中两个元素；
-    // 带上侧栏那个 aria-label 就只命中一个（宽屏下它也是可见的那个）。
+    // 定位写 `nav[aria-label="项目"]`：那是宽屏侧栏（窄屏的项目切换已经收成
+    // 顶栏里的下拉了），带上这个 aria-label 就只命中侧栏里的那一个。
     await page.goto('/');
     await page.locator(`nav[aria-label="项目"] [data-project-id="${project.id}"]`).click();
     await expect(page.locator(`[data-idea-id="${idea.id}"]`)).toBeVisible();

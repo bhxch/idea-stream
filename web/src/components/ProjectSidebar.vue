@@ -8,7 +8,7 @@ import type { ProjectSortMode } from '../stores/projects';
 /**
  * 宽屏（≥1024px）的项目侧栏。
  *
- * 窄屏（<1024px）用 {@link ProjectTabs} 显示同一份数据 ——
+ * 窄屏（<1024px）用顶栏里的 {@link ProjectDropdown} 显示同一份数据 ——
  * 两个组件渲染的是同一批项目，页面层用 CSS 媒体查询让它们互斥显示。
  */
 const props = defineProps<{

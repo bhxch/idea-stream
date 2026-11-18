@@ -113,19 +113,17 @@ test('主页面没有管理页导航条（外壳不同）', async ({ page }) => 
 
   await expect(nav(page)).toHaveCount(0);
 
-  // 主页面自己有**两套**项目导航，用不同的 aria-label 区分开：
-  //   - 宽屏侧栏：aria-label="项目"；
-  //   - 窄屏 Tab 条：aria-label="项目切换"。
-  // 两套渲染的是同一批项目，靠 CSS 媒体查询互斥显示（断点两侧各露一个），
-  // 所以**窄屏那套此刻也在 DOM 里**，只是被 display:none 藏起来了。
+  // 主页面自己的项目导航只有**一套**：宽屏侧栏（aria-label="项目"）。
+  // 窄屏的项目切换收成顶栏里的下拉（一个按钮，不是导航地标），
+  // 宽屏下它被媒体查询藏着。
   const sidebar = page.locator('nav[aria-label="项目"]');
-  const tabs = page.locator('nav[aria-label="项目切换"]');
+  const dropdown = page.locator('.project-dropdown__trigger');
 
   await expect(sidebar).toHaveCount(1);
-  await expect(tabs).toHaveCount(1);
-  // 宽屏（默认视口 1280×720）显示的是侧栏，Tab 条收着。
+  await expect(dropdown).toHaveCount(1);
+  // 宽屏（默认视口 1280×720）显示的是侧栏，窄屏的下拉收着。
   await expect(sidebar).toBeVisible();
-  await expect(tabs).toBeHidden();
+  await expect(dropdown).toBeHidden();
 });
 
 // ── 当前项高亮 ────────────────────────────────────────────────────────────
@@ -164,30 +162,27 @@ test('项目级 webhook 页点亮的是「Webhook」，不是「项目」', asyn
   await expect(navLink(page, '想法')).not.toHaveAttribute('aria-current', 'page');
 });
 
-test('当前项目：侧栏项与 Tab 项都带 aria-current="page"', async ({ page, seed }) => {
+test('当前项目：侧栏项带 aria-current="page"，窄屏下拉显示当前项目名', async ({ page, seed }) => {
   const project = await seed.project('当前项目');
   await openApp(page, '/');
 
   const sidebarItem = (id: string) => page.locator(`nav[aria-label="项目"] [data-project-id="${id}"]`);
-  const tabsItem = (id: string) => page.locator(`nav[aria-label="项目切换"] [data-project-id="${id}"]`);
+  const trigger = page.locator('.project-dropdown__trigger');
 
-  // 默认选中「全部项目」：两套导航里的「全部」都带 aria-current。
+  // 默认选中「全部项目」：侧栏的「全部」带 aria-current。
   await expect(sidebarItem('all')).toHaveAttribute('aria-current', 'page');
-  await expect(tabsItem('all')).toHaveAttribute('aria-current', 'page');
 
-  // 切到那个项目：侧栏项与 Tab 项都带上，「全部」那两项都摘掉。
+  // 切到那个项目：侧栏项带上，「全部」摘掉。
   await sidebarItem(project.id).click();
 
   await expect(sidebarItem(project.id)).toHaveAttribute('aria-current', 'page');
-  await expect(tabsItem(project.id)).toHaveAttribute('aria-current', 'page');
   await expect(sidebarItem('all')).not.toHaveAttribute('aria-current', 'page');
-  await expect(tabsItem('all')).not.toHaveAttribute('aria-current', 'page');
 
-  // 两套导航的项目名也用不同的 data-testid 区分开
-  // （project-sidebar-name-<id> / project-tabs-name-<id>）——
-  // 两个元素都渲染着，光看文字分不出谁是谁。
+  // 窄屏的项目下拉是同一份数据的另一个入口：触发器上显示当前项目名。
+  await expect(trigger).toHaveText(/当前项目/);
+
+  // 项目名元素带稳定的 data-testid（用例不用靠 class 定位）。
   await expect(page.getByTestId(`project-sidebar-name-${project.id}`)).toHaveCount(1);
-  await expect(page.getByTestId(`project-tabs-name-${project.id}`)).toHaveCount(1);
 });
 
 // ── 回首页的入口 ───────────────────────────────────────────────────────────

@@ -9,8 +9,9 @@ import Composer from '../components/Composer.vue';
 import FilterBar from '../components/FilterBar.vue';
 import MergeDialog from '../components/MergeDialog.vue';
 import MessageList from '../components/MessageList.vue';
+import MoreMenu from '../components/MoreMenu.vue';
+import ProjectDropdown from '../components/ProjectDropdown.vue';
 import ProjectSidebar from '../components/ProjectSidebar.vue';
-import ProjectTabs from '../components/ProjectTabs.vue';
 import { showToast } from '../components/ToastHost.vue';
 import { useDeepLink } from '../composables/useDeepLink';
 import { useHistoryScroll } from '../composables/useHistoryScroll';
@@ -437,6 +438,26 @@ async function onSelectProject(id: string | null): Promise<void> {
  */
 function onManageProjects(): void {
   void router.push('/projects');
+}
+
+/** 去回收站。 */
+function goTrash(): void {
+  void router.push('/trash');
+}
+
+/** 去 Webhook 页。 */
+function goWebhooks(): void {
+  void router.push('/webhooks');
+}
+
+/**
+ * 滚回列表顶部并聚焦搜索框（Task 13 补齐聚焦逻辑）。
+ *
+ * 这一轮只占位：顶栏先把「🔍」摆出来，窄屏的过滤行怎么收、
+ * 搜索框的引用怎么暴露，是 Task 13 的事 —— 这里不引第二套搜索状态。
+ */
+function focusSearch(): void {
+  void nextTick();
 }
 
 /**
@@ -1168,7 +1189,7 @@ onBeforeUnmount(() => {
 
 <template>
   <!--
-    两版布局：同一份项目数据渲染两次（宽屏侧栏、窄屏 Tab），
+    两版布局：同一份项目数据渲染两次（宽屏侧栏、窄屏顶栏的项目下拉），
     互斥显示由下面的媒体查询决定（断点 1024px）。
   -->
   <main class="home">
@@ -1185,20 +1206,38 @@ onBeforeUnmount(() => {
     </aside>
 
     <section class="home__content">
-      <header class="bar">
-        <h1 class="bar__title">想法</h1>
-      </header>
+      <header class="home__topbar">
+        <h1 class="home__topbar-title">想法</h1>
 
-      <div class="home__tabs">
-        <ProjectTabs
-          :projects="projects"
-          :current-id="currentProjectId"
-          :mode="projectSortMode"
-          @select="onSelectProject"
-          @new-project="onManageProjects"
-          @open-menu="onManageProjects"
-        />
-      </div>
+        <!--
+          窄屏的项目切换：顶栏里挤不下第二条 Tab 行，收成一个下拉。
+          宽屏用侧栏，这里不重复（媒体查询互斥显示）。
+        -->
+        <div class="home__topbar-project">
+          <ProjectDropdown
+            :projects="projects"
+            :current-id="currentProjectId"
+            @select="onSelectProject"
+          />
+        </div>
+
+        <div class="home__topbar-actions">
+          <!-- 宽屏的搜索框在过滤行里，这个只在窄屏出现（不引第二套搜索状态）。 -->
+          <button
+            class="home__topbar-search"
+            type="button"
+            aria-label="搜索"
+            @click="focusSearch"
+          >
+            🔍
+          </button>
+          <MoreMenu
+            @manage-projects="onManageProjects"
+            @trash="goTrash"
+            @webhooks="goWebhooks"
+          />
+        </div>
+      </header>
 
       <div class="home__filters">
         <FilterBar :filter="activeFilter" :all-tags="allTags" @update:filter="onFilterUpdate" />
@@ -1280,24 +1319,31 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /*
- * 宽度约束：这一轮定成「侧栏 + 内容」两栏，整体居中；
- * 内容栏不写死宽度，但有上限 —— 太宽的话一行字太长，不好读。
+ * 宽度约束：这一轮改成「侧栏 + 铺满的主区」两栏。
+ *
+ * 之前整体 `justify-content: center`、内容栏还卡着 `max-width: 880px` ——
+ * 1920px 的屏上左右各空约 400px，一屏能看到的条数一点没变。
+ * 现在侧栏贴左边缘，主区铺满剩下的宽度。
  */
 .home {
   display: flex;
-  gap: 20px;
+  gap: 10px;
   height: 100vh;
   /* 移动端浏览器地址栏收起/展开时高度会变，dvh 更准（不支持时用上面的 vh）。 */
   height: 100dvh;
   overflow: hidden;
-  justify-content: center;
-  padding: 16px;
+  padding: 0;
 }
 
 .home__sidebar {
   flex: 0 0 220px;
   min-width: 0;
   min-height: 0;
+  /*
+   * 侧栏贴着窗口左边缘（`.home` 的 padding 归零了），但标题那一行别顶到
+   * 窗口上边缘 —— 与主区顶栏的上边距对齐。
+   */
+  padding-top: 10px;
 }
 
 .home__content {
@@ -1307,26 +1353,46 @@ onBeforeUnmount(() => {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  max-width: 880px;
+  /* 主区四周留 12px（规格 §8.1）：侧栏贴左边缘，主区不贴右边缘。 */
+  padding: 0 12px 12px;
 }
 
-.bar {
+/*
+ * 顶栏：一行，钉在主区最上面。
+ *
+ * 左边是标题，窄屏再跟一个项目下拉，右边是动作区。
+ */
+.home__topbar {
   order: 1;
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 0;
 }
 
-.bar__title {
+.home__topbar-title {
   margin: 0;
   font-size: 20px;
 }
 
-/* 窄屏：项目收成顶部横向 Tab；宽屏：这一块不显示（见下面的媒体查询）。 */
-.home__tabs {
-  order: 2;
+/* 窄屏才显示项目下拉（宽屏用侧栏，不重复）：见下面的媒体查询。 */
+.home__topbar-project {
+  display: none;
   min-width: 0;
+}
+
+.home__topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* 宽屏的搜索框在过滤行里，这个只在窄屏出现。 */
+.home__topbar-search {
+  display: none;
+  align-items: center;
+  justify-content: center;
 }
 
 /* 宽屏：过滤栏在消息流上面。 */
@@ -1384,32 +1450,38 @@ onBeforeUnmount(() => {
   color: var(--muted);
 }
 
-/* 窄屏（<1024px）：侧栏收成顶部 Tab，过滤栏挪到输入框上面。 */
+/* 窄屏（<1024px）：侧栏收成顶栏里的项目下拉，过滤行挪到列表顶部。 */
 @media (max-width: 1023px) {
   .home {
     flex-direction: column;
     gap: 10px;
     /* 竖着排的时候 justify-content 管的是竖直方向：内容要从上往下排。 */
     justify-content: flex-start;
-    padding: 12px;
+    /* 四周的留白由主区自己给（.home__content 的 12px），这里不再加一层。 */
+    padding: 0;
   }
 
   .home__sidebar {
     display: none;
   }
 
-  .home__tabs {
+  /* 窄屏的项目切换收成顶栏里的下拉（宽屏用侧栏，不重复）。 */
+  .home__topbar-project {
     display: block;
-    order: 2;
+  }
+
+  /* 窄屏的 🔍：宽屏的搜索框在过滤行里，这个是给窄屏用的。 */
+  .home__topbar-search {
+    display: inline-flex;
   }
 
   .home__body {
     order: 3;
   }
 
-  /* 过滤栏移到输入框上方（窄屏上方的横向空间留给 Tab）。 */
+  /* 过滤行挪到列表顶部（它过滤的是下面那片内容）。 */
   .home__filters {
-    order: 4;
+    order: 2;
   }
 
   .composer {
@@ -1417,14 +1489,23 @@ onBeforeUnmount(() => {
   }
 }
 
-/* 宽屏（≥1024px）：左侧项目栏 + 中间消息流。 */
+/* 宽屏（≥1024px）：左侧项目栏 + 铺满的消息流。 */
 @media (min-width: 1024px) {
   .home__sidebar {
     display: block;
   }
+}
 
-  .home__tabs {
-    display: none;
+/*
+ * 手机上点按目标不小于 32×32（规格 §6.10）。
+ *
+ * 顶栏的 🔍 只有一个符号，手指点不中 —— 窄屏上把它撑到 32px 高。
+ * （下拉触发器与菜单项的触摸目标在各自组件里。）
+ */
+@media (max-width: 767px) {
+  .home__topbar-search {
+    min-width: 32px;
+    min-height: 32px;
   }
 }
 </style>

@@ -4,8 +4,8 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 
 - **覆盖范围**：`web/src/pages`、`web/src/components`、`web/src/composables`、`web/src/stores`、`web/src/router.ts` 里
   用户能直接操作到的功能。
-- **用例来源**：`web/e2e/*.spec.ts`。现有规模：`npx playwright test --list` → **205 条用例 / 15 个文件**
-  （navigation 35、layout 29、ideas 29、webhooks 24、projects 22、trash 11、extra-1 8、extra-3 8、
+- **用例来源**：`web/e2e/*.spec.ts`。现有规模：`npx playwright test --list` → **204 条用例 / 15 个文件**
+  （navigation 35、ideas 29、layout 28、webhooks 24、projects 22、trash 11、extra-1 8、extra-3 8、
   extra-4 8、extra-6 8、search 9、extra-2 5、extra-5 4、fixtures 4、smoke 1）。
 - **读法**：「覆盖它的用例」列写用例标题 + 文件；`—` 表示**没有用例覆盖**（漏掉的功能点）。
   漏掉的理由写在「备注」列里，代码位置以 `文件:行` 标出。
@@ -53,7 +53,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 
 ## 二、覆盖矩阵
 
-### 2.1 `/` 想法（HomePage.vue / Composer.vue / MessageItem.vue / MessageList.vue / FilterBar.vue / TagFilter.vue / TagEditor.vue / BatchBar.vue / MergeDialog.vue / ProjectSidebar.vue / ProjectTabs.vue）
+### 2.1 `/` 想法（HomePage.vue / Composer.vue / MessageItem.vue / MessageList.vue / FilterBar.vue / TagFilter.vue / TagEditor.vue / BatchBar.vue / MergeDialog.vue / ProjectSidebar.vue / ProjectDropdown.vue / MoreMenu.vue）
 
 | 页面 | 功能点 | 覆盖它的用例 | 备注 |
 |---|---|---|---|
@@ -119,12 +119,12 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | `/` | SSE：别的上下文新建的想法自动出现 | ideas.spec.ts:767 | — |
 | `/` | SSE：**项目**改名 / 新建 / 删除同步到侧栏 | — | `HomePage.vue:736-750`（`project.*` 分流）、`HomePage.vue:840-877`（就地改名 / 删项目时切回「全部项目」） |
 | `/` | 项目侧栏「＋」入口到项目管理页 | navigation.spec.ts:219 | — |
-| `/` | 窄屏 Tab 条的「＋」「⋯」按钮 | — | `ProjectTabs.vue:128-135`（`emit('new-project')` / `emit('open-menu')`） |
-| `/` | 侧栏 / Tab 上的项目条数与「全部项目」总数 | — | `ProjectSidebar.vue:35,122,145`、`ProjectTabs.vue:31,110,123` |
+| `/` | 顶栏「⋯」菜单：项目管理 / 回收站 / Webhook | — | `MoreMenu.vue`（主页的管理页入口；窄屏下进回收站从两步变一步，规格 §D11）。`web/src/components/MoreMenu.spec.ts` 覆盖了组件本身，e2e 还没有从主页顶栏点进去的用例 |
+| `/` | 侧栏上的项目条数与「全部项目」总数 | — | `ProjectSidebar.vue:35,122,145`（窄屏的项目下拉里不显示条数） |
 | `/` | 「全部项目」命中数超上限的兜底提示 | — | `HomePage.vue:318-336`（`recoverFromTooMany`） |
 | `/` | 切换项目失败时回滚到上一个项目 | — | `HomePage.vue:198-214`（`switchProject` 的 catch 分支） |
 | `/` | 底部输入框只有一层边框（外壳不画边框，输入框自己画一层） | layout.spec.ts:677 | — |
-| `/` | 窄屏项目 Tab 条：渐隐带不淡掉还看得清的字（条数字样保持可读） | layout.spec.ts:792 | — |
+| `/` | 窄屏顶栏的项目下拉：切项目（列出全部项目与各项目） | projects.spec.ts:53、projects.spec.ts:302 | — |
 | `/` | 加载态不闪空状态（「加载中…」不与「这里还没有想法。」同时出现） | navigation.spec.ts:400 | — |
 
 ### 2.2 `/projects` 项目管理（ProjectsPage.vue）
@@ -225,14 +225,14 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | 全局 | 导航条四个链接的 href（「想法」指向 /） | navigation.spec.ts:101 | — |
 | 全局 | 当前页高亮（含项目级 webhook 页点亮点是「Webhook」） | navigation.spec.ts:138（三条）、navigation.spec.ts:149 | — |
 | 全局 | aria-current：当前页的导航项（项目级 webhook 页点亮点也是「Webhook」） | navigation.spec.ts:149 | — |
-| 全局 | aria-current：当前项目的侧栏项与 Tab 项 | navigation.spec.ts:167 | — |
+| 全局 | aria-current：当前项目的侧栏项（窄屏的项目下拉显示当前项目名） | navigation.spec.ts:165 | — |
 | 全局 | 回首页入口：从 /projects、/trash、/webhooks 点「想法」回到首页 | navigation.spec.ts:190（三条） | — |
 | 全局 | 点导航跳转后路由与内容对应 | navigation.spec.ts:209（三条） | — |
 | 全局 | 五个路由深链直接访问不 404 | navigation.spec.ts:237（四条）、navigation.spec.ts:251 | — |
 | 全局 | 深链刷新不 404：刷新后还是同一个页面 | navigation.spec.ts:262 | — |
 | 全局 | 浏览器前进 / 后退 | navigation.spec.ts:282、navigation.spec.ts:299 | — |
 | 全局 | 主页面没有管理页导航条（外壳不同） | navigation.spec.ts:111 | — |
-| 全局 | 主页面两套项目导航：侧栏 aria-label="项目"、窄屏 Tab 条 aria-label="项目切换"（窄屏那套仍在 DOM 里，靠 CSS 隐藏） | navigation.spec.ts:111 | — |
+| 全局 | 主页面只有一套项目导航（侧栏 aria-label="项目"）；窄屏的项目切换收成顶栏里的下拉（按钮，不是导航地标） | navigation.spec.ts:111 | — |
 | 全局 | 未知路由兜底回首页（不白屏） | navigation.spec.ts:314、navigation.spec.ts:322 | — |
 | 全局 | ToastHost：常驻、无消息时为空、错误提示、4 秒后自动消失 | navigation.spec.ts:345、navigation.spec.ts:354、navigation.spec.ts:367 | — |
 | 全局 | 加载态「加载中…」 | navigation.spec.ts:381 | — |
@@ -409,13 +409,13 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 
 ### P3 — 展示层与边界路径（11 条）
 
-35. **窄屏 Tab 条的「＋」「⋯」按钮**
-    - 位置：`web/src/components/ProjectTabs.vue:128-135`（`emit('new-project')` / `emit('open-menu')`）。
-    - 为什么算漏掉：`navigation.spec.ts:219` 只测了宽屏侧栏的「＋」，窄屏下的两个入口没测。
+35. **顶栏「⋯」菜单的三个入口（项目管理 / 回收站 / Webhook）**
+    - 位置：`web/src/components/MoreMenu.vue`（`emit('manageProjects')` / `emit('trash')` / `emit('webhooks')`）。
+    - 为什么算漏掉：`web/src/components/MoreMenu.spec.ts` 覆盖了组件本身，e2e 里还没有
+      从主页顶栏点进回收站 / Webhook 的用例 —— 窄屏下这一步是唯一的入口。
 
-36. **侧栏 / Tab 上的项目条数与「全部项目」总数**
-    - 位置：`web/src/components/ProjectSidebar.vue:35`（总数）、`:122,145`（各项目条数）、
-      `web/src/components/ProjectTabs.vue:31,110,123`。
+36. **侧栏上的项目条数与「全部项目」总数**
+    - 位置：`web/src/components/ProjectSidebar.vue:35`（总数）、`:122,145`（各项目条数）。
     - 为什么算漏掉：条数是用户判断「这个项目里有什么」的主要依据。
 
 37. **/projects 上的项目条数与最近活动时间**

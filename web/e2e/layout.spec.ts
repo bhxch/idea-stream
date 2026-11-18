@@ -9,8 +9,7 @@
  * - 固定元素（批量操作条、底部输入框）不互相遮挡；
  * - 移动端（375×667）可点击元素不小于 32×32；
  * - 关键元素落在视口里（用户不用先滚一下才看得到）；
- * - 底部输入框只有一层边框（外壳不画边框，输入框自己画一层）；
- * - 窄屏项目 Tab 条的渐隐带不淡掉还看得清的字（条数字样保持可读）。
+ * - 底部输入框只有一层边框（外壳不画边框，输入框自己画一层）。
  *
  * 每个「路由-视口」都拍一张截图，落在 `web/e2e/screenshots/<route>-<viewport>.png`。
  *
@@ -88,10 +87,10 @@ interface RouteSpec {
 /**
  * 有意为之的横向滚动容器。
  *
- * 窄屏的项目 Tab 条就是横向滑的（项目多的时候换行会把内容区挤没，
- * 见 ProjectTabs.vue 的注释）—— 它有横向滚动条是设计，不是缺陷。
+ * 目前一个都没有了 —— 窄屏的项目 Tab 条换成了顶栏里的下拉（浮层，不滚动），
+ * 剩下的容器都不该横向滚动。
  */
-const INTENTIONAL_H_SCROLL = new Set(['.project-tabs__list']);
+const INTENTIONAL_H_SCROLL = new Set<string>();
 
 /** 路由清单。 */
 const ROUTES: RouteSpec[] = [
@@ -116,11 +115,10 @@ const ROUTES: RouteSpec[] = [
       { name: '「记下」按钮', locator: page.getByRole('button', { name: '记下' }) },
     ],
     containers: (page) => [
-      // 消息流的滚动容器、整块内容区、项目 Tab 条。
+      // 消息流的滚动容器、整块内容区。
       // 用 BEM class 定位：这些是纯布局容器，没有 role / aria-label 可用。
       { name: '.home__scroll', locator: page.locator('.home__scroll') },
       { name: '.home__content', locator: page.locator('.home__content') },
-      { name: '.project-tabs__list', locator: page.locator('.project-tabs__list') },
       { name: '.composer', locator: page.locator('.composer') },
     ],
     textBlocks: (page) => [
@@ -706,131 +704,5 @@ test.describe('排版与响应式', () => {
     // 唯一的一层边框在输入框自己身上。
     expect(borders!.textarea.widths).toEqual(['1px', '1px', '1px', '1px']);
     expect(borders!.textarea.style).toBe('solid');
-  });
-
-  // ── 窄屏项目 Tab 条的渐隐带 ───────────────────────────────────────────
-
-  /** 渐隐带的量法结果。 */
-  interface FadeReport {
-    /** 当前横向滚动位置（px）。 */
-    scrollLeft: number;
-    /** 渐隐带宽度（px）—— 来自 `--tabs-fade`。 */
-    fade: number;
-    /** 渐隐带的左边界（容器右边缘 - 渐隐带宽度）。 */
-    fadeStart: number;
-    /** 落在渐隐带里、却**完整露出**的字（这些字被淡掉了）。 */
-    offenders: Array<{ text: string; parent: string }>;
-    /** 完整露出的「条数」字样有几个（证明量到了计数字样，不是空转）。 */
-    visibleCountChars: number;
-  }
-
-  /**
-   * 量一次渐隐带。
-   *
-   * 判据：Tab 条右边缘挂着一层遮罩，把最右边的 `--tabs-fade` 像素淡掉
-   * （mask-image 的 linear-gradient）。**完整露出来的字一个字都不该被淡** ——
-   * 淡过的字对比度会掉到 AA（4.5:1）以下。
-   *
-   * 所以：把 Tab 条里每个字的位置都量出来，找出「完整露出」（右边缘还在容器里）
-   * 的那些，看有没有哪个的右边缘伸进了渐隐带里。
-   */
-  async function measureFade(page: Page): Promise<FadeReport | null> {
-    return page.evaluate(() => {
-      const list = document.querySelector('.project-tabs__list');
-      if (!list) {
-        return null;
-      }
-      const el = list as HTMLElement;
-      const style = getComputedStyle(el);
-      const fadeText = style.getPropertyValue('--tabs-fade').trim();
-      const fade = fadeText.endsWith('px') ? Number.parseFloat(fadeText) : 0;
-      const box = el.getBoundingClientRect();
-      // 遮罩把最右边的 fade 像素淡掉 —— 这一段的左边界就是 fadeStart。
-      const fadeStart = box.right - fade;
-
-      const offenders: Array<{ text: string; parent: string }> = [];
-      let visibleCountChars = 0;
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      const range = document.createRange();
-      let node = walker.nextNode();
-      while (node) {
-        const textNode = node;
-        const text = textNode.textContent ?? '';
-        const owner = textNode.parentElement;
-        const ownerBox = owner?.getBoundingClientRect();
-        // 整段都在可视区外（还没滚进来 / 已经滚过去了）：跳过。
-        const outside = !!ownerBox && (ownerBox.left >= box.right || ownerBox.right <= box.left);
-        if (!outside) {
-          for (let i = 0; i < text.length; i += 1) {
-            range.setStart(textNode, i);
-            range.setEnd(textNode, i + 1);
-            const rect = range.getBoundingClientRect();
-            if (rect.width === 0 && rect.height === 0) {
-              continue; // 空格之类，没有字形
-            }
-            if (rect.right > box.right) {
-              continue; // 被右边缘切掉了：不是「完整露出」的字
-            }
-            if (rect.right <= box.left) {
-              continue; // 已经滚出可视区了
-            }
-            const isCount = (owner?.className ?? '').includes('project-tab__count');
-            if (isCount) {
-              visibleCountChars += 1;
-            }
-            if (rect.right > fadeStart + 0.5) {
-              offenders.push({ text: text[i], parent: owner?.className ?? '' });
-            }
-          }
-        }
-        node = walker.nextNode();
-      }
-      return { scrollLeft: el.scrollLeft, fade, fadeStart, offenders, visibleCountChars };
-    });
-  }
-
-  test('窄屏项目 Tab 条：渐隐带不淡掉还看得清的字（计数字样保持可读）', async ({
-    page,
-    seed,
-  }) => {
-    // 造足够多的项目，Tab 条才会横向溢出（不溢出就没有渐隐带可测）。
-    for (let index = 0; index < 8; index += 1) {
-      await seed.project(`渐隐探测项目${index}`);
-    }
-    await page.setViewportSize({
-      width: MOBILE_VIEWPORT.width,
-      height: MOBILE_VIEWPORT.height,
-    });
-    await page.goto('/');
-    await expect(page.locator('.project-tabs__list')).toBeVisible();
-
-    // 等 Tab 条真的溢出、渐隐带真的量出来了。
-    await expect
-      .poll(async () => (await measureFade(page))?.fade ?? 0, { timeout: 10_000 })
-      .toBeGreaterThan(0);
-
-    const atStart = await measureFade(page);
-    expect(atStart, '没找到项目 Tab 条').not.toBeNull();
-    // 渐隐带确实在（否则这个检查是空转的）。
-    expect(atStart!.fade, 'Tab 条没有渐隐带（是没溢出吗？）').toBeGreaterThan(0);
-    // 量到了「条数」字样（下面那条断言才不是空转）。
-    expect(atStart!.visibleCountChars, '一个完整露出的条数字样都没量到').toBeGreaterThan(0);
-    // 渐隐带里没有一个「完整露出来」的字 —— 条数字样也在其中
-    //（Tab 条里的每个字都在 .project-tabs__list 里，逐字都量到了）。
-    expect(
-      atStart!.offenders,
-      '渐隐带淡掉了还看得清的字（完整露出来的字一个字都不该被淡）',
-    ).toEqual([]);
-
-    // 滚到中间再量一次：渐隐带的位置随滚动变，两处都要盖不到完整露出的字。
-    await page.locator('.project-tabs__list').evaluate((el) => {
-      el.scrollLeft = Math.floor((el.scrollWidth - el.clientWidth) / 2);
-    });
-    await expect
-      .poll(async () => (await measureFade(page))?.fade ?? 0, { timeout: 10_000 })
-      .toBeGreaterThan(0);
-
-    const atMiddle = await measureFade(page);
-    expect(atMiddle!.offenders, '滚到中间后渐隐带淡掉了还看得清的字').toEqual([]);
   });
 });
