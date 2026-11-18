@@ -36,6 +36,16 @@ function mountDropdown(overrides: Record<string, unknown> = {}) {
   });
 }
 
+/** 在组件外面点一下（点 body：不在组件内部）。 */
+function clickOutside(): void {
+  document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+}
+
+/** 按一下 Esc。 */
+function pressEscape(): void {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+}
+
 describe('ProjectDropdown', () => {
   it('the_trigger_shows_the_current_project_name', () => {
     const wrapper = mountDropdown({ currentId: 'project-2' });
@@ -65,5 +75,29 @@ describe('ProjectDropdown', () => {
     await wrapper.get('.project-dropdown__item[data-project-id="all"]').trigger('click');
 
     expect(wrapper.emitted('select')).toEqual([[null]]);
+  });
+
+  it('点组件外面收起面板', async () => {
+    const wrapper = mountDropdown();
+
+    await wrapper.get('.project-dropdown__trigger').trigger('click');
+    expect(wrapper.find('.project-dropdown__panel').exists()).toBe(true);
+
+    clickOutside();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('.project-dropdown__panel').exists()).toBe(false);
+  });
+
+  it('按 Esc 收起面板', async () => {
+    const wrapper = mountDropdown();
+
+    await wrapper.get('.project-dropdown__trigger').trigger('click');
+    expect(wrapper.find('.project-dropdown__panel').exists()).toBe(true);
+
+    pressEscape();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('.project-dropdown__panel').exists()).toBe(false);
   });
 });

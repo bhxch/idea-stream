@@ -61,4 +61,16 @@ describe('MoreMenu', () => {
 
     expect(wrapper.find('.more-menu__panel').exists()).toBe(false);
   });
+
+  it('按 Esc 收起菜单', async () => {
+    const wrapper = mountMenu();
+
+    await wrapper.get('.more-menu__trigger').trigger('click');
+    expect(wrapper.find('.more-menu__panel').exists()).toBe(true);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('.more-menu__panel').exists()).toBe(false);
+  });
 });
