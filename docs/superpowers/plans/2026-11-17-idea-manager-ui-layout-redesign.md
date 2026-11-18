@@ -1638,9 +1638,16 @@
 
 - [ ] **Step 3: 新建 `ProjectDropdown.vue`**
 
-  照 `web/src/components/TagFilter.vue` 的结构写（同样的「根节点 + `open` ref + document click 收起 + Esc 收起」）：
+  照 `web/src/components/TagFilter.vue` 的结构写（同样的「根节点 + `open` ref + document click 收起 + Esc 收起」）。
+
+  ⚠️ **这段「点外面收起 / Esc 收起」的逻辑与 `TagFilter.vue` 逐字相同**（重复是真的，不是错觉）。
+  Task 9 只能照抄（计划要求如此），**但别再写第四份**：Task 13 会把它连同 `TagFilter.vue`
+  一起收敛成 `web/src/composables/useDropdown.ts`（Task 13 引入并复用）。
 
   - 触发器：一个 `<button>`，`aria-expanded` 绑 `open`，文本是当前项目名（或「全部项目」）+ `▾`；
+    ⚠️ **名字可能很长**：触发器要 `inline-flex` + `max-width: 100%` + `overflow: hidden`，
+    名字那一段（span）要是**块级盒**（行内盒上 `text-overflow` 不生效），
+    否则长项目名会压到顶栏的动作区（🔍 / ⋯）上、甚至顶出视口 —— 窄屏 375px 上实测过。
   - 面板：`v-if="open"` 的一块绝对定位的层，**第一项是「全部项目」**，其余是 `projects`（顺序照 `projects` 数组 —— 后端已经按排序方式排好了，前端不重排）；
   - 每一项是一个 `<button>`，点了就 `emit('select', id)` 并收起面板；
   - 面板的 CSS 照 `TagFilter.vue` 的 `.tag-filter__panel` 抄（`position: absolute`、`min-width: 180px`、`border: 1px solid var(--border)` 等），**只用现有主题变量**；
@@ -1659,7 +1666,9 @@
 
 - [ ] **Step 4: 新建 `MoreMenu.vue`**
 
-  同样照 `TagFilter.vue` 的下拉面板做法（规格 §7.5：**是下拉面板，不是原生 `<details>`**）：
+  同样照 `TagFilter.vue` 的下拉面板做法（规格 §7.5：**是下拉面板，不是原生 `<details>`**）；
+  「点外面收起 / Esc 收起」那段逻辑与 `TagFilter.vue` 逐字相同 —— Task 13 会收敛成
+  `web/src/composables/useDropdown.ts`（Task 13 引入并复用），别再写第四份：
 
   - 触发器：`<button aria-expanded="open">⋯</button>`（要有可访问名：`aria-label="更多"`）；
   - 面板里三项：「项目管理」「回收站」「Webhook」，每项一个 `<button>`，点了发对应事件并收起；
@@ -1709,15 +1718,28 @@
   - `.home__content`（`:1304-1312`）：
     - **删掉 `max-width: 880px;`**（主页不再有页面级宽度上限 —— 这是「宽屏铺满」的关键）；
     - `gap: 10px` 保留；
+    - ⚠️ **另外加 `padding: 0 12px 12px;`**（规格 §8.1「主区四周留 10–12px」）：
+      只删 `max-width` 的话主区会一路贴到窗口右边缘（卡片顶到边）。
+      计划原先没写这一条 —— 实施时补上的，别再删回去；
   - `.home__sidebar`（`:1298-1302`）：`flex: 0 0 220px` 保留；
-  - 新增 `.home__topbar` 的规则：`display: flex; align-items: center; gap: 10px; padding: 10px 12px;`；
-  - `.home__topbar-title`：`margin: 0; font-size: 20px;`（照 `.bar__title` 改）；
-  - `.home__topbar-project`：窄屏才显示（`display: none` 默认，`@media (max-width: 1023px)` 里 `display: block`）；
-  - `.home__topbar-actions`：`margin-left: auto; display: flex; align-items: center; gap: 8px;`；
-  - `.home__topbar-search`：窄屏才显示（宽屏的搜索框在过滤行里，不重复）；
+    - ⚠️ **另外加 `padding: 10px 0 0 8px;`**：侧栏**这一列**贴左边缘（`.home` 的 padding 归零了），
+      但里面的内容别贴边 —— 上 10px（标题别顶到窗口上边缘）、左 8px
+      （「项目」标题与选中项的高亮条别画在屏幕物理边缘上，看着像被裁掉）；
+  - 新增 `.home__topbar` 的规则：`display: flex; align-items: center; gap: 10px; padding: 10px 0;`
+    - ⚠️ **是 `10px 0`，不是 `10px 12px`**：主区自己已经有 12px 的内边距了，
+      顶栏再带 12px 左内边距的话，顶栏标题会比下面那行（过滤行、卡片）**多缩进 12px**；
+  - `.home__topbar-title`：`margin: 0; font-size: 20px;`（照 `.bar__title` 改）+ `flex: none`（标题不参与压缩）；
+  - `.home__topbar-project`：窄屏才显示（`display: none` 默认，`@media (max-width: 1023px)` 里 `display: block`）
+    + `min-width: 0`（这一格要允许被压窄，否则长项目名把顶栏撑破）；
+  - `.home__topbar-actions`：`margin-left: auto; display: flex; align-items: center; gap: 8px;` + `flex: none`
+    （🔍 与 ⋯ 必须一直点得到，不参与压缩）；
+  - `.home__topbar-search`：窄屏才显示（宽屏的搜索框在过滤行里，不重复）
+    + `@media (max-width: 767px)` 下 `min-width/min-height: 32px`（规格 §6.10：新加的按钮同样适用）；
   - 删掉 `.bar` / `.bar__title` / `.home__tabs` 的规则；
   - 窄屏那一段 `@media (max-width: 1023px)`（`:1389-1419`）：
     - `.home` 的 `flex-direction: column` 保留（窄屏竖排），但 **`justify-content: center` 已经删了**，改成 `flex-start`；
+    - ⚠️ **窄屏的 `.home` 的 `padding` 也是 `0`**（计划原先写的 `12px` 不用）：
+      留白统一交给主区那 12px，否则窄屏左右各 24px（375px 的屏上白扔 48px）；
     - `.home__sidebar { display: none; }` 保留；
     - **删掉 `.home__tabs { display: block; order: 2; }`**（组件删了）；
     - `.home__filters` 的 `order: 4` → `order: 2`（**过滤行要在列表顶部**，这是 Task 13 的事，但骨架顺序现在就该定下来 —— 窄屏上过滤行随内容滚走、不钉死）；
@@ -2322,9 +2344,14 @@
 ### Task 13: 窄屏把过滤行收到列表顶部 + 顶栏 🔍 聚焦搜索框
 
 **Files:**
+- Create: `web/src/composables/useDropdown.ts`（**收敛 Task 9 留下的三份逐字相同的
+  「点外面收起 / Esc 收起」逻辑**：`TagFilter.vue` / `ProjectDropdown.vue` / `MoreMenu.vue`）
+- Modify: `web/src/components/TagFilter.vue`、`web/src/components/ProjectDropdown.vue`、
+  `web/src/components/MoreMenu.vue`（改用 `useDropdown`）
 - Modify: `web/src/components/FilterBar.vue:1-139`
 - Modify: `web/src/pages/HomePage.vue`（`focusSearch` 的实现、`FilterBar` 的 ref 绑定）
-- Test: `web/src/components/FilterBar.spec.ts`、`web/src/pages/HomePage.spec.ts`
+- Test: `web/src/composables/useDropdown.spec.ts`、`web/src/components/FilterBar.spec.ts`、
+  `web/src/pages/HomePage.spec.ts`
 
 **Interfaces:**
 - Consumes: Task 9 的顶栏
@@ -2332,8 +2359,8 @@
   ```ts
   // web/src/components/FilterBar.vue
   /**
-   * 窄屏紧凑形态：状态三态收成**一个下拉**（复用 TagFilter 的面板做法），
-   * 搜索框撑开剩余宽度，标签下拉与清除按钮保留。
+   * 窄屏紧凑形态：状态三态收成**一个下拉**（复用 web/src/composables/useDropdown.ts
+   * 与 TagFilter 的面板样式），搜索框撑开剩余宽度，标签下拉与清除按钮保留。
    */
   defineExpose<{
     /** 把焦点放进搜索框（窄屏顶栏的 🔍 用它）。 */
@@ -2366,7 +2393,14 @@
 - [ ] **Step 3: 改 `FilterBar.vue`（窄屏紧凑形态）**
 
   在 `web/src/components/FilterBar.vue`：
-  - 加一个 `open` ref 与状态下拉面板（照 `TagFilter.vue` 的做法：`document` click 收起 + Esc 收起）；
+  - ⚠️ **先做收敛**：把 `TagFilter.vue` / `ProjectDropdown.vue` / `MoreMenu.vue` 里
+    **逐字相同**的「根节点 + `open` ref + `document` click 收起 + Esc 收起」抽成
+    `web/src/composables/useDropdown.ts`（返回 `{ open, root }`），
+    三个组件与这个新的状态下拉**都用它** —— 到这一步为止仓库里已经有三份一样的代码，
+    再抄第四份就是四处各改各的（漏一处就是一个组件关不掉面板）。
+    面板样式（CSS）仍照 `TagFilter.vue` 的 `.tag-filter__panel`；
+  - 加一个 `open` ref 与状态下拉面板（**复用 `web/src/composables/useDropdown.ts`**，
+    别再照 `TagFilter.vue` 抄一遍 `document` click 收起 + Esc 收起）；
   - 触发器 `.filter-bar__status-trigger` 的文本是当前状态（「全部」/「未完成」/「已完成」）+ `▾`；
   - 面板里三项，选中后 `emit('update:filter', { ...filter, status })`；
   - **宽屏形态不变**（三个分段按钮照旧显示）—— 用 CSS 控制两套形态的显隐：
