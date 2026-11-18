@@ -265,7 +265,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS tag_fts USING fts5(
     tokenize = 'unicode61 remove_diacritics 0'
 );
 
--- 索引元信息。key='index.version'，value = 当前版本号（现在是 '2'）。
+-- 索引元信息。key='index.version'，value='1'。
 -- 版本号变了就整体重建索引 —— 分词规则改了、或老库还没建索引，都靠它。
 CREATE TABLE IF NOT EXISTS search_meta (
     key   TEXT PRIMARY KEY,
