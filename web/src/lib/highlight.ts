@@ -148,59 +148,6 @@ export function flattenLines(lines: HighlightLine[]): HighlightSegment[] {
 }
 
 /**
- * 去掉片段序列首尾的空白（组件的视觉标题是 trim 过的）。
- *
- * trim 要**跨片段**做：首尾的空白可能横跨好几段 —— 标题里的空行、
- * flattenLines 补的换行分隔符，各自都是独立的片段。
- * 只动首尾两段的话，夹在中间的「整段空白」会留下来，trim 出来的标题
- * 与 `title?.trim()` 对不上（`textContent` 与 aria-label 里会带着换行）。
- *
- * 做法：先算出整段纯文本里「非空白」的区间，再按区间重新切片段。
- * 命中区间从词元起、到词元止，不会以空白开头或结尾 —— 在边界上被切掉的
- * 只会是未命中的空白片段，高亮不会丢。（实现仍按「区间与片段的交集」切，
- * 就算命中真的压到了边界，剩下的那截还是 marked，不会静默丢高亮。）
- *
- * @param segments 片段序列。
- */
-export function trimSegments(segments: HighlightSegment[]): HighlightSegment[] {
-  if (segments.length === 0) {
-    return [];
-  }
-
-  const plain = segments.map((segment) => segment.text).join('');
-  const start = plain.search(/\S/);
-  if (start < 0) {
-    // 全是空白：trim 完什么都不剩。
-    return [];
-  }
-
-  const trailing = plain.match(/\s+$/);
-  // `match.index` 的类型是 `number | undefined`（正则没开 `d` 标志时 JS 的类型面保守）；
-  // 带尾随空白时 index 一定有值，`?? plain.length` 兜的是类型面不是运行时。
-  const end = trailing?.index ?? plain.length;
-
-  const result: HighlightSegment[] = [];
-  let cursor = 0;
-  for (const segment of segments) {
-    const segmentStart = cursor;
-    const segmentEnd = segmentStart + segment.text.length;
-    cursor = segmentEnd;
-
-    const from = Math.max(segmentStart, start);
-    const to = Math.min(segmentEnd, end);
-    if (to <= from) {
-      // 整段落在 trim 掉的区间里（空行、换行分隔符）—— 丢掉。
-      continue;
-    }
-    result.push({
-      text: segment.text.slice(from - segmentStart, to - segmentStart),
-      marked: segment.marked,
-    });
-  }
-  return result;
-}
-
-/**
  * 判断每枚标签要不要标记（搜索的关键词打在标签名上）。
  *
  * 服务端的偏移基准是「所有标签名按返回顺序用空格连接」的那条串
@@ -229,43 +176,4 @@ export function tagHitFlags(tags: string[], matches: SearchMatch[]): boolean[] {
     flags.push(ranges.some((range) => range.start < end && range.end > start));
   }
   return flags;
-}
-
-/** 一行的纯文本（把它的片段拼起来）。 */
-function lineText(line: HighlightLine): string {
-  return line.segments.map((segment) => segment.text).join('');
-}
-
-/** 去掉正文开头那些只装换行符的片段（正文紧挨着视觉标题，不要空行）。 */
-function trimLeadingNewlines(segments: HighlightSegment[]): HighlightSegment[] {
-  let index = 0;
-  while (index < segments.length && segments[index].text === '\n') {
-    index += 1;
-  }
-  return segments.slice(index);
-}
-
-/**
- * 把片段序列按「第一个非空行」分成视觉标题与正文两组。
- * 标题为空时，组件会把第一个非空行摘出来当视觉标题 ——
- * 落在这行上的命中要跟着标题走，不能错切到正文里。
- *
- * @param lines 按行切好的片段序列（见 {@link highlightLines}）。
- * @returns 标题组与正文组的片段序列。
- */
-export function splitTitleAndBody(lines: HighlightLine[]): {
-  title: HighlightSegment[];
-  body: HighlightSegment[];
-} {
-  const titleIndex = lines.findIndex((line) => lineText(line).trim().length > 0);
-  if (titleIndex < 0) {
-    // 全是空行：没有标题，正文就是全部。
-    return { title: [], body: flattenLines(lines) };
-  }
-  return {
-    // 视觉标题是 trim 过的，片段的首尾空白也得去掉。
-    title: trimSegments(lines[titleIndex].segments),
-    // 正文从标题行之后开始；开头跟着的空行是分隔用的，一并去掉。
-    body: trimLeadingNewlines(flattenLines(lines.slice(titleIndex + 1))),
-  };
 }

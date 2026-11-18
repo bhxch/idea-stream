@@ -8,7 +8,6 @@ import MessageList from './MessageList.vue';
 const idea: Idea = {
   id: 'idea-1',
   projectId: 'project-1',
-  title: null,
   content: '一条想法',
   tags: [],
   done: false,

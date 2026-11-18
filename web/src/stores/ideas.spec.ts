@@ -27,7 +27,6 @@ function makeIdea(index: number): Idea {
   return {
     id: `idea-${index}`,
     projectId: 'project-1',
-    title: null,
     content: `第 ${index} 条想法`,
     tags: [],
     done: false,

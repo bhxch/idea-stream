@@ -86,7 +86,6 @@ const validProject = { id: 'p1', name: '项目', sortOrder: 3 };
 const validIdea: Idea = {
   id: 'i1',
   projectId: 'p1',
-  title: null,
   content: '正文',
   tags: ['标签'],
   done: false,
@@ -215,7 +214,7 @@ describe('connectEvents', () => {
       JSON.stringify({
         id: 'e1',
         type: 'idea.updated',
-        changed: 'title',
+        changed: 'content',
         mergedFrom: null,
       }), // changed 不是数组
       JSON.stringify({
@@ -283,7 +282,6 @@ describe('connectEvents', () => {
       { ...base, idea: { ...validIdea, content: null } }, // idea.content 不是字符串
       { ...base, idea: { ...validIdea, tags: '标签' } }, // idea.tags 不是数组
       { ...base, idea: { ...validIdea, done: 'false' } }, // idea.done 不是布尔
-      { ...base, idea: { ...validIdea, title: 42 } }, // idea.title 既不是 null 也不是字符串
       { ...base, idea: { ...validIdea, createdAt: null } }, // idea.createdAt 不是字符串
       { ...base, idea: { ...validIdea, updatedAt: 1 } }, // idea.updatedAt 不是字符串
     ];
@@ -293,6 +291,45 @@ describe('connectEvents', () => {
     });
 
     expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it('a_idea_snapshot_without_a_title_key_is_accepted', () => {
+    const { onEvent, onError } = setup();
+    const source = FakeEventSource.instances[0];
+
+    // 服务器不再发 title：帧里**没有**这个键，它必须被接受。
+    // 留着「title 必填可空」那条校验的话，record.title 是 undefined、
+    // undefined === null 为假 —— 每一帧都会被判成畸形而丢弃，
+    // 界面从此再也不更新。静默但致命。
+    const evt = makeEvent('idea.updated', 'e1', {
+      idea: validIdea,
+      changed: ['content'],
+    });
+    expect('title' in validIdea).toBe(false);
+
+    source.emit('idea.updated', JSON.stringify(evt), 'e1');
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(onEvent).toHaveBeenCalledWith(evt);
+  });
+
+  it('a_legacy_idea_snapshot_with_a_title_key_is_also_accepted', () => {
+    const { onEvent, onError } = setup();
+    const source = FakeEventSource.instances[0];
+
+    // 老服务端还会发 title：我们不再校验这个键，多出来的键不判坏帧。
+    const legacyIdea = { ...validIdea, title: '旧标题' } as Idea;
+    const evt = makeEvent('idea.updated', 'e1', {
+      idea: legacyIdea,
+      changed: ['content'],
+    });
+
+    source.emit('idea.updated', JSON.stringify(evt), 'e1');
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(onEvent).toHaveBeenCalledWith(evt);
   });
 
   it('带 project / idea 快照的合法帧照常进 onEvent', () => {

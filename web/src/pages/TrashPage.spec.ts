@@ -20,7 +20,6 @@ function makeIdea(id: string, content: string, projectId = 'project-1'): Idea {
   return {
     id,
     projectId,
-    title: null,
     content,
     tags: [],
     done: false,

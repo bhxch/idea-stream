@@ -138,10 +138,10 @@ function validateIdeaSnapshot(value: unknown): string | null {
   if (typeof record.done !== 'boolean') {
     return 'idea.done 不是布尔值';
   }
-  // title 必填可空：值要么是 null、要么是字符串。
-  if (!(record.title === null || typeof record.title === 'string')) {
-    return 'idea.title 既不是 null 也不是字符串';
-  }
+  // ⚠️ 这里**不能**再校验 title：想法已经没有标题了，服务器不再发这个键。
+  // 留着「title 必填可空」那条检查的话，record.title 是 undefined、
+  // undefined === null 为假 —— 每一帧都会被判成畸形而丢弃，
+  // 界面从此再也不更新。静默但致命。
   if (typeof record.createdAt !== 'string') {
     return 'idea.createdAt 不是字符串';
   }

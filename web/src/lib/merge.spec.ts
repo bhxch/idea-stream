@@ -8,7 +8,6 @@ function makeIdea(overrides: Partial<Idea> = {}): Idea {
   return {
     id: 'idea-1',
     projectId: 'project-1',
-    title: null,
     content: '一条想法',
     tags: [],
     done: false,

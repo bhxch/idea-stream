@@ -151,7 +151,6 @@ import HomePage from './HomePage.vue';
 const idea: Idea = {
   id: 'idea-1',
   projectId: 'project-1',
-  title: null,
   content: '一条想法',
   tags: [],
   done: false,
@@ -216,8 +215,8 @@ const ideaMilk: Idea = { ...idea, id: 'idea-milk', content: '买牛奶' };
 /** 正文里带英文的想法（测关键词忽略大小写）。 */
 const ideaKafka: Idea = { ...idea, id: 'idea-kafka', content: 'Idea about Kafka' };
 
-/** 有标题的想法：正文原样显示，改完能直接看到改了哪。 */
-const titledIdea: Idea = { ...idea, title: '标题', content: '原正文' };
+/** 一条想法：正文原样显示，改完能直接看到改了哪。 */
+const plainIdea: Idea = { ...idea, content: '原正文' };
 
 /**
  * 「命中数超过单次返回上限」的错误。
@@ -564,7 +563,6 @@ describe('HomePage', () => {
     expect(apiSend).toHaveBeenCalledWith('POST', '/ideas', {
       projectId: null,
       content: '一条新想法',
-      title: null,
       tags: [],
     });
     expect((textarea.element as HTMLTextAreaElement).value).toBe('');
@@ -846,15 +844,15 @@ describe('HomePage', () => {
         case '/tags':
           return Promise.resolve([]);
         case '/ideas':
-          return Promise.resolve([titledIdea]);
+          return Promise.resolve([plainIdea]);
         default:
           return Promise.resolve([]);
       }
     });
     apiSend.mockImplementation((method: string) =>
       method === 'PATCH'
-        ? Promise.resolve({ ...titledIdea, content: '改过的正文' })
-        : Promise.resolve({ ...titledIdea, done: true }),
+        ? Promise.resolve({ ...plainIdea, content: '改过的正文' })
+        : Promise.resolve({ ...plainIdea, done: true }),
     );
 
     const wrapper = mount(HomePage);
@@ -883,7 +881,7 @@ describe('HomePage', () => {
         case '/tags':
           return Promise.resolve([]);
         case '/ideas':
-          return Promise.resolve([titledIdea]);
+          return Promise.resolve([plainIdea]);
         default:
           return Promise.resolve([]);
       }
@@ -893,7 +891,7 @@ describe('HomePage', () => {
         ? new Promise<Idea>((resolve) => {
             resolvePatch = resolve;
           })
-        : Promise.resolve({ ...titledIdea, done: true }),
+        : Promise.resolve({ ...plainIdea, done: true }),
     );
 
     const wrapper = mount(HomePage);
@@ -909,7 +907,7 @@ describe('HomePage', () => {
     expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(true);
     expect((wrapper.get('button.action--tags').element as HTMLButtonElement).disabled).toBe(true);
 
-    resolvePatch?.({ ...titledIdea, content: '改过的正文' });
+    resolvePatch?.({ ...plainIdea, content: '改过的正文' });
     await flushPromises();
 
     expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(false);
@@ -1302,7 +1300,8 @@ describe('HomePage', () => {
     });
     // 源条目没了，只剩合并出来的新条目。
     expect(wrapper.findAll('.idea')).toHaveLength(1);
-    expect(wrapper.get('.title').text()).toBe('甲');
+    // 结构变了，断言没写错：没有标题层了，正文显示全文（含首行）。
+    expect(wrapper.get('.body').text()).toBe('甲\n\n乙');
     // 记下新条目的 id，供 F11 滚动定位。
     expect(focusIdeaId.value).toBe('idea-merged');
     wrapper.unmount();
@@ -1372,13 +1371,13 @@ describe('HomePage', () => {
     const wrapper = mount(HomePage);
     await flushPromises();
 
-    // 这条没有标题，正文首行当视觉标题 —— 所以断言标题那一行。
+    // 没有标题层了 —— 断言正文那一块。
     const updated: Idea = { ...idea, content: '改过的正文' };
     FakeEventSource.instances[0].emit('idea.updated', makeEvent('idea.updated', { idea: updated }), 'e1');
     await flushPromises();
 
     expect(wrapper.findAll('.idea')).toHaveLength(1);
-    expect(wrapper.get('.title').text()).toBe('改过的正文');
+    expect(wrapper.get('.body').text()).toBe('改过的正文');
     wrapper.unmount();
   });
 

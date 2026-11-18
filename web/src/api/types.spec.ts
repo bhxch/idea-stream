@@ -1,11 +1,40 @@
 import { describe, expect, it } from 'vitest';
-import type { IdeaEvent, ProjectSnapshot } from './types';
+import type { Idea, IdeaEvent, ProjectSnapshot, SearchMatch } from './types';
 
 /**
  * 这些用例主要是**类型层面**的回归护栏：
  * `npm run typecheck` 会因为它们编译不过而报错，
  * 防止有人再把 `changed` 写回「可能缺失」或把项目快照的 `sortOrder` 弄丢。
  */
+describe('Idea 的线上报文形状', () => {
+  it('Idea 没有 title —— 想法就是一段文字', () => {
+    const idea: Idea = {
+      id: 'i1',
+      projectId: 'p1',
+      content: '正文',
+      tags: [],
+      done: false,
+      createdAt: '2026-11-12T00:00:00Z',
+      updatedAt: '2026-11-12T00:00:00Z',
+    };
+
+    expect(idea.content).toBe('正文');
+
+    // @ts-expect-error 想法没有标题：谁把这个字段加回来，编译期就红。
+    expect(idea.title).toBeUndefined();
+  });
+
+  it('SearchMatch.field 只剩三种取值（命中位置不再有 title）', () => {
+    const match: SearchMatch = { field: 'content', start: 0, length: 2 };
+
+    expect(match.field).toBe('content');
+
+    // @ts-expect-error title 不再是命中字段：搜标题这件事整个没有了。
+    const bad: SearchMatch = { field: 'title', start: 0, length: 2 };
+    expect(bad).toBeDefined();
+  });
+});
+
 describe('IdeaEvent 的线上报文形状', () => {
   it('changed 与 mergedFrom 可以是 null —— 后端恒写出这两个键', () => {
     const evt: IdeaEvent = {

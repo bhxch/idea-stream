@@ -8,7 +8,6 @@ import MessageItem from './MessageItem.vue';
 const idea: Idea = {
   id: 'idea-1',
   projectId: 'project-1',
-  title: null,
   content: '一条想法',
   tags: [],
   done: false,
@@ -58,7 +57,7 @@ describe('MessageItem', () => {
 
   it('正文里的特殊字符不会被当成 HTML 解析', () => {
     const wrapper = mountItem({
-      idea: { ...idea, title: '标题', content: '一条 <b>想法</b> & 一点' },
+      idea: { ...idea, content: '一条 <b>想法</b> & 一点' },
     });
 
     const html = wrapper.get('.body').element.innerHTML;
@@ -66,21 +65,13 @@ describe('MessageItem', () => {
     expect(wrapper.get('.body').text()).toBe('一条 <b>想法</b> & 一点');
   });
 
-  it('标题为空时首行只当视觉标题，正文里不再显示一遍', () => {
+  it('正文显示全文（含首行），没有标题层', () => {
+    // 想法没有标题了：正文不再被摘掉首行，界面上也不再有一层「视觉标题」。
     const wrapper = mountItem({
       idea: { ...idea, content: '第一行\n第二行' },
     });
 
-    expect(wrapper.get('.title').text()).toBe('第一行');
-    expect(wrapper.get('.body').text()).toBe('第二行');
-  });
-
-  it('有标题时正文原样显示', () => {
-    const wrapper = mountItem({
-      idea: { ...idea, title: '标题', content: '第一行\n第二行' },
-    });
-
-    expect(wrapper.get('.title').text()).toBe('标题');
+    expect(wrapper.find('.title').exists()).toBe(false);
     expect(wrapper.get('.body').text()).toBe('第一行\n第二行');
   });
 
@@ -88,7 +79,6 @@ describe('MessageItem', () => {
     const wrapper = mountItem({
       idea: {
         ...idea,
-        title: '标题',
         content: '买咖啡机',
         matches: [{ field: 'content', start: 1, length: 2 }],
       },
@@ -106,7 +96,6 @@ describe('MessageItem', () => {
     const wrapper = mountItem({
       idea: {
         ...idea,
-        title: '标题',
         content: '正文',
         tags: ['咖啡', '烘焙'],
         matches: [{ field: 'tags', start: 0, length: 2 }],
@@ -124,7 +113,6 @@ describe('MessageItem', () => {
     const wrapper = mountItem({
       idea: {
         ...idea,
-        title: '标题',
         content: '正文',
         tags: ['咖啡'],
         matches: [{ field: 'content', start: 0, length: 2 }],
@@ -140,7 +128,6 @@ describe('MessageItem', () => {
     const wrapper = mountItem({
       idea: {
         ...idea,
-        title: '标题',
         content: '咖啡咖啡',
         matches: [
           { field: 'content', start: 0, length: 2 },
@@ -155,7 +142,7 @@ describe('MessageItem', () => {
     expect(wrapper.get('.body').find('mark mark').exists()).toBe(false);
   });
 
-  it('标题为空时落在首行的命中跟着视觉标题走（不能错切到正文里）', () => {
+  it('落在首行的命中留在正文里（没有标题层可跟）', () => {
     const wrapper = mountItem({
       idea: {
         ...idea,
@@ -164,12 +151,11 @@ describe('MessageItem', () => {
       },
     });
 
-    expect(wrapper.get('.title').findAll('mark').map((mark) => mark.text())).toEqual(['咖啡']);
-    expect(wrapper.get('.body').findAll('mark')).toHaveLength(0);
-    expect(wrapper.get('.body').text()).toBe('水温不错');
+    expect(wrapper.get('.body').findAll('mark').map((mark) => mark.text())).toEqual(['咖啡']);
+    expect(wrapper.get('.body').text()).toBe('咖啡机\n水温不错');
   });
 
-  it('标题为空时落在正文行的命中留在正文里', () => {
+  it('落在正文行的命中留在正文里', () => {
     const wrapper = mountItem({
       idea: {
         ...idea,
@@ -178,29 +164,13 @@ describe('MessageItem', () => {
       },
     });
 
-    expect(wrapper.get('.title').findAll('mark')).toHaveLength(0);
     expect(wrapper.get('.body').findAll('mark').map((mark) => mark.text())).toEqual(['水温']);
-  });
-
-  it('标题里的命中标在标题上', () => {
-    const wrapper = mountItem({
-      idea: {
-        ...idea,
-        title: '咖啡笔记',
-        content: '正文',
-        matches: [{ field: 'title', start: 0, length: 2 }],
-      },
-    });
-
-    expect(wrapper.get('.title').findAll('mark').map((mark) => mark.text())).toEqual(['咖啡']);
-    expect(wrapper.get('.body').findAll('mark')).toHaveLength(0);
   });
 
   it('高亮不改变文字本身（DOM 里的文本与原文逐字相同）', () => {
     const wrapper = mountItem({
       idea: {
         ...idea,
-        title: '标题',
         content: '第一行\n第二行\n\n第四行',
         matches: [{ field: 'content', start: 4, length: 2 }],
       },
@@ -211,13 +181,12 @@ describe('MessageItem', () => {
     expect(wrapper.get('.body').element.textContent).toBe('第一行\n第二行\n\n第四行');
   });
 
-  it('标题为空时正文只剩后面的部分（逐字相同）', () => {
+  it('正文显示全文，开头的空行也不动（逐字相同）', () => {
     const wrapper = mountItem({
       idea: { ...idea, content: '\n第一行\n\n第二行' },
     });
 
-    expect(wrapper.get('.title').element.textContent).toBe('第一行');
-    expect(wrapper.get('.body').element.textContent).toBe('第二行');
+    expect(wrapper.get('.body').element.textContent).toBe('\n第一行\n\n第二行');
   });
 
   it('没有命中位置时不渲染 <mark>，文字与原来一样', () => {
@@ -227,16 +196,23 @@ describe('MessageItem', () => {
       idea: { ...idea, content: '第一行\n第二行' },
     });
 
-    expect(wrapper.get('.title').text()).toBe('第一行');
-    expect(wrapper.get('.body').text()).toBe('第二行');
+    expect(wrapper.get('.body').text()).toBe('第一行\n第二行');
     expect(wrapper.get('.body').findAll('mark')).toHaveLength(0);
+  });
+
+  it('勾选框的可访问名称用正文首行（标题层没了，得有个能认出这条想法的短文本）', () => {
+    const wrapper = mountItem({
+      idea: { ...idea, content: '给路由器固定 IP，省得每次 SSH 都记不住' },
+    });
+
+    const ariaLabel = wrapper.get('input.select').attributes('aria-label');
+    expect(ariaLabel).toContain('给路由器固定 IP，省得每次 SSH 都记不住');
   });
 
   it('正文里的特殊字符不会被当成 HTML 解析（有命中时也一样）', () => {
     const wrapper = mountItem({
       idea: {
         ...idea,
-        title: '标题',
         content: '一条 <b>想法</b> & 一点',
         matches: [{ field: 'content', start: 0, length: 2 }],
       },

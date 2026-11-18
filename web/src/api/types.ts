@@ -12,16 +12,15 @@
  * 只在**带关键词**的响应里出现（后端不带关键词时把这个键整个省略）。
  */
 export interface SearchMatch {
-  field: 'title' | 'content' | 'tags' | 'project';
+  field: 'content' | 'tags' | 'project';
   start: number;
   length: number;
 }
 
-/** 一条想法。`title` 可以为 null —— 只记正文不记标题的想法是允许的。 */
+/** 一条想法。**没有标题** —— 想法就是一段文字。 */
 export interface Idea {
   id: string;
   projectId: string;
-  title: string | null;
   content: string;
   tags: string[];
   done: boolean;
@@ -139,7 +138,7 @@ export interface ProjectSnapshot {
  * - `null`：该事件类型没有「改了什么」的概念（如 `idea.created`）——
  *   判定要用 `changed === null`，**不是** `changed === undefined`；
  * - 空数组：写了但值没变，数据本身仍然是最新的，别把这次更新跳过；
- * - 非空数组：这次操作写过的字段名（如 `title`、`done`、`sortOrder`）。
+ * - 非空数组：这次操作写过的字段名（如 `done`、`tags`、`content`、`sortOrder`）。
  *
  * `mergedFrom` 只在合并事件里有值（被硬删的源想法 id 列表），其余事件是 `null`。
  */

@@ -563,7 +563,7 @@ function onFilterUpdate(next: IdeaFilter): void {
 /**
  * 提交一条新想法。
  *
- * 提交的是纯正文（标题留空）；「全部项目」视图下不指定项目，
+ * 提交的就是正文（想法没有标题了）；「全部项目」视图下不指定项目，
  * 后端会把它落到内置收件箱。
  *
  * @returns true 表示存好了（输入框据此清空），false 表示失败（内容保留在框里）。
@@ -573,7 +573,6 @@ async function onSubmit(content: string): Promise<boolean> {
     const created = await apiSend<Idea>('POST', '/ideas', {
       projectId: currentProjectId.value,
       content,
-      title: null,
       tags: [],
     });
     const before = visibleIdeas.value.length;

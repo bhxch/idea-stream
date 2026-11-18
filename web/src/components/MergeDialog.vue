@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { Idea } from '../api/types';
+import { firstLine } from '../lib/text';
 
 const props = defineProps<{
   /** 是否展开。 */
@@ -54,7 +55,7 @@ watch(
 
       <ul class="merge-dialog__preview">
         <li v-for="idea in ideas" :key="idea.id" class="merge-dialog__item">
-          <span class="merge-dialog__item-title">{{ idea.title?.trim() || '（无标题）' }}</span>
+          <span class="merge-dialog__item-title">{{ firstLine(idea.content) }}</span>
           <pre class="merge-dialog__item-body">{{ idea.content }}</pre>
         </li>
       </ul>

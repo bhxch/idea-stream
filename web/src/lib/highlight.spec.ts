@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SearchMatch } from '../api/types';
-import { flattenLines, highlightLines, splitTitleAndBody, tagHitFlags, trimSegments } from './highlight';
-import type { HighlightSegment } from './highlight';
+import { flattenLines, highlightLines, tagHitFlags } from './highlight';
 
 /** 造一处命中（默认在正文里）。 */
 function match(start: number, length: number, field: SearchMatch['field'] = 'content'): SearchMatch {
@@ -69,6 +68,28 @@ describe('highlightLines', () => {
   });
 });
 
+describe('flattenLines', () => {
+  it('行与行之间补上换行符（正文是 pre-wrap 渲染的，换行看得见）', () => {
+    const segments = flattenLines(highlightLines('第一行\n第二行', []));
+
+    expect(segments).toEqual([
+      { text: '第一行', marked: false },
+      { text: '\n', marked: false },
+      { text: '第二行', marked: false },
+    ]);
+  });
+
+  it('命中的那几段在摊平之后仍然带着 marked', () => {
+    const segments = flattenLines(highlightLines('第一行\n咖啡', [match(4, 2)]));
+
+    expect(segments).toEqual([
+      { text: '第一行', marked: false },
+      { text: '\n', marked: false },
+      { text: '咖啡', marked: true },
+    ]);
+  });
+});
+
 describe('tagHitFlags', () => {
   it('偏移基准是「标签名按返回顺序用空格连接」的那条串', () => {
     // 「咖啡」落在 [0,2)，「烘焙」落在 [3,5)：命中打在第二个上。
@@ -88,93 +109,5 @@ describe('tagHitFlags', () => {
 
   it('没有命中时全是 false', () => {
     expect(tagHitFlags(['咖啡', '烘焙'], [])).toEqual([false, false]);
-  });
-});
-
-describe('trimSegments', () => {
-  /** 把多行原文走一遍真实管线：highlightLines → flattenLines，得到组件喂给 trimSegments 的形状。 */
-  function segmentsOf(text: string, matches: SearchMatch[] = []) {
-    return flattenLines(highlightLines(text, matches));
-  }
-
-  it('trim 跨片段：标题前面跟着的空行要一起去掉', () => {
-    // 标题字段里带换行（只有走 API 写入的条目才有）：空行各自是一个片段，
-    // 只动首尾两段的旧写法去不掉夹在中间的换行片段 —— trim 出来的标题
-    // 与 title?.trim() 对不上（textContent / aria-label 里带着换行）。
-    const segments = segmentsOf('\n\n咖啡笔记');
-
-    expect(trimSegments(segments)).toEqual([{ text: '咖啡笔记', marked: false }]);
-  });
-
-  it('trim 跨片段：尾部的空行与换行分隔符也要去掉', () => {
-    const segments = segmentsOf('咖啡笔记\n\n');
-
-    expect(trimSegments(segments)).toEqual([{ text: '咖啡笔记', marked: false }]);
-  });
-
-  it('命中贴着边界：被切之后剩下的那截还是 marked', () => {
-    // 命中区间从词元起、到词元止，不该被空白 trim 切到 —— 但实现按「区间与
-    // 片段的交集」切，就算哪天命中真的压到了边界，剩下的那截还是 marked。
-    const segments: HighlightSegment[] = [
-      { text: '  ', marked: false },
-      { text: '咖啡', marked: true },
-    ];
-
-    expect(trimSegments(segments)).toEqual([{ text: '咖啡', marked: true }]);
-  });
-
-  it('中间的空白不动（那是正文的一部分）', () => {
-    const segments: HighlightSegment[] = [
-      { text: '咖啡', marked: true },
-      { text: ' \n ', marked: false },
-      { text: '水温', marked: true },
-    ];
-
-    expect(trimSegments(segments)).toEqual(segments);
-  });
-
-  it('全是空白：trim 完什么都不剩', () => {
-    const segments = segmentsOf(' \n\t ');
-
-    expect(trimSegments(segments)).toEqual([]);
-  });
-});
-
-describe('splitTitleAndBody', () => {
-  it('splitTitleAndBody_puts_the_first_non_empty_line_in_the_title', () => {
-    const { title, body } = splitTitleAndBody(highlightLines('咖啡\n水温', []));
-
-    expect(title).toEqual([{ text: '咖啡', marked: false }]);
-    expect(body).toEqual([{ text: '水温', marked: false }]);
-  });
-
-  it('splitTitleAndBody_skips_leading_blank_lines', () => {
-    const { title, body } = splitTitleAndBody(highlightLines('\n咖啡\n水温', []));
-
-    expect(title).toEqual([{ text: '咖啡', marked: false }]);
-    expect(body).toEqual([{ text: '水温', marked: false }]);
-  });
-
-  it('splitTitleAndBody_drops_the_blank_lines_between_the_title_and_the_body', () => {
-    // 标题行后面的空行是分隔用的：正文紧挨着视觉标题。
-    const { title, body } = splitTitleAndBody(highlightLines('咖啡\n\n水温', []));
-
-    expect(title).toEqual([{ text: '咖啡', marked: false }]);
-    expect(body).toEqual([{ text: '水温', marked: false }]);
-  });
-
-  it('splitTitleAndBody_keeps_the_hit_on_the_title_line_with_the_title', () => {
-    // 落在标题行上的命中归标题 —— 不能错切到正文里。
-    const { title, body } = splitTitleAndBody(highlightLines('咖啡\n水温', [match(0, 2)]));
-
-    expect(title).toEqual([{ text: '咖啡', marked: true }]);
-    expect(body).toEqual([{ text: '水温', marked: false }]);
-  });
-
-  it('splitTitleAndBody_trims_the_title', () => {
-    // 组件的视觉标题是 trim 过的：片段的首尾空白也要去掉。
-    const { title } = splitTitleAndBody(highlightLines('  咖啡  \n水温', []));
-
-    expect(title).toEqual([{ text: '咖啡', marked: false }]);
   });
 });

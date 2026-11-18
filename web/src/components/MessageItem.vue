@@ -2,15 +2,9 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import type { Idea, SearchMatch } from '../api/types';
 import { formatRelativeTime } from '../lib/format';
-import {
-  flattenLines,
-  highlightLines,
-  splitTitleAndBody,
-  tagHitFlags,
-  trimSegments,
-  type HighlightSegment,
-} from '../lib/highlight';
+import { flattenLines, highlightLines, tagHitFlags } from '../lib/highlight';
 import type { SaveOptions, SaveOutcome } from '../lib/save';
+import { firstLine } from '../lib/text';
 import TagEditor from './TagEditor.vue';
 
 const props = defineProps<{
@@ -181,40 +175,16 @@ function matchesOf(field: SearchMatch['field']): SearchMatch[] {
 }
 
 /**
- * 视觉标题与正文各自的片段。
+ * 正文的片段（命中的那几段渲染成 `<mark>`）。
  *
- * 视觉标题：标题是可选的（可以只记正文），为空时拿正文首行顶上，
- * 否则列表里一排没有标题的条目会很难认。
+ * 正文是**全文**（含首行）：想法没有标题了，界面上也就没有「标题层」——
+ * 同一句话在一条卡片里出现两次、首行被吃掉，两种都不行。
  *
- * 正文：标题为空时，首行已经当视觉标题了，正文里就不再显示一遍 ——
- * 否则同一句话会在一条条目里出现两次。
- *
- * 命中的位置由服务端给（相对**完整原文**的字符区间），所以先按整段原文切，
- * 再按行分组 —— 落在视觉标题那行上的命中要跟着标题走，不能错切到正文里。
- *
- * 两边一次算好：正文那段的切分两边都要用。
+ * 命中的位置由服务端给（相对**完整原文**的字符区间），所以先按整段原文切。
  */
-const titleAndBody = computed<{ title: HighlightSegment[]; body: HighlightSegment[] }>(() => {
-  const title = props.idea.title;
-  if (title?.trim()) {
-    // 标题有值：标题就是它本身，正文就是整段内容。
-    return {
-      title: trimSegments(flattenLines(highlightLines(title, matchesOf('title')))),
-      body: flattenLines(highlightLines(props.idea.content, matchesOf('content'))),
-    };
-  }
-  // 标题为空：视觉标题与正文都从正文里切出来。
-  const { title: head, body } = splitTitleAndBody(
-    highlightLines(props.idea.content, matchesOf('content')),
-  );
-  return { title: head, body };
-});
-
-/** 视觉标题的片段（命中的那几段渲染成 `<mark>`）。 */
-const titleSegments = computed(() => titleAndBody.value.title);
-
-/** 正文（渲染用）的片段。 */
-const bodySegments = computed(() => titleAndBody.value.body);
+const bodySegments = computed(() =>
+  flattenLines(highlightLines(props.idea.content, matchesOf('content'))),
+);
 
 /**
  * 每枚标签 chip 要不要标记（关键词打在标签名上时，chips 是它的渲染面）。
@@ -224,8 +194,8 @@ const bodySegments = computed(() => titleAndBody.value.body);
  */
 const tagHits = computed(() => tagHitFlags(props.idea.tags, matchesOf('tags')));
 
-/** 视觉标题（纯文本，给 aria-label 用）。 */
-const visualTitle = computed(() => titleSegments.value.map((segment) => segment.text).join(''));
+/** 这条想法的短文本（正文首行，截断到约 40 字）—— 勾选框的可访问名称用它。 */
+const accessibleName = computed(() => firstLine(props.idea.content));
 
 /** 进入编辑态。 */
 function startEdit(): void {
@@ -579,7 +549,7 @@ function confirmDelete(): void {
         class="select"
         type="checkbox"
         :checked="selected"
-        :aria-label="`选择 ${visualTitle}`"
+        :aria-label="`选择 ${accessibleName}`"
         @change="emit('toggle-select', idea.id)"
       />
       <button
@@ -591,12 +561,6 @@ function confirmDelete(): void {
       >
         {{ idea.done ? '已完成' : '标记完成' }}
       </button>
-      <h2 v-if="!editing" class="title">
-        <template v-for="(segment, index) in titleSegments" :key="index">
-          <mark v-if="segment.marked">{{ segment.text }}</mark>
-          <template v-else>{{ segment.text }}</template>
-        </template>
-      </h2>
       <time class="time">{{ formatRelativeTime(idea.updatedAt) }}</time>
     </div>
 
@@ -627,7 +591,7 @@ function confirmDelete(): void {
       @update:value="onTagsChange"
     />
     <ul v-else-if="idea.tags.length > 0" class="tags">
-      <!-- 关键词打在标签名上时，命中的 chip 也包 <mark>（与标题/正文同一套样式）。
+      <!-- 关键词打在标签名上时，命中的 chip 也包 <mark>（与正文同一套样式）。
            按「整枚 chip」标，不做片段级 —— 标签很短，整枚看得清。 -->
       <li v-for="(tag, index) in idea.tags" :key="tag" class="chip">
         <mark v-if="tagHits[index]">{{ tag }}</mark>
@@ -698,17 +662,16 @@ function confirmDelete(): void {
   }
 }
 
-.idea--done .title,
 .idea--done .body {
   color: var(--muted);
   text-decoration: line-through;
 }
 
 /*
- * 卡片头：勾选框、「标记完成」、标题、时间戳并排。
+ * 卡片头：勾选框、「标记完成」、时间戳并排。
  *
- * 纵向对齐用 baseline（不是 center）：标题换成多行时，center 会把三个控件
- * 拉到标题块的正中，看着像挂在标题第三行上；baseline 让它们跟标题**首行**齐平。
+ * 纵向对齐用 baseline（不是 center）：控件高度不一时，center 会把它们
+ * 拉到彼此的正中，看着像挂着；baseline 让它们跟文字**首行**齐平。
  */
 .head {
   display: flex;
@@ -720,7 +683,7 @@ function confirmDelete(): void {
  * 复选框没有文字基线，单独顶对齐。
  *
  * 不这样的话整行的基线由它决定（复选框的基线是它的下边缘），
- * 标题会被顶到复选框下边缘那条线上，比按钮与时间戳高一截。
+ * 旁边的按钮与时间戳会被顶到复选框下边缘那条线上，高一截。
  */
 .select {
   align-self: flex-start;
@@ -731,13 +694,6 @@ function confirmDelete(): void {
 .action:disabled {
   opacity: 0.5;
   cursor: default;
-}
-
-.title {
-  flex: 1;
-  margin: 0;
-  font-size: 15px;
-  overflow-wrap: anywhere;
 }
 
 .time {
@@ -760,7 +716,6 @@ function confirmDelete(): void {
  * <mark> 的浏览器默认样式是黄底黑字，在暗色主题里很扎眼 ——
  * 换成主题的强调色，亮暗两套主题下都看得清。
  */
-.title mark,
 .body mark,
 .chip mark {
   background: var(--accent);
@@ -836,36 +791,11 @@ function confirmDelete(): void {
   }
 
   /*
-   * 窄屏上控件那一行会把标题挤成一条细窄的柱子（标题只剩 163px 宽，
-   * 一百来个字折成五行，卡片头被撑到 98px 高）。
-   *
-   * 窄屏改成两行：控件一行（时间戳靠右），标题独占一行、整行宽度都是它的。
-   * order 只调**视觉**顺序，DOM 顺序（勾选框 → 标记完成 → 标题 → 时间）没变，
-   * 读屏软件读到的顺序与源码一致。
+   * 窄屏上控件那一行：时间戳靠右（其余控件挨着排）。
+   * 标题层没有了，`.head` 不再换行 —— 一行放得下。
    */
-  .head {
-    flex-wrap: wrap;
-    align-items: center;
-  }
-
-  /* 控件行里按中间对齐（复选框跟着按钮居中，别顶在上面）。 */
-  .select {
-    order: 1;
-    align-self: auto;
-  }
-
-  .done {
-    order: 2;
-  }
-
   .time {
-    order: 3;
     margin-left: auto;
-  }
-
-  .title {
-    order: 4;
-    flex: 1 1 100%;
   }
 }
 

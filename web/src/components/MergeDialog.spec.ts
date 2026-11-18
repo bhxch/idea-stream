@@ -8,7 +8,6 @@ function makeIdea(id: string, content: string): Idea {
   return {
     id,
     projectId: 'project-1',
-    title: null,
     content,
     tags: [],
     done: false,
@@ -46,6 +45,20 @@ describe('MergeDialog', () => {
 
     expect(wrapper.emitted('cancel')).toHaveLength(1);
     expect(wrapper.emitted('confirm')).toBeUndefined();
+  });
+
+  it('预览行显示正文首行（想法没有标题了）', () => {
+    const wrapper = mount(MergeDialog, {
+      props: {
+        open: true,
+        ideas: [makeIdea('idea-1', '第一行\n第二行'), makeIdea('idea-2', 'B')],
+      },
+    });
+
+    const items = wrapper.findAll('.merge-dialog__item-title');
+    expect(items.map((item) => item.text())).toEqual(['第一行', 'B']);
+    // 不再有「（无标题）」这种占位。
+    expect(wrapper.text()).not.toContain('（无标题）');
   });
 
   it('没打开时不渲染', () => {
