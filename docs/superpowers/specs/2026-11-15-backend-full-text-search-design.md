@@ -643,7 +643,7 @@ public sealed record IdeaDto(
 | 端点 | 排序 |
 |---|---|
 | `GET /api/ideas` | `updated_at ASC, id ASC`（**不变**）。搜索时也保持 —— 页面里条目位置不跳 |
-| `GET /api/search` 的 `ideas` | `bm25(idea_fts, 10.0, 1.0, 5.0, 3.0), id ASC` |
+| `GET /api/search` 的 `ideas` | `bm25(idea_fts, 5.0, 5.0, 3.0), id ASC` |
 | `GET /api/search` 的 `projects` | `bm25(project_fts), id ASC` |
 | `GET /api/search` 的 `tags` | `bm25(tag_fts), count DESC, name ASC` |
 
