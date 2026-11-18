@@ -20,7 +20,7 @@
  * 的入口（回收站只允许恢复，标签字典只增不减），所以复位之后：
  *
  * - 活动想法 0 条、活动项目只有「收件箱」、webhook 0 个 —— 这些是干净的；
- * - **回收站里会留下残渣**：被删项目的容器条目，以及每个项目一条标题为
+ * - **回收站里会留下残渣**：被删项目的容器条目，以及每个项目一条正文为
  *   「e2e-reset」的合并产物；
  * - **标签字典里会留下残渣**：用过的标签名还在，计数为 0。
  *
@@ -41,7 +41,7 @@ export const INBOX_ID = 'inbox';
 /** 内置收件箱的项目名。 */
 export const INBOX_NAME = '收件箱';
 
-/** 复位留下的合并产物的标题与正文 —— 固定值，方便断言时把它排除掉。 */
+/** 复位留下的合并产物的**正文** —— 固定值，方便断言时把它排除掉。 */
 export const RESET_ARTIFACT = 'e2e-reset';
 
 // ── API 的返回类型（与 web/src/api/types.ts 对应） ───────────────────────
@@ -50,7 +50,6 @@ export const RESET_ARTIFACT = 'e2e-reset';
 export interface Idea {
   id: string;
   projectId: string;
-  title: string | null;
   content: string;
   tags: string[];
   done: boolean;
@@ -100,7 +99,6 @@ export interface CreateIdeaInput {
   /** 所属项目；不传 = 收件箱。 */
   projectId?: string;
   content: string;
-  title?: string | null;
   tags?: string[];
 }
 
@@ -211,12 +209,11 @@ export class IdeaApi {
     return this.send('POST', '/api/ideas', {
       projectId: input.projectId ?? INBOX_ID,
       content: input.content,
-      title: input.title ?? null,
       tags: input.tags ?? [],
     });
   }
 
-  async updateIdea(id: string, patch: { title?: string | null; content?: string }): Promise<Idea> {
+  async updateIdea(id: string, patch: { content?: string }): Promise<Idea> {
     return this.send('PATCH', `/api/ideas/${id}`, patch);
   }
 
@@ -237,14 +234,10 @@ export class IdeaApi {
   }
 
   /** 合并想法。源想法会被**硬删**（行真的没了），返回合并出来的那一条。 */
-  async mergeIdeas(
-    ids: string[],
-    options: { content?: string; title?: string } = {},
-  ): Promise<Idea> {
+  async mergeIdeas(ids: string[], options: { content?: string } = {}): Promise<Idea> {
     return this.send('POST', '/api/ideas/merge', {
       ids,
       content: options.content ?? null,
-      title: options.title ?? null,
     });
   }
 
@@ -319,7 +312,7 @@ export class IdeaApi {
    *    恢复完之后所有项目、想法都回到活动状态。
    * 3. 再清想法：同一个项目里的想法用合并**硬删**（行真的没了，标签链接
    *    随外键级联清掉），只剩一条合并产物，把它清空标签后软删 ——
-   *    残渣统一成标题为「e2e-reset」的一条，形态可预测。
+   *    残渣统一成正文为「e2e-reset」的一条，形态可预测。
    * 4. 再删项目（收件箱除外）：项目的想法随项目一起进回收站。
    * 5. 设置项复位成默认值。
    */
@@ -355,7 +348,7 @@ export class IdeaApi {
   /**
    * 清掉所有活动想法。
    *
-   * 残渣形态：**每个有想法的项目留一条标题为「e2e-reset」的想法**。
+   * 残渣形态：**每个有想法的项目留一条正文为「e2e-reset」的想法**。
    * 单条想法的项目会临时造一条一起合并（合并至少要两条），
    * 这样残渣的形态统一，断言时好排除。
    */
@@ -376,14 +369,12 @@ export class IdeaApi {
         const helper = await this.createIdea({
           projectId,
           content: RESET_ARTIFACT,
-          title: RESET_ARTIFACT,
         });
         ids = [ids[0], helper.id];
       }
       // 合并 = 硬删：源想法的行没了，标签链接随外键级联清掉。
       const merged = await this.mergeIdeas(ids, {
         content: RESET_ARTIFACT,
-        title: RESET_ARTIFACT,
       });
       await this.setTags(merged.id, []);
       await this.deleteIdea(merged.id);
@@ -438,15 +429,9 @@ export interface Seed {
   /** 造一个项目（默认名「测试项目」）。 */
   project(name?: string): Promise<Project>;
   /** 造一条想法（默认落在收件箱）。 */
-  idea(
-    content: string,
-    options?: { title?: string | null; projectId?: string; tags?: string[] },
-  ): Promise<Idea>;
+  idea(content: string, options?: { projectId?: string; tags?: string[] }): Promise<Idea>;
   /** 造一条已完成的想法。 */
-  doneIdea(
-    content: string,
-    options?: { title?: string | null; projectId?: string; tags?: string[] },
-  ): Promise<Idea>;
+  doneIdea(content: string, options?: { projectId?: string; tags?: string[] }): Promise<Idea>;
   /** 造一条带标签的想法，返回标签名（标签是全局字典，名字会自动建）。 */
   tag(name: string, options?: { content?: string; projectId?: string }): Promise<string>;
   /** 造一个 webhook（默认全局作用域、创建后是禁用的，不会真的发请求）。 */
@@ -493,14 +478,12 @@ export const test = base.extend<E2EFixtures>({
         api.createIdea({
           projectId: options.projectId,
           content,
-          title: options.title ?? null,
           tags: options.tags ?? [],
         }),
       doneIdea: async (content, options = {}) => {
         const idea = await api.createIdea({
           projectId: options.projectId,
           content,
-          title: options.title ?? null,
           tags: options.tags ?? [],
         });
         return api.setDone(idea.id, true);
@@ -509,7 +492,6 @@ export const test = base.extend<E2EFixtures>({
         await api.createIdea({
           projectId: options.projectId,
           content: options.content ?? `带标签「${name}」的想法`,
-          title: null,
           tags: [name],
         });
         return name;

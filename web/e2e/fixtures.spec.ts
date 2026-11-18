@@ -35,14 +35,14 @@ test('复位：回收站里只剩形态统一的残渣', async ({ api, seed }) =
   await api.reset();
 
   const trash = await api.listTrash();
-  // 残渣形态：有想法的项目留一条标题为 e2e-reset 的想法
+  // 残渣形态：有想法的项目留一条正文为 e2e-reset 的想法
   //（项目被删时它挂在容器条目下）。
   const artifacts = trash.flatMap((entry) =>
     entry.kind === 'project' ? entry.ideas : entry.idea ? [entry.idea] : [],
   );
   expect(artifacts.length).toBeGreaterThan(0);
   for (const artifact of artifacts) {
-    expect(artifact.title).toBe(RESET_ARTIFACT);
+    expect(artifact.content).toBe(RESET_ARTIFACT);
   }
   // 业务数据不留残渣。
   expect(JSON.stringify(trash)).not.toContain('会被清掉的想法');

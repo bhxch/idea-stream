@@ -62,7 +62,7 @@ async function checkTag(page: Page, name: string): Promise<void> {
  * 造一组用来测 AND/OR 的想法。
  *
  * 甲：两个标签都有；乙：只有标签甲；丙：只有标签乙；丁：一个标签都没有。
- * 标题里**不含**标签名 —— 条目上的勾选框（aria-label="选择 <标题>"）与标签
+ * 正文里**不含**标签名 —— 条目上的勾选框（aria-label="选择 <正文首行>"）与标签
  * 面板里的勾选框都是 checkbox，名字撞了就定位不到后者（ideas.spec.ts:528-529）。
  */
 async function seedTagIdeas(seed: Seed): Promise<{

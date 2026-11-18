@@ -222,7 +222,7 @@ public sealed class SettingsTests
     private static async Task<string> CreateIdeaAsync(HttpClient client, string projectId)
     {
         var response = await client.PostAsJsonAsync("/api/ideas",
-            new { projectId, content = "想法", title = "标题" });
+            new { projectId, content = "想法" });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());

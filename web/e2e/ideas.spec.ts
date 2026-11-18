@@ -85,7 +85,7 @@ test('新建想法：提交后列表出现、刷新后还在、内容与提交�
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '想法' })).toBeVisible();
 
-  // 两条正文：首行当视觉标题，其余当正文 —— 两段都要能看到。
+  // 两条正文：想法没有标题了，整段（含首行）都当正文 —— 两段都要能看到。
   const content = '第一行：今天想到一个点子\n第二行：再补一句细节';
   await page.getByPlaceholder('记一条想法…').fill(content);
   await page.getByRole('button', { name: '记下' }).click();
@@ -93,8 +93,9 @@ test('新建想法：提交后列表出现、刷新后还在、内容与提交�
   // 提交后立刻出现在列表里。
   const item = page.locator('article').filter({ hasText: '今天想到一个点子' });
   await expect(item).toHaveCount(1);
-  await expect(item.getByRole('heading', { name: '第一行：今天想到一个点子', exact: true })).toBeVisible();
-  await expect(item.getByTitle('点击编辑')).toHaveText('第二行：再补一句细节');
+  // 想法没有标题了：正文是**全文**，首行不再被摘走当标题。
+  await expect(item).toContainText('第一行：今天想到一个点子');
+  await expect(item.getByTitle('点击编辑')).toHaveText('第一行：今天想到一个点子\n第二行：再补一句细节');
 
   // 内容与提交一致（落库了，不只是界面上的）。
   const ideas = await api.listIdeas();
@@ -105,12 +106,12 @@ test('新建想法：提交后列表出现、刷新后还在、内容与提交�
   await page.reload();
   const reloaded = page.locator('article').filter({ hasText: '今天想到一个点子' });
   await expect(reloaded).toHaveCount(1);
-  await expect(reloaded.getByRole('heading', { name: '第一行：今天想到一个点子', exact: true })).toBeVisible();
-  await expect(reloaded.getByTitle('点击编辑')).toHaveText('第二行：再补一句细节');
+  await expect(reloaded).toContainText('第一行：今天想到一个点子');
+  await expect(reloaded.getByTitle('点击编辑')).toHaveText('第一行：今天想到一个点子\n第二行：再补一句细节');
 });
 
 test('编辑想法：改正文并保存，刷新后还是改后的内容', async ({ page, api, seed }) => {
-  const idea = await seed.idea('原来的正文', { title: '一条想法' });
+  const idea = await seed.idea('原来的正文');
   await page.goto('/');
 
   const item = ideaItem(page, idea.id);
@@ -417,9 +418,15 @@ test('合并：选多条合并，结果内容正确且原条目消失', async ({
   const dialog = page.getByRole('dialog', { name: '合并想法' });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole('heading', { name: '合并 2 条想法' })).toBeVisible();
-  // 预览里有这两条。
-  await expect(dialog.getByText('想法甲', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('想法乙', { exact: true })).toBeVisible();
+  // 预览里有这两条。预览行现在取的是**正文首行**（想法没有标题了），
+  // 与下面 <pre> 里的正文文本一模一样 —— 按文本定位会命中 2 个元素，
+  // 所以直接定位预览行本身（.merge-dialog__item-title）。
+  await expect(
+    dialog.locator('.merge-dialog__item-title').filter({ hasText: '想法甲' }),
+  ).toHaveText('想法甲');
+  await expect(
+    dialog.locator('.merge-dialog__item-title').filter({ hasText: '想法乙' }),
+  ).toHaveText('想法乙');
 
   // 合并后的正文：按列表顺序（updated_at 升序）以空行拼接。
   const ordered = (await api.listIdeas()).filter(
@@ -445,10 +452,9 @@ test('合并：选多条合并，结果内容正确且原条目消失', async ({
   expect(ideas[0].id).not.toBe(second.id);
   expect(ideas[0].content).toBe(expectedContent);
 
-  // 结果条目上能看到拼接后的内容（首行当标题，其余当正文）。
+  // 结果条目上能看到**完整的**合并正文（想法没有标题了，只有正文这一段）。
   const merged = ideaItem(page, ideas[0].id);
-  await expect(merged.getByRole('heading', { name: ordered[0].content, exact: true })).toBeVisible();
-  await expect(merged.getByTitle('点击编辑')).toHaveText(ordered[1].content);
+  await expect(merged).toContainText(expectedContent);
 });
 
 test('合并：改过对话框里的正文，合并结果用改后的内容', async ({ page, api, seed }) => {
@@ -474,7 +480,7 @@ test('合并：改过对话框里的正文，合并结果用改后的内容', as
   const ideas = await api.listIdeas();
   expect(ideas).toHaveLength(1);
   expect(ideas[0].content).toBe('我自己整理过的正文');
-  await expect(ideaItem(page, ideas[0].id).getByRole('heading', { name: '我自己整理过的正文', exact: true })).toBeVisible();
+  await expect(ideaItem(page, ideas[0].id)).toContainText('我自己整理过的正文');
 });
 
 // ── 筛选 ─────────────────────────────────────────────────────────────────
@@ -498,7 +504,7 @@ test('筛选-按项目：只显示选中项目的想法', async ({ page, seed })
 });
 
 test('筛选-按标签：只显示带该标签的想法', async ({ page, seed }) => {
-  // 条目的标题刻意**不含**标签名：条目上的勾选框（aria-label="选择 <标题>"）
+  // 条目的正文刻意**不含**标签名：条目上的勾选框（aria-label="选择 <正文首行>"）
   // 与标签过滤里的勾选框都是 checkbox，名字撞了就没法只定位到后者。
   await seed.idea('想法甲', { tags: ['灵感库'] });
   await seed.idea('想法乙', { tags: ['待办清单'] });
@@ -656,7 +662,7 @@ test('清除按钮：按状态过滤时出现', async ({ page, seed }) => {
 
 test('清除按钮：按标签过滤时出现', async ({ page, seed }) => {
   // 条目的正文刻意**不含**标签名：想法条目上的勾选框
-  // （aria-label="选择 <标题>"）与标签过滤里的勾选框都是 checkbox，
+  // （aria-label="选择 <正文首行>"）与标签过滤里的勾选框都是 checkbox，
   // 正文里带上标签名就会撞名（strict mode 报错）。
   await seed.idea('想法甲', { tags: ['灵感库'] });
   await page.goto('/');

@@ -17,7 +17,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 > |---|---|---|
 > | 审计同批：`extra-1` ~ `extra-6` | P0 那七条里的前六条（见下表） | ❌ 没有 |
 > | 本轮：前端一批行为改动之后补写 | 关键词搜索、「清除」按钮、加载态不闪空态、回首页入口、aria-current、项目级 webhook 入口、项目管理页空状态、webhook URL 前端校验、成功提示、投递记录刷新、移动端点按目标、输入框单层边框、渐隐带 | ✅ 已回填 |
-> | 本轮：搜索改到服务端之后 | 标题 / 标签名 / 项目名能搜到、命中带高亮、英文是词级、中文是词元相邻、多段之间是 AND、往回翻历史（打开页面停在最下边、接近顶部自动加载更旧的一页） | ✅ 已回填 |
+> | 本轮：搜索改到服务端之后 | 标签名 / 项目名能搜到、命中带高亮、英文是词级、中文是词元相邻、多段之间是 AND、往回翻历史（打开页面停在最下边、接近顶部自动加载更旧的一页） | ✅ 已回填 |
 >
 > | 审计里的 P0 漏项 | 现在由谁覆盖 |
 > |---|---|
@@ -37,13 +37,13 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 
 | 区域 | 功能点数 | 已覆盖 | 漏掉 | 覆盖率 |
 |---|---:|---:|---:|---:|
-| `/` 想法（HomePage + 想法条目 + 过滤 + 批量） | 71 | 42 | 29 | 59% |
+| `/` 想法（HomePage + 想法条目 + 过滤 + 批量） | 69 | 41 | 28 | 59% |
 | `/projects` 项目管理 | 17 | 12 | 5 | 71% |
 | `/trash` 回收站 | 13 | 11 | 2 | 85% |
 | `/webhooks` 全局 webhook | 31 | 22 | 9 | 71% |
 | `/projects/:id/webhooks` 项目级 webhook | 5 | 5 | 0 | 100% |
 | 外壳 / 路由 / Toast / 排版响应式 | 21 | 21 | 0 | 100% |
-| **合计** | **158** | **113** | **45** | **72%** |
+| **合计** | **156** | **112** | **44** | **72%** |
 
 > 「漏掉」= 表里「覆盖它的用例」列为 `—` 的行，即**没有任何用例碰过**。
 > 另有 **2 条只测了一半**（批量加标签的并集语义、标签补全下拉的内容顺序），
@@ -62,13 +62,13 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | `/` | 新建想法：Shift+Enter 换行（不提交） | — | 同上，`Composer.vue:49` |
 | `/` | 「记下」按钮在内容为空时禁用 | — | `Composer.vue:66` 的 `:disabled="text.trim().length === 0 \|\| submitting"` |
 | `/` | 提交失败时输入框内容保留 | — | `Composer.vue:37`（`ok` 为 false 不清空）；失败路径要用接口打桩才能造 |
-| `/` | 切换完成态 / 取消完成 | ideas.spec.ts:141、ideas.spec.ts:166 | — |
-| `/` | 编辑正文：点正文进入编辑态 | ideas.spec.ts:112 | — |
-| `/` | 编辑正文：Ctrl+Enter 保存 | ideas.spec.ts:112 | — |
+| `/` | 切换完成态 / 取消完成 | ideas.spec.ts:142、ideas.spec.ts:167 | — |
+| `/` | 编辑正文：点正文进入编辑态 | ideas.spec.ts:113 | — |
+| `/` | 编辑正文：Ctrl+Enter 保存 | ideas.spec.ts:113 | — |
 | `/` | 编辑正文：Esc 取消编辑 | — | `MessageItem.vue:290-293`（`onEditorKeydown` 的 Escape 分支） |
 | `/` | 编辑正文：失焦自动保存 | — | `MessageItem.vue:576` 的 `@blur="saveEdit"` |
 | `/` | 编辑正文：内容没改时不发请求、直接收起 | — | `MessageItem.vue:232-237` |
-| `/` | 加标签 / 改标签 / 删标签 | ideas.spec.ts:190、ideas.spec.ts:212、ideas.spec.ts:239 | — |
+| `/` | 加标签 / 改标签 / 删标签 | ideas.spec.ts:191、ideas.spec.ts:213、ideas.spec.ts:240 | — |
 | `/` | 标签补全下拉出现、且当前项目用过的标签排前面 | projects.spec.ts:341 | 只断言了候选**内容与顺序**，没点过候选项 |
 | `/` | 补全：点候选项添加标签 | — | `TagEditor.vue:141-148` 的 `@click="addTag(option)"` |
 | `/` | 标签输入：空格 / 逗号分隔成多个标签 | — | `TagEditor.vue:98-102` |
@@ -76,57 +76,55 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | `/` | 标签输入：上下键移动高亮候选 | — | `TagEditor.vue:75-81, 108-111` |
 | `/` | 标签输入：Esc 清掉半截文字 | — | `TagEditor.vue:103-107` |
 | `/` | 收起标签编辑器时「还有未保存的改动」的二次确认 | — | `MessageItem.vue:325-338` 的 `window.confirm`；`ideas.spec.ts:62` 的 `openTagEditor` 辅助函数会**自动接受**对话框，从没断言过这个确认框 |
-| `/` | 删除想法：二次确认后删除 | ideas.spec.ts:263 | — |
+| `/` | 删除想法：二次确认后删除 | ideas.spec.ts:264 | — |
 | `/` | 删除想法：点「取消」不删 | — | `MessageItem.vue:617`；项目/webhook 的「取消」都测了，唯独这条没测 |
-| `/` | 多选勾选 / 取消勾选、批量条条数 | ideas.spec.ts:290 | — |
-| `/` | 批量标记完成 / 批量撤销完成 | ideas.spec.ts:315 | — |
-| `/` | 批量加标签 | ideas.spec.ts:345 | 只断言「都加上新标签」，没断言**原有标签是否保留**（并集语义，`HomePage.vue:641-645` 的 `replace: false`） |
-| `/` | 批量删除（二次确认） | ideas.spec.ts:375 | — |
+| `/` | 多选勾选 / 取消勾选、批量条条数 | ideas.spec.ts:291 | — |
+| `/` | 批量标记完成 / 批量撤销完成 | ideas.spec.ts:316 | — |
+| `/` | 批量加标签 | ideas.spec.ts:346 | 只断言「都加上新标签」，没断言**原有标签是否保留**（并集语义，`HomePage.vue:641-645` 的 `replace: false`） |
+| `/` | 批量删除（二次确认） | ideas.spec.ts:376 | — |
 | `/` | 批量删除：点「取消」不删 | — | `BatchBar.vue:151-152` |
 | `/` | 批量条「取消选择」清空勾选 | — | `BatchBar.vue:131-133`；**唯一的清除勾选入口**，没被测过 |
-| `/` | 合并：对话框预览（条目与初始拼接正文） | ideas.spec.ts:406 | — |
-| `/` | 合并：改过正文再合并 | ideas.spec.ts:454 | — |
+| `/` | 合并：对话框预览（条目与初始拼接正文） | ideas.spec.ts:407 | — |
+| `/` | 合并：改过正文再合并 | ideas.spec.ts:460 | — |
 | `/` | 合并：点「取消」不合并 | — | `MergeDialog.vue:68` |
 | `/` | 合并按钮在只勾一条时禁用 | — | `BatchBar.vue:109`（`:disabled="busy \|\| count < 2"`） |
 | `/` | 合并结果滚到底部并高亮定位 | — | `HomePage.vue:699` 设 `focusIdeaId`，`useDeepLink.ts:111-139` 定位；现有合并用例只断言条目出现 |
-| `/` | 按项目筛选（侧栏切项目） | ideas.spec.ts:482、projects.spec.ts:241、projects.spec.ts:272 | — |
-| `/` | 按状态筛选：全部 / 未完成 / 已完成 | ideas.spec.ts:522 | — |
-| `/` | 按标签筛选：勾选标签 | ideas.spec.ts:500 | — |
+| `/` | 按项目筛选（侧栏切项目） | ideas.spec.ts:488、projects.spec.ts:241、projects.spec.ts:272 | — |
+| `/` | 按状态筛选：全部 / 未完成 / 已完成 | ideas.spec.ts:528 | — |
+| `/` | 按标签筛选：勾选标签 | ideas.spec.ts:506 | — |
 | `/` | 项目视图里给想法加标签（切到该项目后操作） | projects.spec.ts:298 | — |
 | `/` | 项目视图里删掉想法的标签 | projects.spec.ts:320 | — |
 | `/` | 切到没有想法的项目：想法列表空状态 | projects.spec.ts:383 | — |
-| `/` | 清除筛选：取消标签与状态筛选后列表恢复全部 | ideas.spec.ts:541 | — |
-| `/` | 关键词搜索：输入即过滤（列表只剩命中的那几条） | ideas.spec.ts:588 | — |
-| `/` | 关键词搜索：忽略大小写 | ideas.spec.ts:601 | — |
-| `/` | 关键词搜索：搜不到时显示空状态 | ideas.spec.ts:614 | — |
-| `/` | 关键词搜索：清空输入后列表恢复全部 | ideas.spec.ts:625 | — |
-| `/` | 关键词搜索：**标题**里的词也能搜到 | search.spec.ts:60 | — |
-| `/` | 关键词搜索：**标签名**也能搜到 | search.spec.ts:73 | — |
-| `/` | 关键词搜索：**项目名**也能搜到 | search.spec.ts:91 | — |
-| `/` | 关键词搜索：命中带高亮（正文里包 `<mark>`） | search.spec.ts:105 | — |
-| `/` | 关键词搜索：英文是**词级**（`hel` 搜不到 `hello`） | search.spec.ts:117 | — |
-| `/` | 关键词搜索：多段之间是 **AND**（`咖啡 水温` 两段都要有） | search.spec.ts:133 | — |
-| `/` | 关键词搜索：中文是**词元相邻**（标点不挡路 / 中间隔一个字就不算） | search.spec.ts:147 | 唯一能分开「词元相邻」与「子串」的用例：`咖啡水温` 命中 `咖啡，水温`、不命中 `咖啡的水温` |
-| `/` | 「清除」按钮：没有过滤条件时不出现 | ideas.spec.ts:640 | — |
-| `/` | 「清除」按钮：状态 / 标签 / 关键词任一生效时出现 | ideas.spec.ts:648、ideas.spec.ts:657、ideas.spec.ts:670 | — |
-| `/` | 「清除」按钮：一下把状态、标签、关键词一起清掉 | ideas.spec.ts:679 | — |
+| `/` | 清除筛选：取消标签与状态筛选后列表恢复全部 | ideas.spec.ts:547 | — |
+| `/` | 关键词搜索：输入即过滤（列表只剩命中的那几条） | ideas.spec.ts:594 | — |
+| `/` | 关键词搜索：忽略大小写 | ideas.spec.ts:607 | — |
+| `/` | 关键词搜索：搜不到时显示空状态 | ideas.spec.ts:620 | — |
+| `/` | 关键词搜索：清空输入后列表恢复全部 | ideas.spec.ts:631 | — |
+| `/` | 关键词搜索：**标签名**也能搜到 | search.spec.ts:60 | — |
+| `/` | 关键词搜索：**项目名**也能搜到 | search.spec.ts:78 | — |
+| `/` | 关键词搜索：命中带高亮（正文里包 `<mark>`） | search.spec.ts:92 | — |
+| `/` | 关键词搜索：英文是**词级**（`hel` 搜不到 `hello`） | search.spec.ts:104 | — |
+| `/` | 关键词搜索：多段之间是 **AND**（`咖啡 水温` 两段都要有） | search.spec.ts:120 | — |
+| `/` | 关键词搜索：中文是**词元相邻**（标点不挡路 / 中间隔一个字就不算） | search.spec.ts:134 | 唯一能分开「词元相邻」与「子串」的用例：`咖啡水温` 命中 `咖啡，水温`、不命中 `咖啡的水温` |
+| `/` | 「清除」按钮：没有过滤条件时不出现 | ideas.spec.ts:646 | — |
+| `/` | 「清除」按钮：状态 / 标签 / 关键词任一生效时出现 | ideas.spec.ts:654、ideas.spec.ts:663、ideas.spec.ts:676 | — |
+| `/` | 「清除」按钮：一下把状态、标签、关键词一起清掉 | ideas.spec.ts:685 | — |
 | `/` | **标签 AND/OR 模式切换（任一 / 全部）** | — | `TagFilter.vue:37-39, 90-101` 的 `toggleMode` 按钮；AND 模式必须**同时**命中全部选中标签才显示（`lib/filter.ts:54-56`），语义完全没测 |
 | `/` | AND/OR 偏好写进 localStorage、刷新后仍是 | — | `composables/useTagMode.ts:23-31` |
 | `/` | 标签过滤面板：点组件外部收起 / Esc 收起 | — | `TagFilter.vue:50-66` |
-| `/` | 深链 `?idea=<id>` 直达并高亮 | ideas.spec.ts:712 | — |
-| `/` | 页面载入后自动滚到底部（最新一条在视口里） | search.spec.ts:165 | 顺带断言最老的一条**不在**视口里 —— 内容没溢出时「停在底部」是废话 |
-| `/` | 往回翻历史：接近顶部自动加载更旧的一页 | search.spec.ts:183 | 断的是**服务端分页的方向**（`offset` 从**最新**一端数）与「往回翻之后视口没跳走」。「更旧的一页拼在前面还是后面」显示层分不出来（它按 `updated_at` 重排），由 `web/src/pages/HomePage.spec.ts` 的单测钉住 |
+| `/` | 深链 `?idea=<id>` 直达并高亮 | ideas.spec.ts:718 | — |
+| `/` | 页面载入后自动滚到底部（最新一条在视口里） | search.spec.ts:152 | 顺带断言最老的一条**不在**视口里 —— 内容没溢出时「停在底部」是废话 |
+| `/` | 往回翻历史：接近顶部自动加载更旧的一页 | search.spec.ts:170 | 断的是**服务端分页的方向**（`offset` 从**最新**一端数）与「往回翻之后视口没跳走」。「更旧的一页拼在前面还是后面」显示层分不出来（它按 `updated_at` 重排），由 `web/src/pages/HomePage.spec.ts` 的单测钉住 |
 | `/` | 上翻时不抢滚动，出现「↓ 有 N 条新内容」按钮 | — | `HomePage.vue:979-986` + `composables/useScrollFollow.ts:100-113` |
-| `/` | SSE：别的上下文新建的想法自动出现 | ideas.spec.ts:761 | — |
+| `/` | SSE：别的上下文新建的想法自动出现 | ideas.spec.ts:767 | — |
 | `/` | SSE：**项目**改名 / 新建 / 删除同步到侧栏 | — | `HomePage.vue:736-750`（`project.*` 分流）、`HomePage.vue:840-877`（就地改名 / 删项目时切回「全部项目」） |
 | `/` | 项目侧栏「＋」入口到项目管理页 | navigation.spec.ts:219 | — |
 | `/` | 窄屏 Tab 条的「＋」「⋯」按钮 | — | `ProjectTabs.vue:128-135`（`emit('new-project')` / `emit('open-menu')`） |
 | `/` | 侧栏 / Tab 上的项目条数与「全部项目」总数 | — | `ProjectSidebar.vue:35,122,145`、`ProjectTabs.vue:31,110,123` |
 | `/` | 「全部项目」命中数超上限的兜底提示 | — | `HomePage.vue:318-336`（`recoverFromTooMany`） |
 | `/` | 切换项目失败时回滚到上一个项目 | — | `HomePage.vue:198-214`（`switchProject` 的 catch 分支） |
-| `/` | 想法带 title 时：标题单独显示、正文完整显示 | — | `MessageItem.vue:171-197`；现有用例只覆盖「无 title、首行当视觉标题」。`search.spec.ts` 的两条用例带了 title，但没断言「标题与正文分开显示」这件事本身 |
-| `/` | 底部输入框只有一层边框（外壳不画边框，输入框自己画一层） | layout.spec.ts:678 | — |
-| `/` | 窄屏项目 Tab 条：渐隐带不淡掉还看得清的字（条数字样保持可读） | layout.spec.ts:793 | — |
+| `/` | 底部输入框只有一层边框（外壳不画边框，输入框自己画一层） | layout.spec.ts:677 | — |
+| `/` | 窄屏项目 Tab 条：渐隐带不淡掉还看得清的字（条数字样保持可读） | layout.spec.ts:792 | — |
 | `/` | 加载态不闪空状态（「加载中…」不与「这里还没有想法。」同时出现） | navigation.spec.ts:400 | — |
 
 ### 2.2 `/projects` 项目管理（ProjectsPage.vue）
@@ -239,23 +237,23 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | 全局 | ToastHost：常驻、无消息时为空、错误提示、4 秒后自动消失 | navigation.spec.ts:345、navigation.spec.ts:354、navigation.spec.ts:367 | — |
 | 全局 | 加载态「加载中…」 | navigation.spec.ts:381 | — |
 | 全局 | 空状态文案（想法 / webhook） | navigation.spec.ts:457、navigation.spec.ts:470 | — |
-| 全局 | 排版与响应式：5 路由 × 4 视口 | layout.spec.ts:512（20 条） | — |
-| 全局 | 移动端点按目标 ≥ 32×32（5 路由） | layout.spec.ts:542（5 条） | — |
-| 全局 | 移动端点按目标：新加的「Webhook」入口与「想法」入口 ≥ 32×32 | layout.spec.ts:644、layout.spec.ts:661 | — |
+| 全局 | 排版与响应式：5 路由 × 4 视口 | layout.spec.ts:511（20 条） | — |
+| 全局 | 移动端点按目标 ≥ 32×32（5 路由） | layout.spec.ts:541（5 条） | — |
+| 全局 | 移动端点按目标：新加的「Webhook」入口与「想法」入口 ≥ 32×32 | layout.spec.ts:643、layout.spec.ts:660 | — |
 
 ---
 
 ## 三、漏掉的功能点（按重要程度）
 
-下面把 **45 条漏掉的功能点**（与上表的 `—` 一一对应）连同 **1 条只测了一半的**（第 20 条）全部列出，
-共 **46 条**，按重要程度分四档。
+下面把 **44 条漏掉的功能点**（与上表的 `—` 一一对应）连同 **1 条只测了一半的**（第 20 条）全部列出，
+共 **45 条**，按重要程度分四档。
 
 ### P0 — 核心语义 / 整块 UI / 跨设备同步（7 条）
 
 1. **标签过滤的 AND / OR 模式切换**
    - 位置：`web/src/components/TagFilter.vue:37-39`（`toggleMode`）、`:90-101`（按钮）；
      匹配语义在 `web/src/lib/filter.ts:54-56`。
-   - 为什么算漏掉：`ideas.spec.ts:500` 只覆盖了默认的 OR（勾两个标签 → 显示 2 条）。
+   - 为什么算漏掉：`ideas.spec.ts:506` 只覆盖了默认的 OR（勾两个标签 → 显示 2 条）。
      AND 模式下必须**同时**命中全部选中标签，这个分支一条用例都没走过；按钮本身也从未被点过。
 
 2. **AND / OR 偏好写进 localStorage、刷新后仍是**
@@ -286,14 +284,14 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 7. **SSE 的项目事件**（改名 / 新建 / 删除项目同步到侧栏）
    - 位置：`web/src/pages/HomePage.vue:736-750`（`project.*` 分流）、`:831-877`（`applyProjectEvent`：
      就地改名、删项目时切回「全部项目」、本地没有则整表重拉）。
-   - 为什么算漏掉：`ideas.spec.ts:761` 只覆盖了 `idea.created` 一类事件。改项目名、删项目这类
+   - 为什么算漏掉：`ideas.spec.ts:767` 只覆盖了 `idea.created` 一类事件。改项目名、删项目这类
      **跨设备同步**是首页最容易被改坏的地方（`applyProjectEvent` 里还带着 `switchProject` 回滚分支）。
 
 ### P1 — 用户每天点得到、现在几乎没测（14 条）
 
 8. **批量条「取消选择」按钮**
    - 位置：`web/src/components/BatchBar.vue:131-133`。
-   - 为什么算漏掉：它是**唯一**清空勾选的操作（勾错一条只能一条条取消）。`ideas.spec.ts:290`
+   - 为什么算漏掉：它是**唯一**清空勾选的操作（勾错一条只能一条条取消）。`ideas.spec.ts:291`
      只验证了「勾上 → 批量条出现 → 逐个取消 → 条数变」，从没点过这个按钮。
 
 9. **删除想法的「取消」二次确认**
@@ -303,11 +301,11 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 
 10. **批量删除的「取消」**
     - 位置：`web/src/components/BatchBar.vue:147-153`。
-    - 为什么算漏掉：`ideas.spec.ts:375` 只走通了「确认删除」，没走「取消」这条退路。
+    - 为什么算漏掉：`ideas.spec.ts:376` 只走通了「确认删除」，没走「取消」这条退路。
 
 11. **合并对话框的「取消」**
     - 位置：`web/src/components/MergeDialog.vue:68`（`@click="emit('cancel')"`）、`HomePage.vue:1016`。
-    - 为什么算漏掉：`ideas.spec.ts:406` 只走通了「合并成一条」；取消后对话框应关闭、勾选应保留。
+    - 为什么算漏掉：`ideas.spec.ts:407` 只走通了「合并成一条」；取消后对话框应关闭、勾选应保留。
 
 12. **「合并」按钮在只勾一条时禁用**
     - 位置：`web/src/components/BatchBar.vue:106-114`（`:disabled="busy || count < 2"`）。
@@ -345,7 +343,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 
 20. **批量加标签的「并集式追加」语义**（*只测了一半*）
     - 位置：`web/src/pages/HomePage.vue:632-654`（`replace: false`）、`BatchBar.vue:60-72`（回执后清草稿）。
-    - 为什么算漏掉：`ideas.spec.ts:345` 只断言「两条都加上了新标签」，没断言**它们原有的标签还在**
+    - 为什么算漏掉：`ideas.spec.ts:346` 只断言「两条都加上了新标签」，没断言**它们原有的标签还在**
       （覆盖式 vs 并集式是两种完全不同的语义，后端 `replace` 参数就在这一层）。
 
 21. **「记下」按钮在内容为空时禁用**
@@ -409,7 +407,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
     - 位置：`web/src/components/MessageItem.vue:232-237`。
     - 为什么算漏掉：这条分支省掉一次请求，也是「在飞保护」之外的一道判断。
 
-### P3 — 展示层与边界路径（12 条）
+### P3 — 展示层与边界路径（11 条）
 
 35. **窄屏 Tab 条的「＋」「⋯」按钮**
     - 位置：`web/src/components/ProjectTabs.vue:128-135`（`emit('new-project')` / `emit('open-menu')`）。
@@ -424,41 +422,36 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
     - 位置：`web/src/pages/ProjectsPage.vue:282-285`。
     - 为什么算漏掉：同上；`formatRelativeTime` 的输出也没被断言过。
 
-38. **想法带 title 时：标题单独显示、正文完整显示**
-    - 位置：`web/src/components/MessageItem.vue:171-197`（`visualTitle` / `bodyContent`）。
-    - 为什么算漏掉：现有用例只覆盖「无 title、首行当视觉标题」（ideas.spec.ts:84-110）；
-      `seed.idea` 支持传 title，这条路径没用上。
-
-39. **上翻时不抢滚动，出现「↓ 有 N 条新内容」按钮**
+38. **上翻时不抢滚动，出现「↓ 有 N 条新内容」按钮**
     - 位置：`web/src/pages/HomePage.vue:979-986`、`web/src/composables/useScrollFollow.ts:100-138`。
     - 为什么算漏掉：`useScrollFollow` 的整套逻辑（贴底判定、积攒计数、按钮回到底部）一条用例都没有。
 
-40. **合并结果滚到底部并高亮定位**
+39. **合并结果滚到底部并高亮定位**
     - 位置：`web/src/pages/HomePage.vue:699`（设 `focusIdeaId`）、`web/src/composables/useDeepLink.ts:111-139`。
     - 为什么算漏掉：合并结果出现在列表最下面，用户多半没看见；
-      `ideas.spec.ts:406` 只断言了条目出现，没断言它被滚到视野里并高亮。
+      `ideas.spec.ts:407` 只断言了条目出现，没断言它被滚到视野里并高亮。
 
-41. **投递记录的失败态（`lastError`）与重投失败提示**
+40. **投递记录的失败态（`lastError`）与重投失败提示**
     - 位置：`web/src/components/DeliveryList.vue:75`、`:34-51`。
     - 为什么算漏掉：投递失败是 webhook 使用中最常见的现场，只测了成功路径。
 
-42. **回收站恢复请求在飞时按钮禁用**
+41. **回收站恢复请求在飞时按钮禁用**
     - 位置：`web/src/pages/TrashPage.vue:154, 172, 200`（`:disabled="busyId !== null"`）。
     - 为什么算漏掉：防重复提交，用户连点「恢复」时不该发两次。
 
-43. **「全部项目」命中数超上限的兜底提示**
+42. **「全部项目」命中数超上限的兜底提示**
     - 位置：`web/src/pages/HomePage.vue:318-336`（`recoverFromTooMany`）、`:339-347`（提示文案）。
     - 为什么算漏掉：这是首页唯一一条「应用替用户做决定」的分支（自动切到最近有活动的项目）。
 
-44. **切换项目失败时回滚到上一个项目**
+43. **切换项目失败时回滚到上一个项目**
     - 位置：`web/src/pages/HomePage.vue:198-214`（`switchProject` 的 catch 分支）。
     - 为什么算漏掉：回滚错了就是「列表停在错的数据上」，而且是静默的。
 
-45. **切换项目排序方式后顺序不跳位**
+44. **切换项目排序方式后顺序不跳位**
     - 位置：`web/src/pages/ProjectsPage.vue:183-193`（注释描述的语义）、`server/.../ProjectService.SetSortMode`。
     - 为什么算漏掉：`projects.spec.ts:141` 只断言「页面顺序与后端给的一致」，没断言「与切换**前**一致」。
 
-46. **提交失败时输入框内容保留**
+45. **提交失败时输入框内容保留**
     - 位置：`web/src/components/Composer.vue:37`（`ok` 为 false 不清空）、`HomePage.vue:381-401`。
     - 为什么算漏掉：用户刚敲的正文不能因为一次网络失败就没了；失败路径要用接口打桩才能造。
 

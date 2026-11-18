@@ -99,9 +99,7 @@ const ROUTES: RouteSpec[] = [
     name: 'home',
     async prepare(seed) {
       await seed.project('布局测试项目');
-      await seed.idea('排版探测想法：第一行\n第二行正文，用来测试正文换行。', {
-        title: '排版探测标题',
-      });
+      await seed.idea('排版探测想法：第一行\n第二行正文，用来测试正文换行。');
       // 一条特别长的、里面没有空格的正文：窄屏上最容易把容器撑破。
       await seed.idea(
         'SupercalifragilisticexpialidociousSupercalifragilisticexpialidociousSupercalifragilisticexpialidocious',
@@ -109,7 +107,8 @@ const ROUTES: RouteSpec[] = [
       await seed.idea('带标签的排版探测想法', { tags: ['排版探测标签'] });
       return '/';
     },
-    ready: (page) => page.getByText('排版探测标题', { exact: true }).first(),
+    // 想法没有标题了：就绪探针取正文里的一个文本。
+    ready: (page) => page.getByText('排版探测想法', { exact: false }).first(),
     keyElements: (page) => [
       { name: '标题「想法」', locator: page.getByRole('heading', { name: '想法', exact: true }) },
       { name: '状态过滤组', locator: page.getByRole('group', { name: '状态过滤' }) },
@@ -125,9 +124,9 @@ const ROUTES: RouteSpec[] = [
       { name: '.composer', locator: page.locator('.composer') },
     ],
     textBlocks: (page) => [
-      { name: '想法条目的标题', locator: page.locator('.idea .title').first() },
+      // 没有标题层了（<h2 class="title"> 已拆掉）：文本块只剩正文。
       { name: '想法条目的正文', locator: page.locator('.idea .body').first() },
-      { name: '超长不换行标题', locator: page.locator('.idea .title').nth(1) },
+      { name: '超长不换行正文', locator: page.locator('.idea .body').nth(1) },
     ],
     extraChecks: checkFixedElements,
   },

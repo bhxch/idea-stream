@@ -2,7 +2,7 @@
  * 服务端搜索与往回翻历史的 E2E 用例。
  *
  * 覆盖（搜索改造到服务端之后的行为）：
- * - 搜索范围不止正文：标题、标签名、项目名都能搜到；
+ * - 搜索范围不止正文：标签名、项目名都能搜到；
  * - 命中带高亮（`<mark>`）；
  * - 英文是**词级**（搜 `hel` 搜不到 `hello`，搜 `hello` 才搜得到）；
  * - 空格分出的多段之间是 **AND**（两段都出现才命中，不必相邻）；
@@ -57,21 +57,8 @@ function scrollContainer(page: Page): Locator {
 
 // ── 搜索 ─────────────────────────────────────────────────────────────────
 
-test('搜索：能搜到标题里的词', async ({ page, seed }) => {
-  // 关键词只在**标题**里，正文里没有 —— 命中靠的是标题那一列。
-  await seed.idea('正文里没有那个词', { title: '采购咖啡机滤芯' });
-  await seed.idea('另一条想法');
-  await page.goto('/');
-  await expect(page.locator('article')).toHaveCount(2);
-
-  await keywordSearch(page).fill('咖啡机');
-
-  await expect(page.locator('article')).toHaveCount(1);
-  await expect(page.locator('article').filter({ hasText: '采购咖啡机滤芯' })).toHaveCount(1);
-});
-
 test('搜索：能搜到标签名', async ({ page, seed, api }) => {
-  // 关键词只在**标签**里 —— 正文与标题都不含它。
+  // 关键词只在**标签**里 —— 正文不含它。
   await seed.idea('想法甲', { tags: ['咖啡'] });
   await seed.idea('想法乙');
   await page.goto('/');
@@ -89,7 +76,7 @@ test('搜索：能搜到标签名', async ({ page, seed, api }) => {
 });
 
 test('搜索：能搜到项目名', async ({ page, seed }) => {
-  // 关键词只在**项目名**里 —— 正文、标题、标签都不含它。
+  // 关键词只在**项目名**里 —— 正文、标签都不含它。
   const project = await seed.project('工作复盘');
   await seed.idea('想法甲', { projectId: project.id });
   await seed.idea('想法乙');
@@ -103,8 +90,8 @@ test('搜索：能搜到项目名', async ({ page, seed }) => {
 });
 
 test('搜索：结果带高亮', async ({ page, seed }) => {
-  // 关键词在**正文**里，标题另给一个 —— 这样高亮落在正文那一段上。
-  const idea = await seed.idea('今天买了咖啡机滤芯', { title: '采购清单' });
+  // 关键词在**正文**里 —— 想法没有标题了，只有一段文字。
+  const idea = await seed.idea('今天买了咖啡机滤芯');
   await page.goto('/');
 
   await keywordSearch(page).fill('咖啡');

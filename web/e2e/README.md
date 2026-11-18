@@ -165,7 +165,7 @@ await seed.webhook({ name: '我的钩子' });                 // 造 webhook（�
 1. 删掉所有 webhook（全局的 + 项目级的）；
 2. 把回收站里的条目**恢复**回来（回收站清空，所有项目与想法回到活动状态）；
 3. 清掉所有活动想法：同一个项目里的想法用合并**硬删**（行真的没了），
-   只留一条标题为 `e2e-reset` 的合并产物，清空标签后软删；
+   只留一条正文为 `e2e-reset` 的合并产物，清空标签后软删；
 4. 删掉除收件箱外的项目；
 5. `project.sort_mode` 复位成默认值 `recent`。
 
@@ -186,7 +186,7 @@ await seed.webhook({ name: '我的钩子' });                 // 造 webhook（�
 | 活动项目 | 只有「收件箱」 ✅ |
 | webhook | 0 个 ✅ |
 | 设置 | `project.sort_mode = recent` ✅ |
-| **回收站** | ⚠️ **有残渣**：每个有想法的项目留一条标题为 `e2e-reset` 的想法（项目被删时它挂在容器条目下） |
+| **回收站** | ⚠️ **有残渣**：每个有想法的项目留一条正文为 `e2e-reset` 的想法（项目被删时它挂在容器条目下） |
 | **标签字典** | ⚠️ **有残渣**：用过的标签名还在，计数为 0 |
 
 这两处残渣**清不掉是应用的设计，不是夹具偷懒**：回收站只允许恢复、不允许彻底删除
@@ -228,7 +228,7 @@ test('回收站一开始是空的', async ({ page }) => {
    - `nav[aria-label="管理"]`（页面导航）、`nav[aria-label="项目"]`（项目侧栏）
    - `[data-project-id="<项目 id>"]`（项目条目；`[data-project-id="all"]` 是「全部」）
    - `role="group" aria-label="状态过滤"`、`aria-label="新项目名称"`、`aria-label="项目名称"`
-   - `aria-label="选择 <标题>"`（想法条目的复选框）、`aria-label="删除标签 <标签名>"`
+   - `aria-label="选择 <正文首行>"`（想法条目的复选框）、`aria-label="删除标签 <标签名>"`
    - `role="status"`（全局提示条 ToastHost）
 3. **可见文字**：`page.getByText('想法二')` —— 用户看得见的文案。
 4. **BEM class**（`page.locator('.bar__title')`）：**最后手段**。

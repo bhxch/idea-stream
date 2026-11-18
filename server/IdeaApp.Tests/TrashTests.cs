@@ -599,9 +599,9 @@ public sealed class TrashTests
 
     /// <summary>建一条想法并返回它的 id。</summary>
     private static async Task<string> CreateIdeaAsync(
-        HttpClient client, string content, string? projectId = null, string? title = null)
+        HttpClient client, string content, string? projectId = null)
     {
-        var response = await client.PostAsJsonAsync("/api/ideas", new { projectId, content, title });
+        var response = await client.PostAsJsonAsync("/api/ideas", new { projectId, content });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         return await ReadIdAsync(response);

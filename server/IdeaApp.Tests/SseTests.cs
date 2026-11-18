@@ -32,7 +32,7 @@ public sealed class SseTests
         using var client = factory.CreateClient();
         using var connection = await ConnectAsync(client);
 
-        var ideaId = await CreateIdeaAsync(client, "第一条想法", "标题");
+        var ideaId = await CreateIdeaAsync(client, "第一条想法");
 
         var frame = await ReadFrameAsync(connection);
 
@@ -51,7 +51,7 @@ public sealed class SseTests
         using var client = factory.CreateClient();
         using var connection = await ConnectAsync(client);
 
-        var ideaId = await CreateIdeaAsync(client, "第一条想法", "标题");
+        var ideaId = await CreateIdeaAsync(client, "第一条想法");
 
         var frame = SseFrame.Parse(await ReadFrameAsync(connection));
 
@@ -422,9 +422,9 @@ public sealed class SseTests
     }
 
     /// <summary>建一条想法并返回它的 id。</summary>
-    private static async Task<string> CreateIdeaAsync(HttpClient client, string content, string? title = null)
+    private static async Task<string> CreateIdeaAsync(HttpClient client, string content)
     {
-        var response = await client.PostAsJsonAsync("/api/ideas", new { content, title });
+        var response = await client.PostAsJsonAsync("/api/ideas", new { content });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
