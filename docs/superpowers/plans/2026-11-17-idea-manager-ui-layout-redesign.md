@@ -1255,8 +1255,17 @@
     - `.title` 那条规则（`:736-741`）删掉；
     - `.idea--done .title,` 从选择器里去掉（只留 `.idea--done .body`）；
     - `.title mark,` 从 `<mark>` 的选择器里去掉（只留 `.body mark,` 与 `.chip mark`）；
-    - 窄屏那块 `@media (max-width: 640px)`（`:812-870`）里 `.title { order: 4; flex: 1 1 100%; }` 删掉；
-    - ⚠️ **`.head` 的 flex-wrap 窄屏规则**（`:838-849`）是围绕「标题独占一行」写的，标题没了之后那一行没有内容了 —— 把这两条规则连同它们上面的注释一起删掉（`.head` 回到「勾选框 → 标记完成 → 时间」一行）。
+    - 窄屏那块 `@media (max-width: 640px)`（`:812-870`）里这几条**一起**删掉 —— 它们是**一套**，不是各管各的：
+      - `.title { order: 4; flex: 1 1 100%; }`（标题独占一行 —— 标题没了）；
+      - `.head { flex-wrap: wrap; align-items: center; }` 连同它上面的那段注释（窄屏改成两行，是为了给标题腾出整行 —— 标题没了，这一行只剩「勾选框 → 标记完成 → 时间」，一行放得下）；
+      - `.select { order: 1; align-self: auto; }`、`.done { order: 2; }`、`.time { order: 3; }` —— `order` 在不再换行之后是死代码（DOM 顺序本来就是「勾选框 → 标记完成 → 时间」，`order` 改不了视觉顺序）。
+      ⚠️ **`.select { align-self: auto; }` 必须跟窄屏的 `.head { align-items: center; }` 一起删**：
+      单留它、删掉 `align-items: center`，`align-self: auto` 就落到父级的 `baseline` ——
+      窄屏那个 32×32 的自绘复选框基线在**下边缘**，反过来支配整行基线：
+      按钮与时间戳被顶到复选框下边缘那条线上（比复选框顶低 15px，行高 32px → 39px），
+      正是基础规则 `.select { align-self: flex-start; }`（`:682-690` 的注释）要防的「高一截」。
+      **代价**：窄屏复选框从「跟着按钮居中」变回「顶对齐」—— 这是**有意为之**，
+      不是漏改；这段对齐本来就是过渡态，Task 10 的 Step 3 会把 `<article class="idea">` 改成「勾选框 → 正文 → meta 行」、`.head` 整个拆掉。
 
 - [ ] **Step 8: 改 `MergeDialog.vue` 与 `HomePage.vue`**
 
@@ -1324,7 +1333,7 @@
 - Modify: `web/e2e/search.spec.ts:60-71`（「搜索：能搜到标题里的词」）、`:107`（带标题的那条想法）
 - Modify: `web/e2e/layout.spec.ts:100-133`（home 路由的造数据与就绪探针）、`:127-131`（`textBlocks`）
 - Modify: `web/e2e/fixtures.spec.ts:38-46`（复位自检：断言 `artifact.title` → `artifact.content`）
-- Modify: `web/e2e/ideas.spec.ts:96-97`、`:108-109`、`:113`、`:450-451`、`:477`（依赖「视觉标题」的断言）
+- Modify: `web/e2e/ideas.spec.ts:96-97`、`:108-109`、`:113`、`:421-422`、`:450-451`、`:477`（前五个位置依赖「视觉标题」的断言；`:421-422` 是合并对话框预览行与正文重复导致的 strict mode violation）
 - Modify: `web/e2e/COVERAGE.md`（「想法带 title 时…」那两行）
 - Modify: `web/e2e/README.md:231`（选择器策略里 `aria-label="选择 <标题>"` 那行）
 - Test: `server/IdeaApp.Tests/SseTests.cs:35`、`:54`、`:425`（`CreateIdeaAsync` 的 title 参数）、`server/IdeaApp.Tests/TrashTests.cs:601`、`server/IdeaApp.Tests/SettingsTests.cs:222`
@@ -1359,7 +1368,9 @@
   Run: `bash web/e2e/run-e2e.sh --fresh e2e/ideas.spec.ts e2e/fixtures.spec.ts`
   Expected: 失败 —— `fixtures.spec.ts` 的 `expect(artifact.title).toBe(RESET_ARTIFACT)` 红
   （`Idea` 接口没有 `title` 了 → 恒为 `undefined`）；`ideas.spec.ts` 里 6 处依赖
-  **视觉标题**的断言也红（Task 6 把 `<h2 class="title">` 拆了、正文改成全文）。
+  **视觉标题**的断言也红（Task 6 把 `<h2 class="title">` 拆了、正文改成全文），
+  另有 `:421-422` 两处红：合并对话框的预览行改成了**正文首行**，
+  与下面 `<pre class="merge-dialog__item-body">` 的正文文本重复 → `getByText(..., { exact: true })` 命中 2 个元素（strict mode violation）。
 
   Run: `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj --nologo -v q --filter "FullyQualifiedName~SseTests|FullyQualifiedName~TrashTests|FullyQualifiedName~SettingsTests"`
   Expected: 编译失败或失败（`CreateIdeaAsync` 还带 `title` 参数）。
@@ -1391,13 +1402,16 @@
 
 - [ ] **Step 4: 改 `web/e2e/ideas.spec.ts`（依赖视觉标题的断言）**
 
-  Task 6 把 `<h2 class="title">` 拆了、正文改成全文之后，`ideas.spec.ts` 里 6 处断言失效
-  （**它们不能拖到 Task 15 才改** —— 本 task 的 e2e 闸门要全绿）：
+  Task 6 把 `<h2 class="title">` 拆了、正文改成全文之后，`ideas.spec.ts` 里 6 处断言失效；
+  另有 `:421-422` 两处是 Task 6 把合并对话框的预览行改成**正文首行**造成的
+  （预览行与 `<pre>` 正文文本重复 → strict mode violation）。
+  **这些都不能拖到 Task 15 才改** —— 本 task 的 e2e 闸门要全绿：
 
   | 位置 | 现在断言的 | 改成 |
   |---|---|---|
   | `:96`、`:108` | `item.getByRole('heading', { name: '第一行：今天想到一个点子', exact: true })` | `expect(item).toContainText('第一行：今天想到一个点子')`（`article` 里现在有全文） |
   | `:97`、`:109` | `expect(item.getByTitle('点击编辑')).toHaveText('第二行：再补一句细节')` | `toHaveText('第一行：今天想到一个点子\n第二行：再补一句细节')` —— **正文现在是全文**（首行不再被摘走当标题） |
+  | `:421`、`:422` | `dialog.getByText('想法甲', { exact: true })` —— 预览行现在也是「想法甲」，与 `<pre>` 正文文本重复 → 命中 2 个元素（strict mode violation） | 定位预览行本身：`expect(dialog.locator('.merge-dialog__item-title').first()).toHaveText('想法甲')`（`.merge-dialog__item-title` 是预览行的类名 —— 规格 §4.5 明说 CSS 类名里带 "title" 的不要动） |
   | `:450`、`:451` | 合并结果的 heading + 只剩第二行 | 同上：断言 `article` 里**包含完整的合并正文** |
   | `:477` | `getByRole('heading', { name: '我自己整理过的正文' })` | `expect(ideaItem(page, ideas[0].id)).toContainText('我自己整理过的正文')` |
   | `:113` | `seed.idea('原来的正文', { title: '一条想法' })` | 去掉 `{ title: '一条想法' }`（`Seed` 的选项类型里已经没有 `title` 了） |
@@ -1900,8 +1914,12 @@
     }
     ```
     ⚠️ 这条**会改变卡片高度**（窄屏上 meta 行 ≥32px）—— 是预期的（规格 §6.10：单卡约 110px，375×667 一屏约 5 张卡）。
-  - 把原来那段 `@media (max-width: 640px)`（`:812-870`）的断点改成 **767px**（规格 §D9 / §6.10：触摸目标的 32×32 规则统一到 767px），
-    并把里面的 `.head` flex-wrap 那两条规则删掉（标题没了，那一行没内容了）。
+  - 把原来那段 `@media (max-width: 640px)` 的断点改成 **767px**（规格 §D9 / §6.10：触摸目标的 32×32 规则统一到 767px）。
+    ⚠️ **里面的 `.head` flex-wrap 那两条规则 Task 6 已经删掉了**（见 Task 6 Step 7 的样式清单）——
+    **本 task 不用再删**，也**别把 `.select { align-self: auto; }` 加回来**：
+    窄屏复选框的对齐已经改成「顶对齐」（有意为之，见 Task 6 Step 7 的说明），
+    把 `align-self: auto` 加回来会让 32×32 的自绘复选框支配整行基线
+    （行高 32px → 39px，按钮与时间戳被顶到复选框下边缘那条线上）。
 
 - [ ] **Step 5: 跑测试确认它们通过**
 
