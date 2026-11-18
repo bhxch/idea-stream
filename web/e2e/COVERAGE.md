@@ -132,7 +132,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | 页面 | 功能点 | 覆盖它的用例 | 备注 |
 |---|---|---|---|
 | `/projects` | 新建项目 | projects.spec.ts:29 | — |
-| `/projects` | 新建的项目在宽屏侧栏与窄屏顶部 Tab 里都能看到 | projects.spec.ts:53 | — |
+| `/projects` | 新建的项目在宽屏侧栏与窄屏顶栏的项目下拉里都能看到 | projects.spec.ts:53 | — |
 | `/projects` | 新建项目：名称为空给提示 | projects.spec.ts:43 | — |
 | `/projects` | 改名（保存） | projects.spec.ts:71 | — |
 | `/projects` | 改名：点「取消」 | projects.spec.ts:84 | — |

@@ -106,7 +106,9 @@ onBeforeUnmount(() => {
 /*
  * 面板：浮在触发器下面的一层。
  *
- * 做法照 TagFilter 的面板（同一类东西，别写出两套）。
+ * 面板样式照 TagFilter 的面板（CSS 层面）：绝对定位、边框、底色、阴影用同一套。
+ * （「点外面收起 / Esc 收起」那段 JS 逻辑与 TagFilter 逐字相同 ——
+ *  Task 13 会连同 TagFilter 一起收敛成 web/src/composables/useDropdown.ts。）
  */
 .more-menu__panel {
   position: absolute;
