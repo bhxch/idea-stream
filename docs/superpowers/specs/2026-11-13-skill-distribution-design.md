@@ -231,7 +231,7 @@ skills/idea-manager/
    `POST /api/ideas/bulk/tags`（但它给 `replace: true` 时也是覆盖式 ——
    `tags` 漏了就把标签清空）。用错了会丢标签。
 2. **`PATCH` 只发要改的字段**：`null` = 不改；**空串 / 空数组常常是「真的清空」**
-   （想法的 `title` 空串 = 清成无标题；webhook 的 `headers` 给 `{}` = 清空请求头）——
+   （webhook 的 `headers` 给 `{}` = 清空请求头）——
    但**不是所有字段都吃这一套**：想法的 `content` 与项目的 `name` 给空串是 400，
    项目的 `name` 还**必填**（不给就是 400 `invalid_project_name`）。
    逐端点的语义见 `references/api.md`。

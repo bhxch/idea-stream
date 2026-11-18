@@ -63,7 +63,7 @@
 | 概念 | 说明 |
 |---|---|
 | **项目 (project)** | 想法的归属单位。内置一个「收件箱」，是新建想法的默认落点。项目不可无项目态 —— 每条想法必属一个项目。 |
-| **想法 (idea)** | 一段正文 + 可选标题 + 若干标签 + 完成标记。可被软删除（进回收站）。 |
+| **想法 (idea)** | 一段正文 + 若干标签 + 完成标记。可被软删除（进回收站）。 |
 | **标签 (tag)** | 自由文本，全局共享字典，按大小写不敏感去重。字典项不随项目删除而消失。 |
 | **回收站** | 装两类东西：被单独删除的想法（顶层条目）、被删除的项目（容器项目，下挂它的所有想法）。 |
 | **事件 (event)** | 一次写操作产生的记录，带完整实体载荷，供浏览器和 webhook 消费。 |
@@ -134,7 +134,6 @@ CREATE INDEX ix_project_active  ON project(updated_at DESC);
 CREATE TABLE idea (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL REFERENCES project(id),
-    title         TEXT NULL,
     content       TEXT NOT NULL,
     done          INTEGER NOT NULL DEFAULT 0,
     deleted_at    TEXT NULL,                 -- 非空 = 在回收站
@@ -217,7 +216,7 @@ CREATE TABLE setting (
 ### 10.1 排序与置底
 
 - 列表排序恒为 `updated_at ASC, id ASC`。`id` 必须是**单调 UUIDv7**（自实现的计数器法，见 §8）—— .NET 内置的 `Guid.CreateVersion7()` 在同一毫秒内随机乱序，用它会让「同刻写入的条目」顺序随机跳动，直接破坏「最近更新的在最下边」这个承诺。
-- **任何写操作都会刷新 `updated_at`**，并因此把条目移到列表最下面。写操作包括：改正文/标题、设置标签、标记完成/取消完成、合并。
+- **任何写操作都会刷新 `updated_at`**，并因此把条目移到列表最下面。写操作包括：改正文、设置标签、标记完成/取消完成、合并。
 - 「就地下方改写 + 移到最底部」是同一次操作的两个副作用，不保留任何历史版本。
 
 ### 10.2 过滤
@@ -228,7 +227,7 @@ CREATE TABLE setting (
   - `and`：选中集合是想法标签集合的子集才命中。
 - **项目过滤**：选中项目 = 该项目；「全部项目」= 跨项目聚合视图。
 - **关键词过滤**：**服务端全文检索**（`q` 查询参数）—— 英文按词级、中文按词元相邻；规则见 `specs/2026-11-15-backend-full-text-search-design.md`。
-  - 匹配范围：标题、正文、标签名、项目名**都在索引里**（不只是正文）。
+  - 匹配范围：正文、标签名、项目名**都在索引里**（不只是正文）。
   - 关键词两侧的空白先 trim，空串（trim 后）= 不过滤；**只有标点**的查询也按「没有关键词」处理（不过滤）。
   - 关键词与状态、标签、项目取交集。
 - 四者取交集。
@@ -247,7 +246,7 @@ CREATE TABLE setting (
 对 N ≥ 2 条想法执行：
 
 1. 校验：全部存在、未删除、属于同一项目。跨项目合并**不允许**（返回 `merge_cross_project`）。
-2. 生成一条**新想法**：id 新建，`project_id` 取源项目，`title` 取第一条源想法的 title（都为空则为空），`content` = 各源 content 按 `updated_at ASC` 顺序以 `\n\n` 拼接，`done` = false，标签 = 所有源标签的**并集**。
+2. 生成一条**新想法**：id 新建，`project_id` 取源项目，`content` = 各源 content 按 `updated_at ASC` 顺序以 `\n\n` 拼接，`done` = false，标签 = 所有源标签的**并集**。
 3. 源想法**硬删除**（不进回收站），连同 `idea_tag` 级联清理。
 4. 产生事件 `idea.merged`，载荷含新想法与被删源 id 列表。
 
@@ -279,7 +278,7 @@ CREATE TABLE setting (
 | 事件 | 触发 | 载荷要点 |
 |---|---|---|
 | `idea.created` | 新建想法 | 完整 idea |
-| `idea.updated` | 改正文/标题、设标签、标记完成 | 完整 idea + `changed` 字段名数组 |
+| `idea.updated` | 改正文、设标签、标记完成 | 完整 idea + `changed` 字段名数组 |
 | `idea.deleted` | 想法进回收站 | idea id + 项目 |
 | `idea.restored` | 想法从回收站恢复 | 完整 idea |
 | `idea.merged` | 多条合并成一条 | 新 idea + 被删源 id 列表 |
@@ -296,7 +295,7 @@ CREATE TABLE setting (
   "timestamp": "2026-11-11T09:00:00+00:00",
   "project": { "id": "inbox", "name": "收件箱", "sortOrder": 0 },
   "idea": {
-    "id": "0199a7f1...", "title": null, "content": "…",
+    "id": "0199a7f1...", "content": "…",
     "tags": ["交互", "核心"], "done": false,
     "createdAt": "…", "updatedAt": "…"
   },
@@ -375,7 +374,7 @@ SSE 端点仍恒定全量推送所有事件：推来的增量条目由客户端*
 | `{{timestamp}}` | ISO-8601 时间 |
 | `{{project}}` | 项目名 |
 | `{{project.id}}` | 项目 id |
-| `{{idea.id}}` `{{idea.title}}` `{{idea.content}}` `{{idea.tags}}` `{{idea.done}}` | 想法各字段；`{{idea.tags}}` 为逗号分隔 |
+| `{{idea.id}}` `{{idea.content}}` `{{idea.tags}}` `{{idea.done}}` | 想法各字段；`{{idea.tags}}` 为逗号分隔 |
 | `{{changed}}` | 变更字段名，逗号分隔 |
 | `{{idea.url}}` | 该想法的深链绝对链接：`{PublicBaseUrl}/?idea={idea.id}`。打开后前端滚动定位到该条并高亮 |
 
@@ -395,7 +394,7 @@ SSE 端点仍恒定全量推送所有事件：推来的增量条目由客户端*
   {
     "chat_id": -1003800671233,
     "message_thread_id": 89,
-    "text": "[{{project}}] {{event}}\n{{idea.title}}\n{{idea.content}}\n#{{idea.tags}}"
+    "text": "[{{project}}] {{event}}\n{{idea.content}}\n#{{idea.tags}}"
   }
   ```
 - `message_thread_id` 可选（仅论坛话题需要），留空则发到群主话题。
@@ -445,8 +444,8 @@ public interface IEventHandler
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/ideas` | 查询，返回命中项的裸数组。参数：`projectId`（可空 = 全部）、`status`（`all`/`open`/`done`）、`tags`（逗号分隔）、`tagMode`（`or`/`and`）。`limit`/`offset` **可选**：给了 `limit` 就只给那一页（往回翻历史，见 `specs/2026-11-15-backend-full-text-search-design.md` §11）；不给 `limit` 时命中数超过 `Api:MaxIdeasPerResponse`（默认 2000）返回 400，提示收窄条件 |
-| POST | `/api/ideas` | 创建 `{ projectId, content, title?, tags? }` |
-| PATCH | `/api/ideas/{id}` | 改 `{ title?, content? }` |
+| POST | `/api/ideas` | 创建 `{ projectId, content, tags? }` |
+| PATCH | `/api/ideas/{id}` | 改 `{ content? }` |
 | PUT | `/api/ideas/{id}/tags` | **覆盖式**设置标签，body `{ tags: [...] }` |
 | POST | `/api/ideas/{id}/complete` | 标记完成，body `{ done: bool }` |
 | DELETE | `/api/ideas/{id}` | 进回收站 |
@@ -462,7 +461,7 @@ public interface IEventHandler
 | POST | `/api/ideas/bulk/complete` | `{ ids: [], done: bool }` |
 | POST | `/api/ideas/bulk/tags` | `{ ids: [], tags: [], replace? }`（默认并集式追加，`replace: true` 则覆盖） |
 | POST | `/api/ideas/bulk/delete` | `{ ids: [] }` |
-| POST | `/api/ideas/merge` | `{ ids: [], content?, title? }`；`content` 省略则用自动拼接结果 |
+| POST | `/api/ideas/merge` | `{ ids: [], content? }`；`content` 省略则用自动拼接结果 |
 
 ### 13.4 其它
 
@@ -519,8 +518,8 @@ public interface IEventHandler
 
 ### 14.3 交互要点
 
-- **输入框**：多行 textarea，`Enter` 提交、`Shift+Enter` 换行。提交后清空、聚焦回输入框。提交的是纯正文（`content`），标题留空。
-- **消息条目**：勾选框（多选）、标题（可空）、正文、标签 chip、完成标记、相对时间。点击正文进入编辑态（inline textarea），失焦或 Ctrl+Enter 保存。
+- **输入框**：多行 textarea，`Enter` 提交、`Shift+Enter` 换行。提交后清空、聚焦回输入框。提交的是纯正文（`content`）。
+- **消息条目**：勾选框（多选）、正文、标签 chip、完成标记、相对时间。点击正文进入编辑态（inline textarea），失焦或 Ctrl+Enter 保存。
 - **多选**：勾选任意条目后底部浮出操作条 —— 标记完成 / 合并 / 删除 / 加标签 / 取消选择。
 - **合并**：勾选 ≥ 2 条 → 点「合并」→ 生成新条目 → 自动进入该新条目的编辑态，正文是拼接结果。
 - **过滤栏**：状态三态按钮组 + 关键词搜索框 + 标签多选下拉 + **AND/OR 切换按钮** + **「清除」按钮**。
@@ -705,7 +704,6 @@ ProblemDetails，顶层带机器可读的 `code`，按 `code` 分支。
 - 前端组件拆分、CSS 组织方式、图标方案。
 - 标签输入框的补全交互细节。
 - `MonotonicGuid.NewUuid7()` 的具体字节布局（实现者按此写，测试用已知答案向量钉住）。
-- 想法条目的 `title` 是否在列表里单独占一行（空标题时回落到正文首行）。
 
 ## 20. 已定的关键决定一览（含决策来源）
 

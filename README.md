@@ -398,7 +398,7 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 curl -sS --fail-with-body -X POST "$IDEA_BASE_URL/api/ideas" \
   -u "$IDEA_USER:$IDEA_PASS" -H 'Content-Type: application/json' \
   --data-binary @- <<'JSON'
-{"content":"正文","title":"标题"}
+{"content":"正文"}
 JSON
 ```
 

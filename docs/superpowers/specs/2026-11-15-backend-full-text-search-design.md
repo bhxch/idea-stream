@@ -14,7 +14,7 @@
 推翻的理由是三条，都是实际卡点，不是洁癖：
 
 1. **浏览器扛不住**。现在前端把当前项目范围内的**全部**想法拉回来，在内存里逐条做 `content.includes(needle)`。正文一多，传输、内存、渲染三头都涨。
-2. **搜不到的东西太多了**。现在只匹配 `idea.content`。标题、标签名、项目名都搜不到 —— 而这三样恰恰是用户脑子里的检索入口（「我给那条打的是咖啡吧」「上次那个叫工作复盘的项目」）。
+2. **搜不到的东西太多了**。现在只匹配 `idea.content`。标签名、项目名都搜不到 —— 而这两样恰恰是用户脑子里的检索入口（「我给那条打的是咖啡吧」「上次那个叫工作复盘的项目」）。
 3. **agent 是瞎的**。`skills/idea-manager/references/api.md` 里 `GET /api/ideas` 只认 `projectId`/`status`/`tags`/`tagMode`，agent 想找一条想法只能把列表整个拉回来自己扫。
 
 顺带把「架构上对」也办了：数据在库里，就该让库来检索，而不是先全量捞出来在内存里翻。
@@ -26,7 +26,7 @@
 | # | 目标 |
 |---|---|
 | G1 | 服务端全文检索：SQLite FTS5 索引，**中文按 token 相邻**（等价于子串，但标点与空白不算 token、不挡路）、**英文词级** |
-| G2 | 检索范围覆盖**正文、标题、标签名、项目名** |
+| G2 | 检索范围覆盖**正文、标签名、项目名** |
 | G3 | 两个端点：`GET /api/ideas?q=`（页面筛）、`GET /api/search?q=`（agent 全库找东西） |
 | G4 | 过滤条件下沉：项目 / 状态 / 标签 / AND-OR 模式 / 关键词**一次请求**拿最终结果 |
 | G5 | 命中位置回传：字符偏移，前端渲染 `<mark>` |
@@ -247,11 +247,11 @@
 `schema.sql` 追加（全部 `IF NOT EXISTS`，保持幂等）：
 
 ```sql
--- 想法的全文索引。四列对应四个可检索字段。
+-- 想法的全文索引。三列对应三个可检索字段。
 -- 内容是**切分后**的 token 串（§7.1），不是原文 —— 因此不能用 external content 表
 -- （external content 表会用本表的 tokenize 去处理原文，中文会整段成一个 token）。
 CREATE VIRTUAL TABLE IF NOT EXISTS idea_fts USING fts5(
-    title, content, tags, project,
+    content, tags, project,
     tokenize = 'unicode61 remove_diacritics 0'
 );
 
@@ -265,7 +265,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS tag_fts USING fts5(
     tokenize = 'unicode61 remove_diacritics 0'
 );
 
--- 索引元信息。key='index.version'，value='1'。
+-- 索引元信息。key='index.version'，value = 当前版本号（现在是 '2'）。
 -- 版本号变了就整体重建索引 —— 分词规则改了、或老库还没建索引，都靠它。
 CREATE TABLE IF NOT EXISTS search_meta (
     key   TEXT PRIMARY KEY,
@@ -291,8 +291,7 @@ CREATE TABLE IF NOT EXISTS search_meta (
 
 | 虚表 | 列 | 内容 |
 |---|---|---|
-| `idea_fts` | `title` | 想法标题的切分结果（多数想法没有标题 → 空串） |
-| | `content` | 正文的切分结果 |
+| `idea_fts` | `content` | 正文的切分结果 |
 | | `tags` | 该想法**所有标签名**的切分结果（空格连接后切分） |
 | | `project` | 所属**项目名**的切分结果 |
 | `project_fts` | `name` | 项目名的切分结果 |
@@ -388,8 +387,8 @@ ORDER BY t.name COLLATE NOCASE ASC, t.name ASC;
 
 | 路径 | 动作 |
 |---|---|
-| `IdeaRepository.Insert` | 插入 `idea_fts` 行（title/content/tags/project 四列） |
-| `IdeaRepository.UpdateContent`（改正文/标题） | 更新 `idea_fts` 行的 `title`/`content` 两列 |
+| `IdeaRepository.Insert` | 插入 `idea_fts` 行（content/tags/project 三列） |
+| `IdeaRepository.UpdateContent`（改正文） | 只更新 `idea_fts` 行的 `content` 那一列 |
 | `IdeaRepository.ReplaceTags` | 更新 `idea_fts` 行的 `tags` 列；**新建的标签**要插入 `tag_fts` 行 |
 | `IdeaRepository.SetDone` | 不动（`done` 不在索引里） |
 | `IdeaRepository.SoftDelete` | **不动索引**。软删的行仍在索引里，`/api/search` 用 `deleted_at` 判断 `trashed` |
@@ -574,7 +573,7 @@ public sealed record IdeaDto(
 ```
 
 - `Matches`
-  - `Field`：`"title"` | `"content"` | `"tags"` | `"project"`
+  - `Field`：`"content"` | `"tags"` | `"project"`
   - `Start`：**UTF-16 code unit** 偏移，相对**该字段的完整字符串**
   - `Length`：**UTF-16 code unit** 长度
   - 偏移用 UTF-16 code unit 而不是「字符序号」，是为了和 JS 的 `String.prototype.slice` 对齐 —— 前端拿到的偏移可以直接切字符串，不用自己换算代理对。
@@ -648,7 +647,7 @@ public sealed record IdeaDto(
 | `GET /api/search` 的 `projects` | `bm25(project_fts), id ASC` |
 | `GET /api/search` 的 `tags` | `bm25(tag_fts), count DESC, name ASC` |
 
-- `bm25()` 的权重按**列顺序**：第一个实参是最左列的权重。`idea_fts` 的列序是 `title, content, tags, project` → 标题 10、正文 1、标签 5、项目 3。
+- `bm25()` 的权重按**列顺序**：第一个实参是最左列的权重。`idea_fts` 的列序是 `content, tags, project` → 正文 5.0、标签 5.0、项目 3.0。
 - `bm25()` 返回**负值，越负越相关**，`ORDER BY bm25(...)` **不加 `DESC`**（官方语义）。
 - `id ASC` 兜底 → 全序 → **分页不漂**。
 - `tags` 组在相关度相同的情况下按使用次数倒序（用得多的更可能是用户要的），再按名称。
@@ -736,7 +735,7 @@ FTS5 **没有** `offsets()`（官方附录明说，那函数属于 FTS3/4）。�
 
 ### 12.3 偏移的适用范围
 
-- 只对**想法**的 `title` / `content` / `tags` / `project` 四列算。
+- 只对**想法**的 `content` / `tags` / `project` 三列算。
 - `tags` 列的原文是「标签名用空格连接」，偏移相对**那个连接串**，不是相对某一个标签名。前端不渲染标签高亮（标签在卡片上是 chip，不在正文里），所以这条实际上用不上；保留是为了接口自洽。
 
 ## 13. 前端
@@ -871,21 +870,13 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 - 只在「本次响应带了 `matches`」时启用高亮；SSE 增量条目没有 `matches`，不高亮。
 - 命中区间可能重叠（同一段正文被多个查询段命中）→ **合并区间**后再切分。
 
-#### 视觉标题带来的偏移错位
+#### 没有标题了：偏移直接相对完整原文
 
-前端的渲染正文**不是** `content` 本身：`MessageItem.vue` 的 `bodyContent` 在**标题为空**时，会把**第一个非空行**摘出来当视觉标题（`visualTitle`），正文里就不再显示一遍。
+**没有标题了** —— 想法就是一段文字，`content` 全文都在正文里，没有「视觉标题」那一层。
 
-所以 `matches` 的偏移（相对完整 `content`）不能直接切 `bodyContent`。
+所以 `matches` 的偏移**直接相对完整原文**（`content`），前端按命中区间切片段渲染即可，**不需要按行分组**、不需要拆出「标题组 / 正文组」。
 
-**解法（前端侧换算，不改服务端契约）**：
-
-1. 前端先把 `content` **按命中区间**切成「带标记的片段序列」（每片带 `marked` 标志）。
-2. 再按「第一个非空行」把片段序列分成**标题组**与**正文组** —— 跨过行界的片段拆成两段，**各自保留标记**（所以高亮不会丢）。
-3. 标题组拼起来 trim 一下 = 视觉标题；正文组拼起来去掉开头的空行 = 正文。
-
-这样既保住了现有「首行当视觉标题」的观感，又不会把命中错切到正文里。
-
-> 换句话说：**服务端的偏移永远相对完整 `content`**（服务端不知道前端的渲染规则，契约不该跟前端耦合）；**前端负责把偏移映射到它实际渲染的那几段文字上**。
+> 换句话说：**服务端的偏移永远相对完整 `content`**（服务端不知道前端的渲染规则，契约不该跟前端耦合）；**前端负责把偏移映射到它实际渲染的那段文字上**。
 
 ## 14. Agent skill
 
@@ -915,11 +906,10 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 | 中文子串 | 搜「咖啡」命中「咖啡机滤芯」 |
 | 英文词级 | 搜 `hel` 不命中 `hello`；搜 `hello` 命中 `Hello` |
 | 大小写不敏感 | 搜 `weather` 命中 `Weather today` |
-| 标题命中 | 只在标题里的关键词能命中 |
 | 标签命中 | 搜标签名能命中带该标签的想法 |
 | 项目名命中 | 搜项目名能命中该项目下的想法 |
 | 多词 AND | 两段都出现才算命中；不相邻也命中 |
-| 相关度 | `/api/search` 里标题命中的排在正文命中的前面 |
+| 相关度 | `/api/search` 里正文命中的排在项目命中的前面 |
 | 分页 | `limit`/`offset` 正确；`hasMore` 正确；`total` 不受分页影响；**往回翻**：`offset=0` 是最新的一页，`offset=100` 是更旧的一页，且两页不重叠 |
 | 回收站 | `/api/search` 默认含回收站并标 `trashed`；`includeTrash=false` 不含；`/api/ideas?q=` 不含 |
 | 索引同步 | 写入 / 改正文 / 改标签 / 改项目名 / 软删 / 恢复 / 硬删后，索引与业务数据一致（**每条写路径都要有断言**） |
@@ -943,7 +933,7 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 
 新增：
 
-- 标签名 / 标题 / 项目名能搜到想法
+- 标签名 / 项目名能搜到想法
 - 搜索结果带高亮
 - 默认视图也是分页的：打开页面停在**最底下**（最新一条可见），往上翻到接近顶部时自动加载更旧的一页，且视口不跳
 - `/api/search` 返回三类分组
@@ -965,7 +955,7 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 | 「的」这类汉字仍然挡路：搜「咖啡水温」**不**命中「咖啡的水温」 | 与今天的 `includes()` 一致。逐字 token 的必然结果 |
 | 多段查询是 AND：搜「咖啡 水温」能命中两者相隔很远的正文 | 比今天的 `includes()` **更宽松**（§7.4）。有意 —— 搜索引擎式的 AND 更符合直觉 |
 | 项目改名要重建该项目下所有想法的索引行 | 几百到几千条，毫秒级；换来「搜项目名能搜到想法」 |
-| `bm25()` 在逐字 token 上算相关度 | 统计的是「字符」而非「词」，但字符级的 TF/文档长度归一化本身合理；实测标题命中确实排前面 |
+| `bm25()` 在逐字 token 上算相关度 | 统计的是「字符」而非「词」，但字符级的 TF/文档长度归一化本身合理；实测正文命中确实排前面 |
 | 按相关度排序的分页不省检索 | 微信官方文章明确指出这个事实。我们接受它，换来 agent 侧省上下文 |
 | 服务端分页切片在内存标签过滤之后 → 要把全部候选加载进内存 | 数据量几百到几千条，可接受。换来 `hasMore` 判定精确、不会漏命中（§11.1） |
 | 索引与业务同事务 → 索引写失败会连累业务写 | 同库同事务换来的强一致值得；索引表启动时就建好，实际失败概率极低 |
@@ -1027,8 +1017,8 @@ visibleIdeas       ← sortIdeas(ideas.value)   ← 只排序，不再过滤
 | `trashed` 标志的位置 | `IdeaDto.trashed` / `ProjectDto.trashed` 两个可选字段，不新增 DTO 类型 | 我的定 |
 | 回收站口径 | `/api/search` 默认全收（含已删项目下的想法、已删项目），标 `trashed`；`tags[].count` 口径不变 | 我的定 |
 | 前端过滤判断的位置 | 只有**一层**，在数据层（`applyEvent` 用 `activeFilter`）；显示层只排序不过滤；`datasetFilter` 移除 | 我的定（评审指出「显示层再过滤会误杀服务端结果」） |
-| `matches` 的偏移基准 | 相对**完整 `content`**；前端负责映射到实际渲染的片段（视觉标题那部分单独归组） | 我的定 |
+| `matches` 的偏移基准 | 相对**完整 `content`**；前端直接按区间切片段渲染（没有标题层，不需要分组） | 我的定 |
 | 启动时回填失败 | **fail fast**：启动失败并打清楚日志 | 我的定 |
-| 排序权重 | `bm25(idea_fts, 10.0, 1.0, 5.0, 3.0)` = 标题/正文/标签/项目 | 我的定 |
+| 排序权重 | `bm25(idea_fts, 5.0, 5.0, 3.0)` = 正文/标签/项目 | 我的定 |
 | 偏移单位 | UTF-16 code unit（对齐 JS 的 `slice`） | 我的定 |
 | 老库迁移 | `search_meta` 版本号 + 启动时同步回填，不建迁移框架 | 我的定 |
