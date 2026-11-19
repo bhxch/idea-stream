@@ -851,7 +851,11 @@ function confirmDelete(): void {
 
 /* 请求在飞：按钮不可点，别让它看起来还能按。 */
 .meta__done:disabled,
-.meta__action:disabled {
+.meta__action:disabled,
+/* 确认条里的「确认删除」也算：它同样会在请求在飞时被禁用
+   （旧模板给它带 action class，命中过同一条 :disabled 规则；
+   拆掉 action 后漏了它 —— 禁用着却与可点时长得一样）。 */
+.confirm__delete:disabled {
   opacity: 0.5;
   cursor: default;
 }
