@@ -158,10 +158,10 @@ describe('useHistoryScroll', () => {
     await flushPromises();
 
     // 这一页拼到了列表**前面**。
-    expect(ideas.value).toHaveLength(2 + PAGE_SIZE + 1);
+    expect(ideas.value).toHaveLength(2 + PAGE_SIZE);
     expect(ideas.value.at(-1)?.id).toBe('idea-1');
     // 深度也记上了：SSE 重拉按它保留用户翻过的历史。
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
+    expect(scrolledItems.value).toBe(PAGE_SIZE);
     expect(hasMore.value).toBe(true);
   });
 
@@ -296,8 +296,8 @@ describe('useHistoryScroll', () => {
     await flushPromises();
 
     // 内容没变就不是「条件变了」：这一页照常用。
-    expect(ideas.value).toHaveLength(2 + PAGE_SIZE + 1);
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
+    expect(ideas.value).toHaveLength(2 + PAGE_SIZE);
+    expect(scrolledItems.value).toBe(PAGE_SIZE);
   });
 
   it('请求失败时给提示', async () => {
@@ -356,7 +356,7 @@ describe('useHistoryScroll', () => {
     release(makeIdeas(PAGE_SIZE + 1));
     await flushPromises();
 
-    expect(ideas.value).toHaveLength(2 + PAGE_SIZE + 1);
+    expect(ideas.value).toHaveLength(2 + PAGE_SIZE);
   });
 
   it('到底了（这一页是空的）就把「还有没有更旧的」清掉', async () => {
@@ -403,7 +403,7 @@ describe('useHistoryScroll', () => {
 
     // 拼进去之后列表变高 —— 内容从上面长出来，视口要跟着往下挪，
     // 不然用户看到的内容就跳了。挪的量 = 多了多少高度。
-    const grown = (PAGE_SIZE + 1) * 10;
+    const grown = PAGE_SIZE * 10;
     expect(element.scrollTop).toBe(300 + grown);
   });
 
@@ -424,5 +424,75 @@ describe('useHistoryScroll', () => {
     history.dispose();
 
     expect(observer?.targets.size).toBe(0);
+  });
+});
+
+describe('useHistoryScroll 的锚点校正', () => {
+  it('prepend_uses_the_anchor_to_correct_the_viewport', async () => {
+    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
+    ideas.value = makeIdeas(2);
+    hasMore.value = true;
+
+    // 假的一套锚点函数：HomePage 里那套（captureViewportAnchor /
+    // restoreViewportAnchor）就是干这个的。
+    const anchor = { id: 'idea-1', top: 42 };
+    const captureAnchor = vi.fn(() => anchor);
+    const restoreAnchor = vi.fn();
+
+    const element = createContainer();
+    const container = ref<HTMLElement | null>(element);
+    const sentinel = ref<HTMLElement | null>(document.createElement('div'));
+    const history = useHistoryScroll({
+      container,
+      sentinel,
+      filter: () => makeFilter(),
+      reportError: () => undefined,
+      captureAnchor,
+      restoreAnchor,
+    });
+    history.observe();
+
+    triggerSentinel();
+    await flushPromises();
+
+    // 高度差补偿之外还要用锚点校正：到底那一页是奇数时边界排换边，
+    // 那一排的高度变了 → 高度差补偿不精确（规格 §6.5）。
+    expect(captureAnchor).toHaveBeenCalled();
+    expect(restoreAnchor).toHaveBeenCalledTimes(1);
+    // 原样交回去：prepend 之前记下的那个锚点。
+    expect(restoreAnchor.mock.calls[0]?.[0]).toBe(anchor);
+  });
+
+  it('prepend_does_nothing_when_the_anchor_is_gone', async () => {
+    apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
+    ideas.value = makeIdeas(2);
+    hasMore.value = true;
+
+    // 视口顶部没有条目（列表空着 / 都在视口外）→ 没有锚点。
+    const captureAnchor = vi.fn(() => null);
+    const restoreAnchor = vi.fn();
+
+    const element = createContainer();
+    element.scrollTop = 300;
+    const container = ref<HTMLElement | null>(element);
+    const sentinel = ref<HTMLElement | null>(document.createElement('div'));
+    const history = useHistoryScroll({
+      container,
+      sentinel,
+      filter: () => makeFilter(),
+      reportError: () => undefined,
+      captureAnchor,
+      restoreAnchor,
+    });
+    history.observe();
+
+    triggerSentinel();
+    await flushPromises();
+
+    // 没有锚点：restoreAnchor 收到 null（它自己什么都不做），不抛异常。
+    expect(restoreAnchor).toHaveBeenCalledWith(null);
+    // 视口只被**高度差补偿**动过一次（拼进去 100 条 × 10px）——
+    // 没有锚点就别再乱动一次。
+    expect(element.scrollTop).toBe(300 + PAGE_SIZE * 10);
   });
 });

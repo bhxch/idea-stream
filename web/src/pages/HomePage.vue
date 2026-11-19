@@ -14,7 +14,7 @@ import ProjectDropdown from '../components/ProjectDropdown.vue';
 import ProjectSidebar from '../components/ProjectSidebar.vue';
 import { showToast } from '../components/ToastHost.vue';
 import { useDeepLink } from '../composables/useDeepLink';
-import { useHistoryScroll } from '../composables/useHistoryScroll';
+import { useHistoryScroll, type ViewportAnchor } from '../composables/useHistoryScroll';
 import { useScrollFollow } from '../composables/useScrollFollow';
 import { useTagMode } from '../composables/useTagMode';
 import { sortIdeas, type IdeaFilter } from '../lib/filter';
@@ -218,16 +218,6 @@ function scheduleResync(): void {
       restoreViewportAnchor(anchor);
     }, '刷新列表失败');
   }, RELOAD_DEBOUNCE_MS);
-}
-
-/**
- * 视口的锚点：重拉前后用它把视口钉回原处。
- */
-interface ViewportAnchor {
-  /** 锚点条目的 id。 */
-  id: string;
-  /** 它相对视口上沿的位置（视口坐标）。 */
-  top: number;
 }
 
 /**
@@ -937,12 +927,18 @@ const historySentinel = ref<HTMLElement | null>(null);
  *
  * 这一块（哨兵观察、防重复、过期丢弃、视口修正）与页面其余部分没有共享状态，
  * 整块搬进了 composable —— HomePage 里只留两个 ref 与两个生命周期入口。
+ *
+ * ⚠️ 视口补偿有**两套**（规格 §6.5）：composable 里那套是高度差补偿
+ * （偶数 prepend 时精确）；这里再把锚点那套传进去 —— 到底那一页是奇数、
+ * 边界排换边时高度差补偿不精确，锚点校正按条目 id 把视口钉回原处。
  */
 const history = useHistoryScroll({
   container: scrollContainer,
   sentinel: historySentinel,
   filter: () => activeFilter.value,
   reportError,
+  captureAnchor: captureViewportAnchor,
+  restoreAnchor: restoreViewportAnchor,
 });
 
 /* ------------------------------------------------------------------ *

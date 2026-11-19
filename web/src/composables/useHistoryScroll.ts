@@ -9,6 +9,19 @@ import {
   type OlderPage,
 } from '../stores/ideas';
 
+/**
+ * 视口的锚点：视口顶部那条（第一个露出来的条目）。
+ *
+ * 按 `[data-idea-id]` 找 —— 找的是**条目**，不是像素位置：
+ * 条目的位置会随 prepend 变，像素位置不会。
+ */
+export interface ViewportAnchor {
+  /** 锚点条目的 id。 */
+  id: string;
+  /** 它相对视口上沿的位置（视口坐标）。 */
+  top: number;
+}
+
 /** 往回翻需要的外部依赖。 */
 export interface HistoryScrollOptions {
   /**
@@ -29,6 +42,10 @@ export interface HistoryScrollOptions {
   filter: () => IdeaFilter;
   /** 失败提示：往回翻的请求挂了要给用户一条说明，不然就是没人管的 rejection。 */
   reportError: (error: unknown, fallback: string) => void;
+  /** 记下视口顶部那条（第一个露出来的条目）；没有就返回 null。 */
+  captureAnchor?: () => ViewportAnchor | null;
+  /** 把视口钉回锚点那条（锚点不在了就什么都不做）。 */
+  restoreAnchor?: (anchor: ViewportAnchor | null) => void;
 }
 
 /**
@@ -42,6 +59,9 @@ export interface HistoryScrollOptions {
  * - `root` 是滚动容器而不是 window：列表是在它里面滚的；
  * - prepend 会把用户正在看的内容往下推，量一次「多了多少」补回 `scrollTop`，
  *   视口才不会跳（预加载的意义就是「无感」）。
+ * - 视口补偿**两处**一起用（规格 §6.5）：高度差补偿在「偶数 prepend」
+ *   （两列布局不换边）时是精确的；到底那一页是奇数、边界排换边时那一排的
+ *   高度变了 → 高度差补偿不精确 → 再用锚点校正（按条目 id 钉回原来那条）。
  *
  * 「取」与「用」分成两步：{@link fetchOlderIdeas} 只负责取（它不碰共享状态），
  * 这一层判断这一页**还能不能用**，能才 {@link prependOlder} 用掉它。
@@ -70,6 +90,7 @@ export function useHistoryScroll(options: HistoryScrollOptions) {
    * 2. 没有更旧的了就不发（`hasMore`）：翻到底了就别再打后端；
    * 3. prepend 之后把视口钉回原来那条 —— 内容插到视口**上方**会把用户
    *    正在看的那条往下推，不补 `scrollTop` 的话预加载反而让视口跳了。
+   *    补的方式有两套（规格 §6.5）：高度差补偿 + 锚点校正。
    */
   async function loadOlder(): Promise<void> {
     if (loadingMore.value || !hasMore.value) {
@@ -115,13 +136,23 @@ export function useHistoryScroll(options: HistoryScrollOptions) {
     // 落进 DOM，量到的才是真的高度。
     await nextTick();
     const before = container?.scrollHeight ?? 0;
+    // 视口锚点：prepend **之前**记下「视口顶部那条」（id + 它相对视口上沿的位置）。
+    // 高度差补偿在「偶数 prepend」（不换边）时是精确的；到底那一页是奇数时
+    // 边界排换边 → 那一排的高度变了 → 高度差补偿不精确 → 靠锚点校正（规格 §6.5）。
+    const anchor = options.captureAnchor?.() ?? null;
     // 列表、深度、「还有没有更旧的」在 store 里一起改（见 prependOlder）。
-    prependOlder(page.items);
+    prependOlder(page);
     // 必须等 DOM 更新完再量：重渲染之前量到的还是旧高度，补出来的位置是错的。
     await nextTick();
     if (container) {
       container.scrollTop += container.scrollHeight - before;
     }
+    // 锚点校正：把视口钉回锚点那条。
+    //
+    // 高度差补偿已经挪过一次了，这里是**第二套**补偿 —— 偶数 prepend 时它是
+    // 幂等的（位置没偏，钉回去等于没动）；奇数 prepend 时它把高度差补偿
+    // 留下的偏差修掉。没有锚点（null）就什么都不做：没锚点就别乱动视口。
+    options.restoreAnchor?.(anchor);
   }
 
   /**

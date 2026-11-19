@@ -23,8 +23,17 @@ export const loading = ref(false);
  */
 export const focusIdeaId = ref<string | null>(null);
 
-/** 一页多少条。 */
+/** 一页多少条（不含探针）。 */
 export const PAGE_SIZE = 100;
+
+/**
+ * 往回翻时**实际请求**的条数：多要的那一条是探针（用来判断还有没有更旧的）。
+ *
+ * ⚠️ 探针落在这一页的**最老**那端（服务端按 updated_at 升序返回），
+ * 所以满页时要丢掉的是**最老**的那一条 —— 丢掉的那条落在已加载区域的
+ * **外侧**，下一轮请求窗口会把它重新要回来（集合中间不会留洞）。
+ */
+export const PROBE_LIMIT = PAGE_SIZE + 1;
 
 /**
  * 服务端一次最多给多少条（`limit` 的上限）。
@@ -105,9 +114,9 @@ export const loadingMore = ref(false);
  * 列表顺序由后端保证（`updated_at ASC, id ASC`，最老的在顶）。
  *
  * @param filter 当前过滤条件。
- * @param limit 请求多少条；不给就是 PAGE_SIZE + 1 —— 多要的那一条既在这一页里
- *              （这一页**整页收下**，见 {@link fetchOlderIdeas}），
- *              也用来判断还有没有更旧的。
+ * @param limit 请求多少条；不给就是 PAGE_SIZE + 1 —— 多要的那一条就在这一页里
+ *              （首屏这一页是**整页收下**的；只有往回翻那一页才丢探针，
+ *              见 {@link fetchOlderIdeas}），也用来判断还有没有更旧的。
  */
 export async function loadIdeas(filter: IdeaFilter, limit = PAGE_SIZE + 1): Promise<void> {
   // 发起一次整表替换：代次 +1。
@@ -149,7 +158,7 @@ export async function loadIdeas(filter: IdeaFilter, limit = PAGE_SIZE + 1): Prom
  * 往回翻取回的一页。
  */
 export interface OlderPage {
-  /** 这一页的条目。 */
+  /** 这一页的条目（满页时已丢掉最老的那一条）。 */
   items: Idea[];
   /**
    * 这一页是不是已经**过期**。
@@ -162,6 +171,13 @@ export interface OlderPage {
    * 也不是新的，深度更对不上。
    */
   stale: boolean;
+  /**
+   * 服务端这一页是不是满的（满 = 还有更旧的）。
+   *
+   * 「满」= 服务端给满了 {@link PROBE_LIMIT} 条 —— 那一页被裁掉探针之后
+   * 仍有 {@link PAGE_SIZE} 条，说明下面还有更旧的。
+   */
+  hasMore: boolean;
 }
 
 /**
@@ -181,24 +197,26 @@ export async function fetchOlderIdeas(filter: IdeaFilter, offset: number): Promi
   loadingMore.value = true;
   try {
     const params = toQueryParams(filter);
-    params.limit = String(PAGE_SIZE + 1);
+    params.limit = String(PROBE_LIMIT);
     params.offset = String(offset);
     const result = await apiGet<Idea[]>('/ideas', params);
-    // 这一页**整页收下**，一条都不丢。
+    // 满页 → 丢掉**最老**的那一条（探针），净增 100 条（偶数）。
     //
-    // 服务端的切片是从**最新**一端数的（IdeaService.List）：
-    //   end = Count - offset;  start = max(0, end - limit)
-    // 返回的数组按 updated_at **升序**（最老的在顶、最新的在底），
-    // 所以「多要的那一条」落在这一页的**最老**那端 —— 不是最新那端。
+    // ⚠️ **要丢的是 result 的第一个元素**（服务端按 updated_at 升序返回，最老的在顶）：
+    // 多要的那一条落在这一页的**最老**那端 —— 丢它不会在集合中间留洞
+    // （丢掉的那条落在已加载区域的**外侧**，下一轮的请求窗口会把它要回来）。
     //
-    // 早先这里按 slice(0, PAGE_SIZE) 截断（留最老的一百条、丢掉最新的一条），
-    // 丢掉的恰恰是**紧挨着已加载区域**的那一条：列表中间从此**缺一条**，
-    // 而下一次请求拿「列表长度」当 offset —— 长度里没有那个洞，
-    // 洞再也补不上（还会顺带多出一条重复的）。
+    // ⚠️ **别写成 slice(0, result.length - 1)**：那丢的是这一页**最新**的那一条 ——
+    // 它紧挨着已加载区域，丢掉就在集合中间留洞（洞永远补不上，还会多出一条重复）。
+    // 仓库里已经踩过一次这个坑（`slice(0, PAGE_SIZE)`），`stores/ideas.ts` 的注释里写着。
     //
-    // 整页收下就不会丢：列表长度 = 从最新一端数已经加载的条数，
-    // 下一次的 offset 正好接在这一页的下面（见 useHistoryScroll.loadOlder）。
-    return { items: result, stale: generation < appliedGeneration };
+    // 验算（总数 C、已加载 k 条，距离区间 [C-k, C)）：本轮请求返回距离
+    // [C-k-101, C-k) 的 101 条 → 丢掉最老的那个（距离 C-k-101，数组下标 0）
+    // → 收下 [C-k-100, C-k) 的 100 条 → 已加载变成 [C-k-100, C) 的 k+100 条 ✓
+    // 连续 ✓；下一轮 offset = k+100 → 同样丢最老的那条 ✓。
+    const full = result.length >= PROBE_LIMIT;
+    const items = full ? result.slice(1) : result;
+    return { items, stale: generation < appliedGeneration, hasMore: full };
   } finally {
     loadingMore.value = false;
   }
@@ -212,20 +230,26 @@ export async function fetchOlderIdeas(filter: IdeaFilter, offset: number): Promi
  * 两者就脱钩了：下一次 SSE 重拉按 {@link loadedLimit} 要条目，深度少了
  * 用户翻过的历史凭空消失，深度多了塞进一堆用户没翻过的内容。
  *
- * @param items 往回翻取回的那一页（可以为空 —— 空页就是「到底了」）。
+ * ⚠️ **加多少条就是多少条**（`scrolledItems.value += page.items.length`）：
+ * 「丢掉探针」发生在 {@link fetchOlderIdeas} 里（它把满页 101 条裁成 100 条），
+ * 这一层拿到的已经是**裁过之后**的条数。
+ *
+ * @param page 往回翻取回的那一页（可以为空 —— 空页就是「到底了」）。
  */
-export function prependOlder(items: Idea[]): void {
-  // 「还有没有更旧的」只看**条数**：要了 PAGE_SIZE + 1 条，
-  // 服务端给满了就说明下面还有，没给满就是到底了。
-  hasMore.value = items.length >= PAGE_SIZE + 1;
-  if (items.length === 0) {
+export function prependOlder(page: OlderPage): void {
+  // 「还有没有更旧的」由**取页时**的判定给（服务端这一页满不满）。
+  hasMore.value = page.hasMore;
+  if (page.items.length === 0) {
     // 到底了：列表与深度都不动（换一个新数组只会白白触发一次重渲染）。
     return;
   }
-  ideas.value = [...items, ...ideas.value];
+  ideas.value = [...page.items, ...ideas.value];
   // 翻出来多少条，深度就记多少条：SSE 重拉时按它保留深度
   // （基准不能用「列表当前长度」—— 重拉是整表替换，那会自我膨胀）。
-  scrolledItems.value += items.length;
+  //
+  // ⚠️ 满页时记的是 **100** 条（探针已经被裁掉）：净增偶数条 → 已有卡片的
+  // 位置序号奇偶不变 → 两列布局不换边。
+  scrolledItems.value += page.items.length;
 }
 
 /**

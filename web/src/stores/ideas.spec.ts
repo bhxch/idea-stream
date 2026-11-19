@@ -19,6 +19,7 @@ import {
   loadingMore,
   PAGE_SIZE,
   prependOlder,
+  PROBE_LIMIT,
   scrolledItems,
 } from './ideas';
 
@@ -53,6 +54,16 @@ function makeOrderedIdeas(count: number): Idea[] {
     ...makeIdea(index),
     updatedAt: new Date(base + index * 1000).toISOString(),
   }));
+}
+
+/**
+ * 造 n 条想法，id 是 `idea-<from>` 起的一段（from、from+1、…）。
+ *
+ * 用来造「id 连续」的数据：往回翻拼进去的那一页与已加载的那一段要能
+ * 接成一条**没有洞**的序列（id 连续性是「集合中间没留洞」的直接证据）。
+ */
+function makeNumberedIdeas(from: number, count: number): Idea[] {
+  return Array.from({ length: count }, (_unused, index) => makeIdea(from + index));
 }
 
 /**
@@ -198,16 +209,18 @@ describe('loadIdeas', () => {
   it('loadIdeas 失败不清深度（列表与翻过的历史都还在）', async () => {
     // 先有一份成功的列表与一段翻过的历史。
     ideas.value = makeIdeas(3);
-    prependOlder(makeIdeas(PAGE_SIZE + 1));
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
+    // 结构变了：满页丢掉探针，净增 100 条（这里直接调 prependOlder，
+    // 绕过 fetchOlderIdeas，所以给的是**裁过之后**的 100 条）。
+    prependOlder({ items: makeIdeas(PAGE_SIZE), stale: false, hasMore: true });
+    expect(scrolledItems.value).toBe(PAGE_SIZE);
 
     // 这次 loadIdeas 挂了：整表替换没有发生 —— 列表与深度都该保持原样
     // （深度要是在发起时就被清了，用户翻过的历史会凭空少一页）。
     apiGet.mockRejectedValueOnce(new Error('网络抖了一下'));
     await expect(loadIdeas(makeFilter())).rejects.toThrow('网络抖了一下');
 
-    expect(ideas.value).toHaveLength(3 + PAGE_SIZE + 1);
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
+    expect(ideas.value).toHaveLength(3 + PAGE_SIZE);
+    expect(scrolledItems.value).toBe(PAGE_SIZE);
   });
 });
 
@@ -223,16 +236,51 @@ describe('fetchOlderIdeas', () => {
     );
   });
 
-  it('fetchOlderIdeas 整页返回更旧的那一页', async () => {
+  it('fetchOlderIdeas 满页时丢掉最老的那一条（探针）', async () => {
     apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
 
     const page = await fetchOlderIdeas(makeFilter(), 2);
 
-    // 这一页**整页**收下：服务端给的条数一条都不丢
-    // （多要的那一条在这一页的**最老**那端，丢掉它就是在列表中间挖个洞）。
-    expect(page.items).toHaveLength(PAGE_SIZE + 1);
+    // 满页 → 丢掉**最老**的那一条（探针落在这一页的最老那端），
+    // 净增 100 条（偶数）→ 已有卡片的奇偶不变 → 整墙不换边。
+    expect(page.items).toHaveLength(PAGE_SIZE);
     expect(page.stale).toBe(false);
     expect(loadingMore.value).toBe(false);
+  });
+
+  it('fetchOlderIdeas_drops_the_oldest_item_when_the_page_is_full', async () => {
+    // 服务端按 updated_at 升序返回：**最老**的那条在数组的第 0 个。
+    const served = makeOrderedIdeas(PROBE_LIMIT);
+    apiGet.mockResolvedValue(served);
+
+    const page = await fetchOlderIdeas(makeFilter(), 0);
+
+    expect(page.items).toHaveLength(PAGE_SIZE);
+    // 丢的正是最老的那一条（服务端返回的第 1 条）：剩下的最后一条还是
+    // 服务端返回的最后一条 —— 没丢中间也没丢最新。
+    expect(page.items[0].id).toBe(served[1].id);
+    expect(page.items.at(-1)?.id).toBe(served.at(-1)?.id);
+  });
+
+  it('fetchOlderIdeas_keeps_the_whole_page_when_it_is_not_full', async () => {
+    const served = makeOrderedIdeas(37);
+    apiGet.mockResolvedValue(served);
+
+    const page = await fetchOlderIdeas(makeFilter(), 0);
+
+    // 不到一整页 = 到底了：一条都不丢。
+    expect(page.items).toHaveLength(37);
+    expect(page.items.map((idea) => idea.id)).toEqual(served.map((idea) => idea.id));
+  });
+
+  it('fetchOlderIdeas_marks_a_full_page_as_has_more', async () => {
+    apiGet.mockResolvedValue(makeOrderedIdeas(PROBE_LIMIT));
+    const full = await fetchOlderIdeas(makeFilter(), 0);
+    expect(full.hasMore).toBe(true);
+
+    apiGet.mockResolvedValue(makeOrderedIdeas(37));
+    const short = await fetchOlderIdeas(makeFilter(), 0);
+    expect(short.hasMore).toBe(false);
   });
 
   it('取回来的那一页什么都不写进共享状态', async () => {
@@ -284,13 +332,14 @@ describe('prependOlder', () => {
     const page = await fetchOlderIdeas(makeFilter(), 2);
     ideas.value = makeIdeas(2);
 
-    prependOlder(page.items);
+    prependOlder(page);
 
-    expect(ideas.value).toHaveLength(2 + PAGE_SIZE + 1);
+    // 满页丢掉探针 → 净增 100 条。
+    expect(ideas.value).toHaveLength(2 + PAGE_SIZE);
     expect(ideas.value.at(-1)?.id).toBe('idea-1');
     // 深度是「用户往上翻过了多少条」：翻出来多少条就记多少条，
     // SSE 重拉时按它保留深度。
-    expect(scrolledItems.value).toBe(PAGE_SIZE + 1);
+    expect(scrolledItems.value).toBe(PAGE_SIZE);
     expect(hasMore.value).toBe(true);
   });
 
@@ -298,7 +347,7 @@ describe('prependOlder', () => {
     apiGet.mockResolvedValue(makeIdeas(3));
     const page = await fetchOlderIdeas(makeFilter(), 2);
 
-    prependOlder(page.items);
+    prependOlder(page);
 
     expect(hasMore.value).toBe(false);
   });
@@ -307,7 +356,7 @@ describe('prependOlder', () => {
     ideas.value = makeIdeas(2);
     const before = ideas.value;
 
-    prependOlder([]);
+    prependOlder({ items: [], stale: false, hasMore: false });
 
     expect(ideas.value).toBe(before);
     expect(hasMore.value).toBe(false);
@@ -323,8 +372,44 @@ describe('prependOlder', () => {
     // 翻一页。
     apiGet.mockResolvedValue(makeIdeas(PAGE_SIZE + 1));
     const page = await fetchOlderIdeas(makeFilter(), ideas.value.length);
-    prependOlder(page.items);
+    prependOlder(page);
     expect(scrolledItems.value).toBe(ideas.value.length - (PAGE_SIZE + 1));
+  });
+
+  it('prependOlder_adds_an_even_number_of_items', () => {
+    // 已加载的 100 条：id idea-1 … idea-100。
+    ideas.value = makeNumberedIdeas(1, PAGE_SIZE);
+    // 往回翻回来的那一页（更旧的 100 条）：id idea-101 … idea-200。
+    const older = makeNumberedIdeas(PAGE_SIZE + 1, PAGE_SIZE);
+
+    prependOlder({ items: older, stale: false, hasMore: true });
+
+    expect(ideas.value).toHaveLength(PAGE_SIZE * 2);
+    // 净增的是**偶数**条：已有卡片的奇偶不变 → 整墙不换边。
+    const added = ideas.value.length - PAGE_SIZE;
+    expect(added).toBe(PAGE_SIZE);
+    expect(added % 2).toBe(0);
+    expect(scrolledItems.value).toBe(PAGE_SIZE);
+  });
+
+  it('prependOlder_keeps_the_list_contiguous', () => {
+    // 已加载的 100 条：id idea-1 … idea-100（最新的那条是 idea-100）。
+    ideas.value = makeNumberedIdeas(1, PAGE_SIZE);
+    // 往回翻回来的那一页是**更旧**的 100 条：id idea-101 … idea-200。
+    const older = makeNumberedIdeas(PAGE_SIZE + 1, PAGE_SIZE);
+
+    prependOlder({ items: older, stale: false, hasMore: true });
+
+    expect(ideas.value).toHaveLength(PAGE_SIZE * 2);
+    // 更旧的那页拼在**前面**。
+    expect(ideas.value.slice(0, PAGE_SIZE).map((idea) => idea.id)).toEqual(
+      older.map((idea) => idea.id),
+    );
+    // 一条不漏、不重：id 是 1..200 的连续序列（中间没有洞）。
+    const numbers = ideas.value
+      .map((idea) => Number(idea.id.replace('idea-', '')))
+      .sort((left, right) => left - right);
+    expect(numbers).toEqual(Array.from({ length: PAGE_SIZE * 2 }, (_unused, index) => index + 1));
   });
 });
 
@@ -358,7 +443,7 @@ describe('往回翻（按服务端的切片算术走）', () => {
     for (let round = 0; round < 10 && hasMore.value; round += 1) {
       const page = await fetchOlderIdeas(makeFilter(), ideas.value.length);
       expect(page.stale).toBe(false);
-      prependOlder(page.items);
+      prependOlder(page);
     }
     // 翻到底了（没有更旧的了），不是翻够了 10 轮还在翻。
     expect(hasMore.value).toBe(false);
