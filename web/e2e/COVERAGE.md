@@ -65,9 +65,9 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | `/` | 切换完成态 / 取消完成 | ideas.spec.ts:142、ideas.spec.ts:167 | — |
 | `/` | 编辑正文：点正文进入编辑态 | ideas.spec.ts:113 | — |
 | `/` | 编辑正文：Ctrl+Enter 保存 | ideas.spec.ts:113 | — |
-| `/` | 编辑正文：Esc 取消编辑 | — | `MessageItem.vue:290-293`（`onEditorKeydown` 的 Escape 分支） |
+| `/` | 编辑正文：Esc 取消编辑 | — | `MessageItem.vue:297-300`（`onEditorKeydown` 的 Escape 分支） |
 | `/` | 编辑正文：失焦自动保存 | — | `MessageItem.vue:576` 的 `@blur="saveEdit"` |
-| `/` | 编辑正文：内容没改时不发请求、直接收起 | — | `MessageItem.vue:232-237` |
+| `/` | 编辑正文：内容没改时不发请求、直接收起 | — | `MessageItem.vue:239-244` |
 | `/` | 加标签 / 改标签 / 删标签 | ideas.spec.ts:191、ideas.spec.ts:213、ideas.spec.ts:240 | — |
 | `/` | 标签补全下拉出现、且当前项目用过的标签排前面 | projects.spec.ts:341 | 只断言了候选**内容与顺序**，没点过候选项 |
 | `/` | 补全：点候选项添加标签 | — | `TagEditor.vue:141-148` 的 `@click="addTag(option)"` |
@@ -75,9 +75,9 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | `/` | 标签输入：大小写不敏感去重 | — | `TagEditor.vue:36-38, 60-63`；后端同口径在 `lib/filter.ts:51-52` |
 | `/` | 标签输入：上下键移动高亮候选 | — | `TagEditor.vue:75-81, 108-111` |
 | `/` | 标签输入：Esc 清掉半截文字 | — | `TagEditor.vue:103-107` |
-| `/` | 收起标签编辑器时「还有未保存的改动」的二次确认 | — | `MessageItem.vue:325-338` 的 `window.confirm`；`ideas.spec.ts:62` 的 `openTagEditor` 辅助函数会**自动接受**对话框，从没断言过这个确认框 |
+| `/` | 收起标签编辑器时「还有未保存的改动」的二次确认 | — | `MessageItem.vue:333-345` 的 `window.confirm`；`ideas.spec.ts:62` 的 `openTagEditor` 辅助函数会**自动接受**对话框，从没断言过这个确认框 |
 | `/` | 删除想法：二次确认后删除 | ideas.spec.ts:264 | — |
-| `/` | 删除想法：点「取消」不删 | — | `MessageItem.vue:617`；项目/webhook 的「取消」都测了，唯独这条没测 |
+| `/` | 删除想法：点「取消」不删 | — | `MessageItem.vue:664`（确认条里的「取消」按钮）；项目/webhook 的「取消」都测了，唯独这条没测 |
 | `/` | 多选勾选 / 取消勾选、批量条条数 | ideas.spec.ts:291 | — |
 | `/` | 批量标记完成 / 批量撤销完成 | ideas.spec.ts:316 | — |
 | `/` | 批量加标签 | ideas.spec.ts:346 | 只断言「都加上新标签」，没断言**原有标签是否保留**（并集语义，`HomePage.vue:641-645` 的 `replace: false`） |
@@ -295,7 +295,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
      只验证了「勾上 → 批量条出现 → 逐个取消 → 条数变」，从没点过这个按钮。
 
 9. **删除想法的「取消」二次确认**
-   - 位置：`web/src/components/MessageItem.vue:610-618`。
+   - 位置：`web/src/components/MessageItem.vue:645-665`（删除按钮与「取消」确认条）。
    - 为什么算漏掉：项目删除（projects.spec.ts:111）与 webhook 删除（webhooks.spec.ts:459）都测了
      「取消」这条破坏性操作的退路，唯独想法删除没测 —— 而想法删除是**唯一**会让内容进回收站的操作。
 
@@ -321,7 +321,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
     - 为什么算漏掉：同上；「换行不提交」是防误提交的约定。
 
 15. **编辑正文：Esc 取消编辑**
-    - 位置：`web/src/components/MessageItem.vue:284-294`（`onEditorKeydown` 的 Escape 分支）、`:206-212`。
+    - 位置：`web/src/components/MessageItem.vue:290-301`（`onEditorKeydown` 的 Escape 分支）、`:213-219`。
     - 为什么算漏掉：Ctrl+Enter 测了（ideas.spec.ts:84），Esc 是「放弃这次编辑」的唯一显式入口。
 
 16. **编辑正文：失焦自动保存**
@@ -360,7 +360,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 23. **标签输入：大小写不敏感去重**
     - 位置：`web/src/components/TagEditor.vue:36-38`（`isSameTag`）、`:60-63`（重复则忽略）。
     - 为什么算漏掉：后端也是这个口径（`lib/filter.ts:51-52`），前后端口径不一致会让用户
-      「刚存好就被问还有没有未保存改动」（`MessageItem.vue:147-151`）。
+      「刚存好就被问还有没有未保存改动」（`MessageItem.vue:153-157`）。
 
 24. **标签输入：上下键移动高亮候选**
     - 位置：`web/src/components/TagEditor.vue:75-81`（`moveHighlight`）、`:108-111`（键盘映射）。
@@ -375,9 +375,9 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
     - 为什么算漏掉：`projects.spec.ts:341` 只断言了候选**内容与顺序**，从没有点过候选项。
 
 27. **收起标签编辑器时的「还有未保存的改动」确认框**
-    - 位置：`web/src/components/MessageItem.vue:325-338`（`window.confirm`）。
+    - 位置：`web/src/components/MessageItem.vue:333-345`（`window.confirm`）。
     - 为什么算漏掉：`ideas.spec.ts:62` 的 `openTagEditor` 辅助函数会**自动接受**对话框，从不断言这个确认流程 ——
-     「不静默丢改动」是这段代码存在的理由（`MessageItem.vue:317-324` 的注释）。
+     「不静默丢改动」是这段代码存在的理由（`MessageItem.vue:323-330` 的注释）。
 
 28. **标签过滤面板：点组件外部收起 / Esc 收起**
     - 位置：`web/src/components/TagFilter.vue:50-66`。
@@ -404,7 +404,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
     - 为什么算漏掉：`trash.spec.ts:129` 只点过「展开」。
 
 34. **编辑正文：内容没改时不发请求、直接收起**
-    - 位置：`web/src/components/MessageItem.vue:232-237`。
+    - 位置：`web/src/components/MessageItem.vue:239-244`。
     - 为什么算漏掉：这条分支省掉一次请求，也是「在飞保护」之外的一道判断。
 
 ### P3 — 展示层与边界路径（11 条）
