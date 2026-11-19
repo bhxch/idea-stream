@@ -55,7 +55,7 @@ function choose(id: string | null): void {
       <span class="project-dropdown__caret" aria-hidden="true">▾</span>
     </button>
 
-    <div v-if="open" class="project-dropdown__panel">
+    <div v-if="open" class="project-dropdown__panel dropdown-panel">
       <!-- 第一项永远是「全部项目」：不选项目也是一种选择，得能选回去。 -->
       <button
         class="project-dropdown__item"
@@ -118,20 +118,13 @@ function choose(id: string | null): void {
 }
 
 /*
- * 面板：浮在触发器下面的一层。
+ * 面板：外观照共享的 .dropdown-panel（styles/dropdown.css），
+ * 这里只留自己的差异：宽度与右上角对齐。
  *
- * 面板样式照 TagFilter 的面板（CSS 层面）：绝对定位、边框、底色、阴影用同一套。
- * （「点外面收起 / Esc 收起」那段 JS 逻辑与 TagFilter 逐字相同 ——
- *  Task 13 会连同 TagFilter 一起收敛成 web/src/composables/useDropdown.ts。）
+ * （「点外面收起 / Esc 收起」那段 JS 逻辑已收敛到
+ *  web/src/composables/useDropdown.ts —— 别再在这里抄一份。）
  */
 .project-dropdown__panel {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   /*
    * 面板宽度的上限：min-width 给它一个「至少这么宽」的底线，
    * 而它自己的宽度是「内容宽」与「能放下的宽度」里小的那个 ——
@@ -140,13 +133,6 @@ function choose(id: string | null): void {
    */
   min-width: 180px;
   max-width: calc(100vw - 24px);
-  max-height: 260px;
-  overflow-y: auto;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
 }
 
 .project-dropdown__item {

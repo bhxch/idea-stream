@@ -38,12 +38,11 @@ function toggleTag(name: string): void {
   emit('update:selected', next);
 }
 
-  /** AND/OR 是一个按钮来回切，按钮上显示当前模式。 */
+/** AND/OR 是一个按钮来回切，按钮上显示当前模式。 */
 function toggleMode(): void {
   emit('update:mode', props.mode === 'or' ? 'and' : 'or');
 }
 </script>
-
 
 <template>
   <div ref="root" class="tag-filter">
@@ -69,7 +68,7 @@ function toggleMode(): void {
       {{ mode === 'or' ? '任一（OR）' : '全部（AND）' }}
     </button>
 
-    <div v-if="open" class="tag-filter__panel">
+    <div v-if="open" class="tag-filter__panel dropdown-panel">
       <p v-if="allTags.length === 0" class="tag-filter__empty">还没有标签</p>
       <label v-for="tag in allTags" :key="tag.name" class="tag-filter__option">
         <input
@@ -92,22 +91,12 @@ function toggleMode(): void {
   gap: 6px;
 }
 
+/*
+ * 面板：外观照共享的 .dropdown-panel（styles/dropdown.css），
+ * 这里只留自己的差异：宽度。
+ */
 .tag-filter__panel {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   min-width: 180px;
-  max-height: 260px;
-  overflow-y: auto;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
 }
 
 .tag-filter__option {

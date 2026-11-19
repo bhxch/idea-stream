@@ -3,5 +3,6 @@ import App from './App.vue';
 import { router } from './router';
 import './styles/theme.css';
 import './styles/base.css';
+import './styles/dropdown.css';
 
 createApp(App).use(router).mount('#app');

@@ -53,7 +53,7 @@ function goWebhooks(): void {
       ⋯
     </button>
 
-    <div v-if="open" class="more-menu__panel">
+    <div v-if="open" class="more-menu__panel dropdown-panel">
       <!--
         主页原来没有管理页导航条（PageNav 只挂在四个管理页上），
         手机上进回收站要点两步：⋯ → 项目管理 → 回收站。
@@ -72,26 +72,16 @@ function goWebhooks(): void {
 }
 
 /*
- * 面板：浮在触发器下面的一层。
+ * 面板：外观照共享的 .dropdown-panel（styles/dropdown.css），
+ * 这里只留自己的差异：宽度与右上角对齐（菜单在顶栏的最右端）。
  *
- * 面板样式照 TagFilter 的面板（CSS 层面）：绝对定位、边框、底色、阴影用同一套。
- * （「点外面收起 / Esc 收起」那段 JS 逻辑与 TagFilter 逐字相同 ——
- *  Task 13 会连同 TagFilter 一起收敛成 web/src/composables/useDropdown.ts。）
+ * （「点外面收起 / Esc 收起」那段 JS 逻辑已收敛到
+ *  web/src/composables/useDropdown.ts —— 别再在这里抄一份。）
  */
 .more-menu__panel {
-  position: absolute;
-  top: calc(100% + 4px);
   right: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  left: auto;
   min-width: 140px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
 }
 
 .more-menu__item {

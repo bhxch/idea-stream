@@ -132,7 +132,7 @@ defineExpose({
         {{ currentStatusLabel }}<span class="filter-bar__status-caret" aria-hidden="true">▾</span>
       </button>
 
-      <div v-if="statusOpen" class="filter-bar__status-panel">
+      <div v-if="statusOpen" class="filter-bar__status-panel dropdown-panel">
         <button
           v-for="option in STATUS_OPTIONS"
           :key="option.value"
@@ -223,27 +223,11 @@ defineExpose({
 }
 
 /*
- * 状态下拉的面板：浮在触发器下面的一层。
- *
- * 样式照 TagFilter 的面板（绝对定位、边框、底色、阴影用同一套），
- * 只有宽度窄一点：这里只有三个短选项，不必留那么宽。
+ * 状态下拉的面板：外观照共享的 .dropdown-panel（styles/dropdown.css），
+ * 这里只留自己的差异：宽度窄一点（只有三个短选项，不必留那么宽）。
  */
 .filter-bar__status-panel {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   min-width: 120px;
-  max-height: 260px;
-  overflow-y: auto;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
 }
 
 .filter-bar__status-option {
@@ -273,10 +257,6 @@ defineExpose({
 
 /*
  * 窄屏（≤767px）：状态三态收成一个下拉，搜索框撑开剩余宽度。
- *
- * ⚠️ 断点说明：这份规格里有两套断点并存 ——
- * 「窄屏」在 §D7 里指没有侧栏的那一档（<1024px，过滤行的**位置**用它），
- * 而触摸目标与两列流用的是 767/768px（§D9、§6.10，这里用它）。
  */
 @media (max-width: 767px) {
   .filter-bar__status-segments {
@@ -285,7 +265,6 @@ defineExpose({
 
   .filter-bar__status-trigger {
     display: inline-flex;
-    /* 触摸目标不小于 32×32（§6.10：新加的下拉触发器同样适用）。 */
     min-width: 32px;
     min-height: 32px;
   }

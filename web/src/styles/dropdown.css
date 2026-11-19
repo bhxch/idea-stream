@@ -1,0 +1,29 @@
+/*
+ * 下拉面板的公共外观。
+ *
+ * 面板是浮在触发器下面的一层：绝对定位、边框、底色、阴影用同一套。
+ *
+ * 这套样式原先在每个下拉组件里各抄一份（TagFilter / ProjectDropdown /
+ * MoreMenu / FilterBar 的状态下拉）—— 抄一份改一处、漏一处就是
+ * 「面板的样子对不上」，正是「点外面收起 / Esc 收起」那段 JS 逻辑
+ * 收敛到 composables/useDropdown.ts 之前的同一个毛病。
+ *
+ * 各组件自己的**差异**（宽度、右对齐）留在各自的 scoped 样式里 ——
+ * scoped 选择器带属性限定，权重高于这里的全局 class，两者不会打架。
+ */
+.dropdown-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
