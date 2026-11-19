@@ -2416,6 +2416,11 @@
     三个组件与这个新的状态下拉**都用它** —— 到这一步为止仓库里已经有三份一样的代码，
     再抄第四份就是四处各改各的（漏一处就是一个组件关不掉面板）。
     面板样式（CSS）仍照 `TagFilter.vue` 的 `.tag-filter__panel`；
+    ⚠️ **但不要把它再抄一份**：面板的公共外观（绝对定位、边框、底色、阴影…）
+    提到 `web/src/styles/dropdown.css` 的共享 class，四个下拉组件（TagFilter /
+    ProjectDropdown / MoreMenu / 新的状态下拉）都挂它，各组件的 scoped 样式只留
+    自己的差异（宽度、右对齐）—— 抄一份改一处、漏一处就是「面板的样子对不上」，
+    与那段 JS 逻辑被抄三份是同一个毛病。
   - 加一个 `open` ref 与状态下拉面板（**复用 `web/src/composables/useDropdown.ts`**，
     别再照 `TagFilter.vue` 抄一遍 `document` click 收起 + Esc 收起）；
   - 触发器 `.filter-bar__status-trigger` 的文本是当前状态（「全部」/「未完成」/「已完成」）+ `▾`；
@@ -2425,13 +2430,16 @@
     /* 宽屏：三个分段按钮 */
     .filter-bar__status-segments { display: flex; gap: 4px; }
     .filter-bar__status-trigger { display: none; }
-    /* 窄屏：收成一个下拉 */
-    @media (max-width: 767px) {
+    /* 窄屏：收成一个下拉（断点 1023px，见下面 Step 4 的断点裁决） */
+    @media (max-width: 1023px) {
       .filter-bar__status-segments { display: none; }
       .filter-bar__status-trigger { display: inline-flex; }
       .filter-bar__search { flex: 1 1 auto; width: auto; }
     }
     ```
+    ⚠️ **形态的断点是 1023px，不是 767px**（Step 4 的裁决：「过滤行的窄屏形态用 1023px」——
+    跟侧栏断点一致：「窄屏」在这份规格里指「没有侧栏的那一档」）。
+    触摸目标那条另算（仍是 767px，见下）。
     ⚠️ **`.filter-bar__status` 这个 `role="group" aria-label="状态过滤"` 的容器本身不能被 `display: none`** ——
     隐藏的是**它里面的**分段按钮（`.filter-bar__status-segments`），容器要一直显示，
     窄屏时它包着那个下拉触发器。
@@ -2458,6 +2466,8 @@
       }
     }
     ```
+    ⚠️ 触摸目标这条**留在 767px**（形态那条是 1023px）：触摸目标管的是**手机**那一档，
+    平板（768–1023px）有悬停能力，规则不适用（规格 §D8 的并集判据）。
   - 搜索框：宽屏 `width: 160px` 不变；**窄屏撑开剩余宽度**（`flex: 1 1 auto; width: auto;`）；
   - 加 `defineExpose`：
     ```ts
@@ -2660,11 +2670,37 @@
 - Modify: `web/e2e/COVERAGE.md`
 - Test: `web/e2e/layout.spec.ts`（追加）
 
-> ⚠️ **`web/e2e/COVERAGE.md` 里的 `MessageItem.vue:行号` 引用，Task 10 已经更新过一次**（提交 `75030ea`：
-> 卡片模板从「标题 + 正文 + 标签 + 动作行」改成「一块正文 + 底部 meta 行」，脚本段整体下移，
-> 那 10 处引用全部指错了）。
-> Task 15 收口时**只需复核这些行号是否仍指对**（Task 11–14 若不改 `MessageItem.vue` 就应保持原样）——
-> 不要照着旧行号去改，把已经对的又改错。
+> ⚠️ **`web/e2e/COVERAGE.md` 里的行号引用有**两类**，Task 15 收口时都要复核**：
+>
+> 1. **`MessageItem.vue:行号`（10 处）—— Task 10 已经更新过一次**（提交 `75030ea`：
+>    卡片模板从「标题 + 正文 + 标签 + 动作行」改成「一块正文 + 底部 meta 行」，脚本段整体下移，
+>    那 10 处引用全部指错了）。
+>    Task 15 收口时**只需复核这些行号是否仍指对**（Task 11–14 若不改 `MessageItem.vue` 就应保持原样）——
+>    不要照着旧行号去改，把已经对的又改错。
+>    （已核：Task 10 之后 `MessageItem.vue` 只有 `.confirm__delete:disabled` 那条在被引行号**之后**动过，
+>    这 10 处仍指对。）
+> 2. **`HomePage.vue:行号`（13 处引用点）—— Task 12/13 改了 `HomePage.vue` 之后**全部指错了**。
+>    原先那段 ⚠️ 只提了 `MessageItem.vue`，漏了这一类。
+>    下面是**新行号**（按 Task 13 修复轮之后的 `web/src/pages/HomePage.vue` 逐处核过；
+>    Task 14/15 都不再动这个文件）：
+>
+>    | COVERAGE.md 里的旧引用 | 指的是什么 | 新行号 |
+>    |---|---|---|
+>    | `HomePage.vue:198-214` | `switchProject` 的 catch 分支（切项目失败回滚） | `:397-401` |
+>    | `HomePage.vue:318-336` | `recoverFromTooMany` | `:531-549` |
+>    | `HomePage.vue:339-347` | 提示文案 `tooManyMessage` | `:558-560` |
+>    | `HomePage.vue:365-371` | 切模式时落盘（`setTagMode`） | `:578-583` |
+>    | `HomePage.vue:381-401` | 提交失败时输入框内容保留（`onSubmit` 返回 false） | `:594-613` |
+>    | `HomePage.vue:632-654` / `:641-645` | `replace: false`（批量加标签是并集式追加） | `:844-869` / `:856` |
+>    | `HomePage.vue:689` | 合并守卫（至少要两条） | `:901` |
+>    | `HomePage.vue:699` | 设 `focusIdeaId`（合并结果定位） | `:911` |
+>    | `HomePage.vue:736-750` | `project.*` 分流 | `:987-991` |
+>    | `HomePage.vue:831-877` / `:840-877` | `applyProjectEvent`（就地改名 / 删项目时切回「全部项目」） | `:1113-1150` |
+>    | `HomePage.vue:979-986` | 上翻时不抢滚动（`void onNewContent()`） | `:998`（`useScrollFollow` 的调用在 `:113`） |
+>    | `HomePage.vue:1016` | MergeDialog 的取消（`@cancel="mergeOpen = false"`） | `:1332` |
+>
+>    ⚠️ 这张表核过一次就没法保证永远准：**行号会随文件改动漂移**。
+>    Task 15 动手前先 `grep` 确认再改。
 
 **Interfaces:**
 - Consumes: Task 9–14 的最终形态
