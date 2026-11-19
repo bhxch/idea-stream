@@ -256,22 +256,40 @@ defineExpose({
 }
 
 /*
- * 窄屏（≤767px）：状态三态收成一个下拉，搜索框撑开剩余宽度。
+ * 窄屏（≤1023px）：状态三态收成一个下拉，搜索框撑开剩余宽度。
+ *
+ * ⚠️ 断点是 1023px（跟侧栏消失那一档对齐）：规格 §D7 的「窄屏」就是
+ * 「没有侧栏的那一档」（§D9 的表格：<1024px 无侧栏），过滤行的**位置**
+ * （钉死 / 随内容滚走）也用这一档（见 HomePage.vue 的 .home__filters）。
+ *
+ * 两套断点并存是规格本身的样子：**形态**跟「窄屏」走（1023px），
+ * **触摸目标**跟两列流与悬停显形走（767/768px，§D9、§6.10）。
  */
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .filter-bar__status-segments {
     display: none;
   }
 
   .filter-bar__status-trigger {
     display: inline-flex;
-    min-width: 32px;
-    min-height: 32px;
   }
 
   .filter-bar__search {
     flex: 1 1 auto;
     width: auto;
+  }
+}
+
+/*
+ * 触摸目标不小于 32×32（§6.10：新加的下拉触发器同样适用）。
+ *
+ * 这一条用 767px（不是上面的 1023px）：触摸目标管的是**手机**那一档，
+ * 平板（768–1023px）有悬停能力，规则不适用（§D8 的并集判据）。
+ */
+@media (max-width: 767px) {
+  .filter-bar__status-trigger {
+    min-width: 32px;
+    min-height: 32px;
   }
 }
 </style>
