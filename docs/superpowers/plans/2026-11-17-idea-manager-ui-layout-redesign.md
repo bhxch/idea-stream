@@ -61,7 +61,13 @@
    所以要拿到空串，渲染器得认识「这个占位符已下线」—— 见 Task 4 的 `RetiredPlaceholders`。→ **Task 4**。
 6. **旧库里 `idea` 表还留着 `title TEXT NULL` 列** —— `CREATE TABLE IF NOT EXISTS` 意味着旧库保留那一列（永远 NULL，代码不再读写），**代码不得依赖这一列在不在**。行为：旧库升级后 `/api/ideas` 正常，代码里不再 SELECT/INSERT 这一列。→ **Task 3**。
 7. **往回翻加载更早的一页时 prepend 的条数是奇数** —— 现在每页实际要 101 条（`PAGE_SIZE + 1`，多要的那条是探针），奇数 → **每翻一页整墙左右互换**。行为：满页时丢掉**最老**的那一条（探针），净增 100 条（偶数）→ 已有卡片不换边。→ **Task 12**。
-8. **悬停才显形的按钮成了「唯一入口」** —— 键盘 Tab 到它时必须也显形（`:focus-within`）；而**没有悬停能力**的设备（`(hover: none)`）与窄屏（≤767px）一律常驻。行为：窄屏与无 hover 能力的设备上勾选框与 🏷🗑 始终可见；键盘聚焦时也可见。→ **Task 10**。
+8. **悬停才显形的按钮成了「唯一入口」** —— 键盘 Tab 到它时必须也显形（`:focus-within`）；而**没有悬停能力**的设备（`(hover: none)`）与窄屏（≤767px）一律常驻。行为：窄屏与无 hover 能力的设备上勾选框与 🏷🗑 始终可见；键盘聚焦时也可见。→ **Task 15**（**不是 Task 10**，理由见下面）。
+   ⚠️ **为什么改派到 Task 15**：显隐是**纯 CSS 媒体查询 + 伪类**，而单测环境（vitest 的 jsdom）
+   **不求值媒体查询** —— `window.matchMedia` 与 `CSS.supports` 都是 undefined，
+   在单测里读不出「窄屏常驻 / 桌面隐藏」的差别，写出来的只能是一批恒真的断言（比没有测试更坏）。
+   能钉住的只有 **e2e**（Playwright + Chromium 能读真实的 `opacity`，也能用 `hasTouch: true` 的
+   context 模拟「无悬停能力」的设备）。Task 15 的验收表里已经有「桌面端悬停才显形、键盘聚焦也显形」
+   与「窄屏常驻」两条，还需补「**无悬停能力的设备**」那一支 —— 详见 Task 15 Step 3。
 
 ---
 
@@ -1831,7 +1837,7 @@
     <div class="body" title="点击编辑" @click="startEdit"> …片段… </div>
     <div class="meta">
       <button class="meta__done" type="button" :aria-pressed="idea.done" …>○</button>
-      <ul class="meta__tags"> …chips… </ul>
+      <ul class="tags meta__tags"> …chips… </ul>
       <span class="meta__num num">{{ position }}</span>
       <time class="meta__time">{{ formatRelativeTime(idea.updatedAt) }}</time>
       <button class="meta__action meta__action--tags" …>🏷</button>
@@ -1861,6 +1867,11 @@
 
   > `data-hover-only` 是一个**纯标记**属性：真正的显隐由 CSS 媒体查询 + `:hover` / `:focus-within` 决定
   > （规格 §6.6：「悬停显形：纯 CSS，不引入 JS」）。这个属性只给 e2e 与单测一个可断言的锚点。
+  >
+  > ⚠️ **这三条（连同 Review Focus 第 8 条）钉不住真实的显隐**：显隐是纯 CSS 媒体查询 + 伪类，
+  > 而单测环境（vitest 的 jsdom）**不求值媒体查询** —— 写单测只能写出一批恒真的断言。
+  > 真实显隐（桌面默认隐藏 / 悬停显形 / 键盘聚焦显形 / 窄屏与无 hover 能力设备常驻）
+  > 由 **Task 15 的 e2e** 钉住（Review Focus 第 8 条已改派到那里）。
 
 - [ ] **Step 2: 跑测试确认它失败**
 
@@ -1875,10 +1886,16 @@
   - meta 行（`.meta`）的内容与顺序（照规格 §D3 的排法）：
     1. **完成态按钮** `.meta__done`：一个小圆圈，**常驻**。文案用字形：`idea.done ? '●' : '○'`（规格 §D3 的图是「一个小圆圈按钮」）；`aria-pressed` 绑 `idea.done`，`aria-label` 给「标记完成」/「已完成」；
     2. **标签 chips** `.meta__tags`：常驻（有才显示）—— 复用 Task 6 留下的 `<ul class="tags">` + `<li class="chip">`（**class 名不要改**：`.tags` / `.chip` 在样式与 e2e 里都被引用），只把它挪进 meta 行；
+       ⚠️ **两个 class 都给**（`<ul class="tags meta__tags">`）：上面的 DOM 结构块写的是 `meta__tags`，
+       这一条要求保留 `.tags` / `.chip` —— 实现两个都挂上，两句话同时成立。
+       下游 task（Task 11/15）**按 `.tags` 或 `.meta__tags` 选都行**（两个类名都在那个 `<ul>` 上）。
     3. **编号** `.meta__num`：`<span class="num">{{ position }}</span>` —— **「淡色圆底 + 普通数字」的徽标**，不用 `①②③`（规格 §7.2）；
     4. **时间** `.meta__time`：`<time>{{ formatRelativeTime(idea.updatedAt) }}</time>` —— **沿用现有的相对时间，不改成钟点**（规格 §7.1）；
     5. **🏷 标签** `.meta__action--tags` 与 **🗑 删除** `.meta__action--delete`：桌面上悬停/聚焦才显形；
-  - 编号与时间紧挨着（`.meta__num` 在 `.meta__time` 前面，中间只隔一个空格）；
+  - 编号与时间在 meta 行里**紧挨**（DOM 上相邻：`.meta__num` 在 `.meta__time` 前面）；
+    ⚠️ **视觉间距由 `.meta` 的 `gap: 6px` 决定**（Step 4 的精确值），**不是字面上的「一个空格」** ——
+    规格 §D3 只说「紧挨时间」，没给量化；「一个空格」是本计划自己加的说法，与同一步的 Step 4 直接冲突。
+    下游 task（Task 15 的「编号紧挨时间」那条 e2e 断言）按**元素盒距离 ≤ 20px** 判，不要按「一个空格」判。
   - 标签编辑态（`<TagEditor>`）保持在卡片里（meta 行上方或原位，别丢功能）。
 
 - [ ] **Step 4: 改样式（尺寸、间距、悬停显形、触摸目标）**
@@ -2643,6 +2660,12 @@
 - Modify: `web/e2e/COVERAGE.md`
 - Test: `web/e2e/layout.spec.ts`（追加）
 
+> ⚠️ **`web/e2e/COVERAGE.md` 里的 `MessageItem.vue:行号` 引用，Task 10 已经更新过一次**（提交 `75030ea`：
+> 卡片模板从「标题 + 正文 + 标签 + 动作行」改成「一块正文 + 底部 meta 行」，脚本段整体下移，
+> 那 10 处引用全部指错了）。
+> Task 15 收口时**只需复核这些行号是否仍指对**（Task 11–14 若不改 `MessageItem.vue` 就应保持原样）——
+> 不要照着旧行号去改，把已经对的又改错。
+
 **Interfaces:**
 - Consumes: Task 9–14 的最终形态
 - Produces: 无代码
@@ -2700,6 +2723,10 @@
     `expectNoUnexpectedHorizontalScroll` 对不存在的元素做 `evaluate` 会抛错 → e2e 红）；
   - `textBlocks`：删掉「想法条目的标题」，改成「想法条目的正文」（`page.locator('.idea .body').first()`）；
     ⚠️ **正文现在会被截断** → 它**不能**再进 `textBlocks`（那会红）。改放进 `textBlocksWhenEditing`。
+    ⚠️ **顺带把种子文案换掉**：现在（Task 10 之后）那条「正文没被裁掉」的断言**只靠种子文案恰好不超过 3 行**才绿
+    —— home 路由第二条种子正文是 102 个不换行字符，375px 视口下正文列宽约 313px，
+    按 system-ui 字宽估算**正好贴 3 行的边**（评审 Task 10 时算过，没实测）。种子文案或字体度量一变就变 4 行，
+    e2e 会对一个**正确**的实现报红。把正文从 `textBlocks` 里拿掉（上一条）就同时解决了这个问题。
 
 - [ ] **Step 3: 追加新外壳的行为用例**
 
@@ -2733,10 +2760,17 @@
   | `窄屏点 🔍 滚回列表顶部并聚焦搜索框` | 375×667 → 先滚到底，点顶栏的 🔍 → `document.activeElement` 是那个 searchbox（用 `page.evaluate` 读 `document.activeElement?.getAttribute('aria-label')`） |
   | `桌面端：勾选框与 🏷🗑 悬停才显形，键盘聚焦也显形` | 1280×800 → 不悬停时 `.idea .select` 的 `opacity` 为 0；悬停那条卡片后为 1；**Tab 聚焦到它时也为 1**（用 `page.keyboard.press('Tab')` 循环直到焦点落在它身上，或直接 `locator.focus()` 后读 opacity） |
   | `窄屏：勾选框与 🏷🗑 常驻` | 375×667 → `.idea .select` 的 `opacity` 为 1（不悬停） |
+  | `无悬停能力的设备：勾选框与 🏷🗑 常驻` | 用 `browser.newContext({ hasTouch: true })` 另开一个 context（Chromium 里 `matchMedia('(hover: none)').matches` 为 true）→ **1280 宽也是** `.idea .select` 的 `opacity` 为 1（不悬停）—— 规格 §D8 / Review Focus 第 8 条：判据是「这台设备有没有悬停能力」，不只是屏宽 |
   | `窄屏：顶栏的新触发器够大` | 375×667 → 用文件里现成的 `expectTapTarget` 助手量「⋯」「🔍」与项目下拉触发器：宽高都 ≥ 32px（规格 §6.10 末句：新加的下拉触发器、发送按钮同样适用） |
   | `宽屏：新记的一条落在最下面，且左右按奇偶交替` | 1920×1080 → 这一轮已造 **14** 条（Step 2 的 `prepare`）→ 提交第 1 条新想法 → 它是**最后**一张卡、`.meta__num` 是 **'15'**（奇数位）→ 落在**左格**；再提交第 2 条 → `.meta__num` 是 **'16'**（偶数位）→ 落在**右格** —— 规格 §D5「第 2k+1 条进左格、第 2k+2 条进右格」+ §9 行为第 1 条。⚠️ **奇偶必须按实际条数推**：14+1=15 是奇数位（左格），别写死成右格 |
   | `宽屏：编辑一条靠前的想法，它跳到最下面，其下方卡片左右互换` | 1920×1080 → 编辑**第一条**想法并保存 → 它跳到最后一张卡；原来在它下面那条的 x **左右互换**了（规格 §9 行为第 2 条，**这是被明确批准的取舍**，不是 bug） |
   | `管理页铺满，Webhook 表单保持窄` | 1280×800 → 打开 `/trash` 与 `/projects`：`.page` 的右边缘离视口右边缘 ≤ 24px（**铺满**，`.page` 已经没有 `max-width` 了）；打开 `/webhooks`：`.page--narrow` 的宽度 ≤ 720px（**表单保持窄**，规格 §D10 / §9 视觉验收） |
+
+  ⚠️ **上面那三条「显形」用例就是 Review Focus 第 8 条的落点**（计划开头那条 → **Task 15**）：
+  桌面默认隐藏 / 悬停显形 / 键盘聚焦显形、窄屏常驻、**无悬停能力的设备常驻** —— 三条都要有。
+  ⚠️ **移动端「点按目标」扫描替代不了它们**：那条扫描显式跳过 `opacity === 0` 的元素
+  （`web/e2e/layout.spec.ts:562-564`），显形规则坏掉（控件全透明）时它会**静默跳过、照样绿**。
+  所以显形必须**直接读 `opacity`** 来断言。
 
 - [ ] **Step 4: 跑 e2e**
 
@@ -2759,6 +2793,8 @@
   - 更新「一、概览」里的用例总数与文件数（**按实际的数**，不要照抄）；
   - 在「二、覆盖矩阵」里补上新增的布局用例行（页面 | 功能点 | 覆盖它的用例 | 备注，用例列的格式是 `文件名.spec.ts:行号`）；
   - 在「三、漏掉的功能点」里把已经补上的项删掉。
+  - ⚠️ **别重做 Task 10 已经做过的事**：指向 `MessageItem.vue` 的 10 处行号引用在 Task 10（提交 `75030ea`）
+    已经更新到新结构上，**只需复核**（Task 11–14 若没动 `MessageItem.vue` 就保持原样），不要照着旧行号去改。
 
 - [ ] **Step 6: 复核受影响的既有 e2e 用例**
 
