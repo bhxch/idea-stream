@@ -167,8 +167,14 @@ test.describe('回收站 /trash', () => {
     const infoToast = page.locator('[role="status"] .toast--info').last();
 
     // 一条被单独删掉的想法（顶层条目）与一个被删掉的项目（容器条目）。
+    //
+    // ⚠️ 项目名要带 uniqueTag()：**被删的项目会一直躺在回收站里** ——
+    // 回收站只进不出，复位也清不掉（复位只是把它们恢复回来、再删一遍），
+    // 所以同一个库跑第二轮时，回收站里已经有同名的残渣容器了。
+    // 按固定名字定位就会撞 Playwright 的 strict mode（匹配到多条）。
+    // 想法不用带：复位清想法走的是合并**硬删**，正文不会留下残渣。
     const idea = await seed.idea('要恢复的想法');
-    const project = await seed.project('要恢复的项目');
+    const project = await seed.project(`要恢复的项目-${uniqueTag()}`);
 
     await page.goto('/');
     await deleteIdeaInUi(page, idea.id);
@@ -180,8 +186,8 @@ test.describe('回收站 /trash', () => {
     await trashEntry(page, '要恢复的想法').getByRole('button', { name: '恢复', exact: true }).click();
     await expect(infoToast).toContainText('想法已恢复');
 
-    // 恢复项目
-    await trashEntry(page, '要恢复的项目').getByRole('button', { name: '恢复项目' }).click();
+    // 恢复项目（按项目名定位到**那一个**容器：回收站里可能还躺着同名的残渣容器）
+    await trashEntry(page, project.name).getByRole('button', { name: '恢复项目' }).click();
     await expect(infoToast).toContainText('项目已恢复');
   });
 
