@@ -167,79 +167,96 @@ test('往回翻：打开页面停在最下边', async ({ page, api }) => {
   await expect(ideaItem(page, oldest.id)).not.toBeInViewport();
 });
 
-test('往回翻：接近顶部自动加载更旧的一页', async ({ page, api }) => {
-  // 首屏一页是 101 条（前端按「一页 + 一条」要，好判断还有没有更旧的）。
-  // 造 102 条：首屏拿到最新的 101 条，再往回翻一页就能多出更旧的那一条。
-  // id 留着：光看**条数**分不出「从最新一端数」与「从最老一端数」—— 两种口径下
-  // offset=0 都返回 101 条、offset=101 都返回 1 条。要看返回的是**哪一条**。
-  const ids: string[] = [];
-  for (let index = 1; index <= 102; index += 1) {
-    const idea = await api.createIdea({ content: `第 ${index} 条想法` });
-    ids.push(idea.id);
-  }
+// 往回翻的视口行为要在**两种视口**下各验一遍：
+// 宽屏过滤行是 sticky（钉在滚动容器顶上），窄屏过滤行随内容滚走 ——
+// 两种形态的滚动几何不同，只验宽屏的话窄屏那一档等于没覆盖。
+for (const viewport of [
+  { name: '宽屏 1280×720', width: 1280, height: 720 },
+  { name: '窄屏 375×667', width: 375, height: 667 },
+]) {
+  test(`往回翻：接近顶部自动加载更旧的一页（${viewport.name}）`, async ({ page, api }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
 
-  await page.goto('/');
-  // 首屏只有一页。
-  await expect(page.locator('article')).toHaveCount(101);
+    // 首屏一页是 101 条（前端按「一页 + 一条」要，好判断还有没有更旧的）。
+    // 造 102 条：首屏拿到最新的 101 条，再往回翻一页就能多出更旧的那一条。
+    // id 留着：光看**条数**分不出「从最新一端数」与「从最老一端数」—— 两种口径下
+    // offset=0 都返回 101 条、offset=101 都返回 1 条。要看返回的是**哪一条**。
+    const ids: string[] = [];
+    for (let index = 1; index <= 102; index += 1) {
+      const idea = await api.createIdea({ content: `第 ${index} 条想法` });
+      ids.push(idea.id);
+    }
 
-  // 服务端的 offset 从**最新**一端数：offset=0 是最新那页，
-  // offset=101 是再往前 101 条 —— 正好是剩下那一条。
-  const newestPage = await api.listIdeas({ limit: 101, offset: 0 });
-  const olderPage = await api.listIdeas({ limit: 101, offset: 101 });
-  expect(newestPage).toHaveLength(101);
-  expect(olderPage).toHaveLength(1);
-  // 更旧的那一页就是**最老**的那一条（不是最新那一条）。
-  expect(olderPage[0].id).toBe(ids[0]);
-  // 最新那页里不能混进最老的那一条。
-  expect(newestPage.some((idea) => idea.id === ids[0])).toBe(false);
+    await page.goto('/');
+    // 首屏只有一页。
+    await expect(page.locator('article')).toHaveCount(101);
 
-  // 往回翻的请求：offset 从**最新**一端数，已经加载了多少条就是多少。
-  const older = page.waitForResponse(
-    (response) =>
-      response.url().includes('/api/ideas?') &&
-      response.url().includes('offset=101') &&
-      response.request().method() === 'GET',
-  );
+    // 服务端的 offset 从**最新**一端数：offset=0 是最新那页，
+    // offset=101 是再往前 101 条 —— 正好是剩下那一条。
+    const newestPage = await api.listIdeas({ limit: 101, offset: 0 });
+    const olderPage = await api.listIdeas({ limit: 101, offset: 101 });
+    expect(newestPage).toHaveLength(101);
+    expect(olderPage).toHaveLength(1);
+    // 更旧的那一页就是**最老**的那一条（不是最新那一条）。
+    expect(olderPage[0].id).toBe(ids[0]);
+    // 最新那页里不能混进最老的那一条。
+    expect(newestPage.some((idea) => idea.id === ids[0])).toBe(false);
 
-  // 用户原来看着的那一条：原来列表的第一条（已加载的最老那条）。
-  const watchedId = newestPage[0].id;
+    // 往回翻的请求：offset 从**最新**一端数，已经加载了多少条就是多少。
+    const older = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/ideas?') &&
+        response.url().includes('offset=101') &&
+        response.request().method() === 'GET',
+    );
 
-  // 滚到接近顶部 → 哨兵进入视野 → 自动加载更旧的一页。
-  await scrollContainer(page).evaluate((element) => {
-    element.scrollTop = 0;
+    // 用户原来看着的那一条：原来列表的第一条（已加载的最老那条）。
+    const watchedId = newestPage[0].id;
+
+    // 滚到接近顶部 → 哨兵进入视野 → 自动加载更旧的一页。
+    await scrollContainer(page).evaluate((element) => {
+      element.scrollTop = 0;
+    });
+
+    await older;
+    // 更旧的那一条拼到了列表**前面**：列表变长了。
+    await expect(page.locator('article')).toHaveCount(102);
+    // 翻完之后，最老的那一条排在列表**第一**（列表按更新时间升序，最老的在顶）。
+    //
+    // ⚠️ 这一条**断不了「更旧的一页拼在前面还是后面」**：显示层按 updated_at
+    // 重排过一遍，两种拼法排出来的顺序与滚动几何**完全一样** ——
+    // 实测把 `HomePage.vue` 的 prepend 改成 append，这条用例照样全绿。
+    // prepend 的语义由单测钉住：`web/src/pages/HomePage.spec.ts`
+    // 「更旧的一页拼到 store 数组的前面（不是后面）」—— 断言的正是**没排序**的那一份。
+    await expect(page.locator('article').first()).toHaveAttribute('data-idea-id', ids[0]);
+
+    // 往回翻之后**视口没有跳走**：用户原来看着的那一条还在视口顶上
+    // （新加载的内容落在视口**上方**，滚动修正把视口钉回原处）。
+    // 滚动修正要是没做，视口会被新内容顶下去 —— 用户看着的那条就跑了。
+    //
+    // ⚠️ 参照系是「滚动容器上沿 + 过滤行的高度」：**不是**过滤行自己的视口位置。
+    // 过滤行现在在滚动容器里（宽屏 sticky 钉在顶上，窄屏随内容滚走），
+    // 窄屏时它已经被滚出视口上沿 —— 拿它的 boundingBox.y 当参照会量到一个
+    // 一百多像素的假差值。「容器上沿 + 过滤行高度」在两种形态下都等于
+    // 「列表内容的顶」，与形态无关。
+    const containerBox = await scrollContainer(page).boundingBox();
+    const filtersBox = await page.locator('.home__filters').boundingBox();
+    const watchedBox = await ideaItem(page, watchedId).boundingBox();
+    expect(containerBox).not.toBeNull();
+    expect(filtersBox).not.toBeNull();
+    expect(watchedBox).not.toBeNull();
+    if (containerBox && filtersBox && watchedBox) {
+      // 「那条」与列表内容顶的距离：视口没跳时它就在那儿（中间隔着 1px 的哨兵）。
+      // 跳了的话会差出一张卡片的高度（一百多像素），20px 的容差抓得住。
+      //
+      // 实测（2026-11-19）：宽屏 below=1（containerY=64、filtersH=50、watchedY=115）、
+      // 窄屏 below=1（containerY=64、filtersH=84、filtersY=-33、watchedY=149）。
+      const below = watchedBox.y - (containerBox.y + filtersBox.height);
+      expect(below).toBeGreaterThanOrEqual(0);
+      expect(below).toBeLessThanOrEqual(20);
+    }
   });
-
-  await older;
-  // 更旧的那一条拼到了列表**前面**：列表变长了。
-  await expect(page.locator('article')).toHaveCount(102);
-  // 翻完之后，最老的那一条排在列表**第一**（列表按更新时间升序，最老的在顶）。
-  //
-  // ⚠️ 这一条**断不了「更旧的一页拼在前面还是后面」**：显示层按 updated_at
-  // 重排过一遍，两种拼法排出来的顺序与滚动几何**完全一样** ——
-  // 实测把 `HomePage.vue` 的 prepend 改成 append，这条用例照样全绿。
-  // prepend 的语义由单测钉住：`web/src/pages/HomePage.spec.ts`
-  // 「更旧的一页拼到 store 数组的前面（不是后面）」—— 断言的正是**没排序**的那一份。
-  await expect(page.locator('article').first()).toHaveAttribute('data-idea-id', ids[0]);
-
-  // 往回翻之后**视口没有跳走**：用户原来看着的那一条还在视口顶上
-  // （新加载的内容落在视口**上方**，滚动修正把视口钉回原处）。
-  // 滚动修正要是没做，视口会被新内容顶下去 —— 用户看着的那条就跑了。
-  //
-  // ⚠️ 参照系是**过滤行的下沿**，不是滚动容器的上沿：过滤行现在在滚动容器里
-  // （窄屏上它要随内容滚走，宽屏用 sticky 钉在顶上），列表内容整体下移了
-  // 它的高度 —— 拿容器上沿当参照，量到的就是「过滤行的高度」，不是「视口跳没跳」。
-  const filtersBox = await page.locator('.home__filters').boundingBox();
-  const watchedBox = await ideaItem(page, watchedId).boundingBox();
-  expect(filtersBox).not.toBeNull();
-  expect(watchedBox).not.toBeNull();
-  if (filtersBox && watchedBox) {
-    // 「那条」与过滤行下沿的距离：视口没跳时它就在那儿（中间隔着 1px 的哨兵）。
-    // 跳了的话会差出一张卡片的高度（一百多像素），20px 的容差抓得住。
-    const below = watchedBox.y - (filtersBox.y + filtersBox.height);
-    expect(below).toBeGreaterThanOrEqual(0);
-    expect(below).toBeLessThanOrEqual(20);
-  }
-});
+}
 
 test('往回翻到顶：一条不漏、一条不重（超过两页才看得出来）', async ({ page, api }) => {
   // 造 250 条 = 三页（首屏 101 + 往回翻 101 + 最后 48）。
