@@ -4,9 +4,9 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 
 - **覆盖范围**：`web/src/pages`、`web/src/components`、`web/src/composables`、`web/src/stores`、`web/src/router.ts` 里
   用户能直接操作到的功能。
-- **用例来源**：`web/e2e/*.spec.ts`。现有规模：`npx playwright test --list` → **204 条用例 / 15 个文件**
-  （navigation 35、ideas 29、layout 28、webhooks 24、projects 22、trash 11、extra-1 8、extra-3 8、
-  extra-4 8、extra-6 8、search 9、extra-2 5、extra-5 4、fixtures 4、smoke 1）。
+- **用例来源**：`web/e2e/*.spec.ts`。现有规模：`npx playwright test --list` → **225 条用例 / 15 个文件**
+  （layout 48、navigation 35、ideas 29、webhooks 24、projects 22、trash 11、search 10、extra-1 8、
+  extra-3 8、extra-4 8、extra-6 8、extra-2 5、extra-5 4、fixtures 4、smoke 1）。
 - **读法**：「覆盖它的用例」列写用例标题 + 文件；`—` 表示**没有用例覆盖**（漏掉的功能点）。
   漏掉的理由写在「备注」列里，代码位置以 `文件:行` 标出。
 
@@ -18,6 +18,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 > | 审计同批：`extra-1` ~ `extra-6` | P0 那七条里的前六条（见下表） | ❌ 没有 |
 > | 本轮：前端一批行为改动之后补写 | 关键词搜索、「清除」按钮、加载态不闪空态、回首页入口、aria-current、项目级 webhook 入口、项目管理页空状态、webhook URL 前端校验、成功提示、投递记录刷新、移动端点按目标、输入框单层边框、渐隐带 | ✅ 已回填 |
 > | 本轮：搜索改到服务端之后 | 标签名 / 项目名能搜到、命中带高亮、英文是词级、中文是词元相邻、多段之间是 AND、往回翻历史（打开页面停在最下边、接近顶部自动加载更旧的一页） | ✅ 已回填 |
+> | 本轮：前端布局重设计（新外壳）之后 | 宽屏侧栏贴左且主区铺到右边缘、一屏 ≥10 条、两列交错、平板两列无侧栏、窄屏单列、窄屏钉死的外壳只有 2 行（过滤行随内容滚走）、一屏 ≥5 条、卡片没有标题层、编号紧挨时间、顶栏「⋯」一步进回收站、窄屏 🔍 聚焦搜索框、显形规则（桌面悬停 / 键盘聚焦 / 窄屏常驻 / 无悬停能力设备常驻）、顶栏新触发器够大、新记的一条落在最下面且左右按奇偶交替、编辑老想法后它跳到最下面且下方卡片左右互换、管理页铺满且 Webhook 表单保持窄 | ✅ 已回填 |
 >
 > | 审计里的 P0 漏项 | 现在由谁覆盖 |
 > |---|---|
@@ -37,13 +38,13 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 
 | 区域 | 功能点数 | 已覆盖 | 漏掉 | 覆盖率 |
 |---|---:|---:|---:|---:|
-| `/` 想法（HomePage + 想法条目 + 过滤 + 批量） | 69 | 41 | 28 | 59% |
+| `/` 想法（HomePage + 想法条目 + 过滤 + 批量） | 87 | 59 | 28 | 68% |
 | `/projects` 项目管理 | 17 | 12 | 5 | 71% |
 | `/trash` 回收站 | 13 | 11 | 2 | 85% |
-| `/webhooks` 全局 webhook | 31 | 22 | 9 | 71% |
+| `/webhooks` 全局 webhook | 33 | 24 | 9 | 73% |
 | `/projects/:id/webhooks` 项目级 webhook | 5 | 5 | 0 | 100% |
-| 外壳 / 路由 / Toast / 排版响应式 | 21 | 21 | 0 | 100% |
-| **合计** | **156** | **112** | **44** | **72%** |
+| 外壳 / 路由 / Toast / 排版响应式 | 22 | 22 | 0 | 100% |
+| **合计** | **177** | **133** | **44** | **75%** |
 
 > 「漏掉」= 表里「覆盖它的用例」列为 `—` 的行，即**没有任何用例碰过**。
 > 另有 **2 条只测了一半**（批量加标签的并集语义、标签补全下拉的内容顺序），
@@ -80,7 +81,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | `/` | 删除想法：点「取消」不删 | — | `MessageItem.vue:664`（确认条里的「取消」按钮）；项目/webhook 的「取消」都测了，唯独这条没测 |
 | `/` | 多选勾选 / 取消勾选、批量条条数 | ideas.spec.ts:291 | — |
 | `/` | 批量标记完成 / 批量撤销完成 | ideas.spec.ts:316 | — |
-| `/` | 批量加标签 | ideas.spec.ts:346 | 只断言「都加上新标签」，没断言**原有标签是否保留**（并集语义，`HomePage.vue:641-645` 的 `replace: false`） |
+| `/` | 批量加标签 | ideas.spec.ts:346 | 只断言「都加上新标签」，没断言**原有标签是否保留**（并集语义，`HomePage.vue:856` 的 `replace: false`） |
 | `/` | 批量删除（二次确认） | ideas.spec.ts:376 | — |
 | `/` | 批量删除：点「取消」不删 | — | `BatchBar.vue:151-152` |
 | `/` | 批量条「取消选择」清空勾选 | — | `BatchBar.vue:131-133`；**唯一的清除勾选入口**，没被测过 |
@@ -88,7 +89,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | `/` | 合并：改过正文再合并 | ideas.spec.ts:460 | — |
 | `/` | 合并：点「取消」不合并 | — | `MergeDialog.vue:68` |
 | `/` | 合并按钮在只勾一条时禁用 | — | `BatchBar.vue:109`（`:disabled="busy \|\| count < 2"`） |
-| `/` | 合并结果滚到底部并高亮定位 | — | `HomePage.vue:699` 设 `focusIdeaId`，`useDeepLink.ts:111-139` 定位；现有合并用例只断言条目出现 |
+| `/` | 合并结果滚到底部并高亮定位 | — | `HomePage.vue:911` 设 `focusIdeaId`，`useDeepLink.ts:111-139` 定位；现有合并用例只断言条目出现 |
 | `/` | 按项目筛选（侧栏切项目） | ideas.spec.ts:488、projects.spec.ts:241、projects.spec.ts:272 | — |
 | `/` | 按状态筛选：全部 / 未完成 / 已完成 | ideas.spec.ts:528 | — |
 | `/` | 按标签筛选：勾选标签 | ideas.spec.ts:506 | — |
@@ -115,17 +116,35 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | `/` | 深链 `?idea=<id>` 直达并高亮 | ideas.spec.ts:718 | — |
 | `/` | 页面载入后自动滚到底部（最新一条在视口里） | search.spec.ts:152 | 顺带断言最老的一条**不在**视口里 —— 内容没溢出时「停在底部」是废话 |
 | `/` | 往回翻历史：接近顶部自动加载更旧的一页 | search.spec.ts:170 | 断的是**服务端分页的方向**（`offset` 从**最新**一端数）与「往回翻之后视口没跳走」。「更旧的一页拼在前面还是后面」显示层分不出来（它按 `updated_at` 重排），由 `web/src/pages/HomePage.spec.ts` 的单测钉住 |
-| `/` | 上翻时不抢滚动，出现「↓ 有 N 条新内容」按钮 | — | `HomePage.vue:979-986` + `composables/useScrollFollow.ts:100-113` |
+| `/` | 上翻时不抢滚动，出现「↓ 有 N 条新内容」按钮 | — | `HomePage.vue:998` + `composables/useScrollFollow.ts:100-113` |
 | `/` | SSE：别的上下文新建的想法自动出现 | ideas.spec.ts:767 | — |
-| `/` | SSE：**项目**改名 / 新建 / 删除同步到侧栏 | — | `HomePage.vue:736-750`（`project.*` 分流）、`HomePage.vue:840-877`（就地改名 / 删项目时切回「全部项目」） |
+| `/` | SSE：**项目**改名 / 新建 / 删除同步到侧栏 | — | `HomePage.vue:987-991`（`project.*` 分流）、`HomePage.vue:1113-1150`（就地改名 / 删项目时切回「全部项目」） |
 | `/` | 项目侧栏「＋」入口到项目管理页 | navigation.spec.ts:219 | — |
-| `/` | 顶栏「⋯」菜单：项目管理 / 回收站 / Webhook | — | `MoreMenu.vue`（主页的管理页入口；窄屏下进回收站从两步变一步，规格 §D11）。`web/src/components/MoreMenu.spec.ts` 覆盖了组件本身，e2e 还没有从主页顶栏点进去的用例 |
+| `/` | 顶栏「⋯」菜单：项目管理 / 回收站 / Webhook | — | 「回收站」那一步已有用例（layout.spec.ts:1065）；「项目管理」「Webhook」两个入口还没点过 —— `MoreMenu.vue`（主页的管理页入口；窄屏下进回收站从两步变一步，规格 §D11）。`web/src/components/MoreMenu.spec.ts` 覆盖了组件本身 |
 | `/` | 侧栏上的项目条数与「全部项目」总数 | — | `ProjectSidebar.vue:35,122,145`（窄屏的项目下拉里不显示条数） |
-| `/` | 「全部项目」命中数超上限的兜底提示 | — | `HomePage.vue:318-336`（`recoverFromTooMany`） |
-| `/` | 切换项目失败时回滚到上一个项目 | — | `HomePage.vue:198-214`（`switchProject` 的 catch 分支） |
-| `/` | 底部输入框只有一层边框（外壳不画边框，输入框自己画一层） | layout.spec.ts:677 | — |
+| `/` | 「全部项目」命中数超上限的兜底提示 | — | `HomePage.vue:531-549`（`recoverFromTooMany`） |
+| `/` | 切换项目失败时回滚到上一个项目 | — | `HomePage.vue:397-401`（`switchProject` 的 catch 分支） |
+| `/` | 底部输入框只有一层边框（外壳不画边框，输入框自己画一层） | layout.spec.ts:872 | — |
 | `/` | 窄屏顶栏的项目下拉：切项目（列出全部项目与各项目） | projects.spec.ts:53、projects.spec.ts:302 | — |
 | `/` | 加载态不闪空状态（「加载中…」不与「这里还没有想法。」同时出现） | navigation.spec.ts:400 | — |
+| `/` | **宽屏**：侧栏贴左、主区铺到右边缘 | layout.spec.ts:929 | — |
+| `/` | **宽屏**：一屏能看到 ≥10 条想法 | layout.spec.ts:945 | 数的是**在视口里**的卡片 —— `:visible` 只说明「没被藏起来」，屏幕外但没藏的也算 |
+| `/` | **宽屏**：想法排成两列（奇数在左、偶数在右） | layout.spec.ts:955、layout.spec.ts:1170 | — |
+| `/` | **平板 768×1024**：两列、无侧栏 | layout.spec.ts:970 | — |
+| `/` | **窄屏 <768px**：单列 | layout.spec.ts:988 | — |
+| `/` | **窄屏**：没有想法被藏起来 | layout.spec.ts:1005 | 断言的是 `:visible` 的**条数**（14 条一条不少） |
+| `/` | **窄屏**：钉死的外壳只有 2 行（过滤行随内容滚走） | layout.spec.ts:1014 | 判据是「过滤行的矩形与视口不相交」 |
+| `/` | **窄屏**：一屏能看到 ≥5 条想法 | layout.spec.ts:1036 | — |
+| `/` | 卡片只有一整块正文，没有标题层 | layout.spec.ts:1046 | — |
+| `/` | 编号紧挨时间（meta 行里） | layout.spec.ts:1053 | — |
+| `/` | 窄屏点 🔍：滚回列表顶部并聚焦搜索框 | layout.spec.ts:1073 | — |
+| `/` | 桌面端：勾选框与 🏷🗑 悬停才显形、**键盘聚焦也显形** | layout.spec.ts:1092 | 显形是纯 CSS 媒体查询 + 伪类，单测（jsdom）读不出来 —— 只有 e2e 钉得住 |
+| `/` | 窄屏：勾选框与 🏷🗑 常驻 | layout.spec.ts:1117 | — |
+| `/` | **无悬停能力**的设备：勾选框与 🏷🗑 常驻 | layout.spec.ts:1130 | 判据是「这台设备有没有悬停能力」（`(hover: none)`），不是屏宽 |
+| `/` | 窄屏：顶栏的新触发器（⋯ / 🔍 / 项目下拉）够大 | layout.spec.ts:1162 | — |
+| `/` | 新记的一条落在**最下面**，左右按奇偶交替 | layout.spec.ts:1170 | 14 条 → 第 15 条是奇数位（左格）、第 16 条是偶数位（右格） |
+| `/` | 编辑一条靠前的想法：它跳到最下面，其下方卡片左右互换 | layout.spec.ts:1185 | 规格 §D6 明确批准的取舍（不是 bug） |
+| `/` | 正文被 3 行截断：「文本没被裁掉」只对**编辑态**成立 | layout.spec.ts:638（20 条）、layout.spec.ts:668 | 规格 §6.11：截断后读全文的唯一入口是「点正文进编辑态」 |
 
 ### 2.2 `/projects` 项目管理（ProjectsPage.vue）
 
@@ -237,9 +256,10 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 | 全局 | ToastHost：常驻、无消息时为空、错误提示、4 秒后自动消失 | navigation.spec.ts:345、navigation.spec.ts:354、navigation.spec.ts:367 | — |
 | 全局 | 加载态「加载中…」 | navigation.spec.ts:381 | — |
 | 全局 | 空状态文案（想法 / webhook） | navigation.spec.ts:457、navigation.spec.ts:470 | — |
-| 全局 | 排版与响应式：5 路由 × 4 视口 | layout.spec.ts:511（20 条） | — |
-| 全局 | 移动端点按目标 ≥ 32×32（5 路由） | layout.spec.ts:541（5 条） | — |
-| 全局 | 移动端点按目标：新加的「Webhook」入口与「想法」入口 ≥ 32×32 | layout.spec.ts:643、layout.spec.ts:660 | — |
+| 全局 | 排版与响应式：5 路由 × 4 视口 | layout.spec.ts:638（20 条） | — |
+| 全局 | 移动端点按目标 ≥ 32×32（5 路由） | layout.spec.ts:679（5 条） | — |
+| 全局 | 移动端点按目标：新加的「Webhook」入口与「想法」入口 ≥ 32×32 | layout.spec.ts:781、layout.spec.ts:798 | — |
+| 全局 | 管理页铺满（回收站 / 项目管理），Webhook 表单保持窄 | layout.spec.ts:1223 | — |
 
 ---
 
@@ -257,7 +277,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
      AND 模式下必须**同时**命中全部选中标签，这个分支一条用例都没走过；按钮本身也从未被点过。
 
 2. **AND / OR 偏好写进 localStorage、刷新后仍是**
-   - 位置：`web/src/composables/useTagMode.ts:13-31`（读/写）、`HomePage.vue:365-371`（切模式时落盘）。
+   - 位置：`web/src/composables/useTagMode.ts:13-31`（读/写）、`HomePage.vue:578-583`（切模式时落盘）。
    - 为什么算漏掉：这是**每台设备各自的偏好**，写失败（隐私模式）还有专门的兜底分支
      （`useTagMode.ts:24-30`），一条用例都没有。
 
@@ -282,7 +302,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
    - 为什么算漏掉：清除密钥是三态里的 `""`，与互斥逻辑一起没测。
 
 7. **SSE 的项目事件**（改名 / 新建 / 删除项目同步到侧栏）
-   - 位置：`web/src/pages/HomePage.vue:736-750`（`project.*` 分流）、`:831-877`（`applyProjectEvent`：
+   - 位置：`web/src/pages/HomePage.vue:987-991`（`project.*` 分流）、`:1113-1150`（`applyProjectEvent`：
      就地改名、删项目时切回「全部项目」、本地没有则整表重拉）。
    - 为什么算漏掉：`ideas.spec.ts:767` 只覆盖了 `idea.created` 一类事件。改项目名、删项目这类
      **跨设备同步**是首页最容易被改坏的地方（`applyProjectEvent` 里还带着 `switchProject` 回滚分支）。
@@ -304,12 +324,12 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
     - 为什么算漏掉：`ideas.spec.ts:376` 只走通了「确认删除」，没走「取消」这条退路。
 
 11. **合并对话框的「取消」**
-    - 位置：`web/src/components/MergeDialog.vue:68`（`@click="emit('cancel')"`）、`HomePage.vue:1016`。
+    - 位置：`web/src/components/MergeDialog.vue:68`（`@click="emit('cancel')"`）、`HomePage.vue:1332`。
     - 为什么算漏掉：`ideas.spec.ts:407` 只走通了「合并成一条」；取消后对话框应关闭、勾选应保留。
 
 12. **「合并」按钮在只勾一条时禁用**
     - 位置：`web/src/components/BatchBar.vue:106-114`（`:disabled="busy || count < 2"`）。
-    - 为什么算漏掉：合并至少要两条（`HomePage.vue:689` 有同样的守卫），禁用态没被钉住。
+    - 为什么算漏掉：合并至少要两条（`HomePage.vue:901` 有同样的守卫），禁用态没被钉住。
 
 13. **Composer 的 Enter 提交**
     - 位置：`web/src/components/Composer.vue:48-53`。
@@ -342,7 +362,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
       文件头注释列的四种组合里，「往上拖」一种没有用例。
 
 20. **批量加标签的「并集式追加」语义**（*只测了一半*）
-    - 位置：`web/src/pages/HomePage.vue:632-654`（`replace: false`）、`BatchBar.vue:60-72`（回执后清草稿）。
+    - 位置：`web/src/pages/HomePage.vue:844-869`（`replace: false`）、`BatchBar.vue:60-72`（回执后清草稿）。
     - 为什么算漏掉：`ideas.spec.ts:346` 只断言「两条都加上了新标签」，没断言**它们原有的标签还在**
       （覆盖式 vs 并集式是两种完全不同的语义，后端 `replace` 参数就在这一层）。
 
@@ -409,10 +429,11 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
 
 ### P3 — 展示层与边界路径（11 条）
 
-35. **顶栏「⋯」菜单的三个入口（项目管理 / 回收站 / Webhook）**
+35. **顶栏「⋯」菜单的「项目管理」与「Webhook」两个入口**（「回收站」那一步已补上）
     - 位置：`web/src/components/MoreMenu.vue`（`emit('manageProjects')` / `emit('trash')` / `emit('webhooks')`）。
-    - 为什么算漏掉：`web/src/components/MoreMenu.spec.ts` 覆盖了组件本身，e2e 里还没有
-      从主页顶栏点进回收站 / Webhook 的用例 —— 窄屏下这一步是唯一的入口。
+    - 为什么还算漏掉：`layout.spec.ts:1065` 已经从主页顶栏点进了**回收站**，
+      但「项目管理」「Webhook」两个入口 e2e 里还没点过 ——
+      窄屏下这一步是管理页的唯一入口。
 
 36. **侧栏上的项目条数与「全部项目」总数**
     - 位置：`web/src/components/ProjectSidebar.vue:35`（总数）、`:122,145`（各项目条数）。
@@ -423,11 +444,11 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
     - 为什么算漏掉：同上；`formatRelativeTime` 的输出也没被断言过。
 
 38. **上翻时不抢滚动，出现「↓ 有 N 条新内容」按钮**
-    - 位置：`web/src/pages/HomePage.vue:979-986`、`web/src/composables/useScrollFollow.ts:100-138`。
+    - 位置：`web/src/pages/HomePage.vue:998`、`web/src/composables/useScrollFollow.ts:100-138`。
     - 为什么算漏掉：`useScrollFollow` 的整套逻辑（贴底判定、积攒计数、按钮回到底部）一条用例都没有。
 
 39. **合并结果滚到底部并高亮定位**
-    - 位置：`web/src/pages/HomePage.vue:699`（设 `focusIdeaId`）、`web/src/composables/useDeepLink.ts:111-139`。
+    - 位置：`web/src/pages/HomePage.vue:911`（设 `focusIdeaId`）、`web/src/composables/useDeepLink.ts:111-139`。
     - 为什么算漏掉：合并结果出现在列表最下面，用户多半没看见；
       `ideas.spec.ts:407` 只断言了条目出现，没断言它被滚到视野里并高亮。
 
@@ -440,11 +461,11 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
     - 为什么算漏掉：防重复提交，用户连点「恢复」时不该发两次。
 
 42. **「全部项目」命中数超上限的兜底提示**
-    - 位置：`web/src/pages/HomePage.vue:318-336`（`recoverFromTooMany`）、`:339-347`（提示文案）。
+    - 位置：`web/src/pages/HomePage.vue:531-549`（`recoverFromTooMany`）、`:558-560`（提示文案）。
     - 为什么算漏掉：这是首页唯一一条「应用替用户做决定」的分支（自动切到最近有活动的项目）。
 
 43. **切换项目失败时回滚到上一个项目**
-    - 位置：`web/src/pages/HomePage.vue:198-214`（`switchProject` 的 catch 分支）。
+    - 位置：`web/src/pages/HomePage.vue:397-401`（`switchProject` 的 catch 分支）。
     - 为什么算漏掉：回滚错了就是「列表停在错的数据上」，而且是静默的。
 
 44. **切换项目排序方式后顺序不跳位**
@@ -452,7 +473,7 @@ Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
     - 为什么算漏掉：`projects.spec.ts:141` 只断言「页面顺序与后端给的一致」，没断言「与切换**前**一致」。
 
 45. **提交失败时输入框内容保留**
-    - 位置：`web/src/components/Composer.vue:37`（`ok` 为 false 不清空）、`HomePage.vue:381-401`。
+    - 位置：`web/src/components/Composer.vue:37`（`ok` 为 false 不清空）、`HomePage.vue:594-613`。
     - 为什么算漏掉：用户刚敲的正文不能因为一次网络失败就没了；失败路径要用接口打桩才能造。
 
 ---

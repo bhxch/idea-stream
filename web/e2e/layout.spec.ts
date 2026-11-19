@@ -52,8 +52,59 @@ const VIEWPORTS: Viewport[] = [
 /** 手机视口：只有它按 32×32 的点按目标尺寸检查。 */
 const MOBILE_VIEWPORT = VIEWPORTS[0];
 
+/**
+ * 宽屏视口（两列 + 侧栏）：规格 §9 的验收视口。
+ */
+const WIDE_VIEWPORT = { width: 1920, height: 1080 };
+
+/**
+ * 平板竖屏（两列、无侧栏）：规格 §D9 的 768–1023px 那一档。
+ */
+const TABLET_VIEWPORT = { width: 768, height: 1024 };
+
+/**
+ * 桌面视口（宽屏 + 有悬停能力）：显形规则（规格 §D8）的判据用它 ——
+ * 悬停显形 / 聚焦显形都是「桌面端」的行为。
+ */
+const DESKTOP_VIEWPORT = { width: 1280, height: 800 };
+
+/**
+ * 主页一轮造的想法条数。
+ *
+ * 14 条这个数是算出来的，不是拍脑袋：
+ * - 宽屏一屏要能看到 ≥10 条（规格 §9）；
+ * - 下面「新记的一条落在最下面」那条用例靠它推编号（14 + 1 = 15 → 奇数位 → 左格）。
+ */
+const HOME_IDEA_COUNT = 14;
+
 /** 可点击元素的最小尺寸（CSS 像素）。 */
 const MIN_TAP_TARGET = 32;
+
+/**
+ * 主页的造数据。
+ *
+ * 每条新用例自己造（用例之间互不依赖，夹具在 beforeEach 里复位），
+ * 所以这个函数被主页路由的 prepare 与新用例共用。
+ */
+async function seedHomeIdeas(seed: Seed): Promise<void> {
+  await seed.project('布局测试项目');
+  await seed.idea('排版探测想法：第一行\n第二行正文，用来测试正文换行。');
+  // 一条特别长的、里面没有空格的正文：窄屏上最容易把容器撑破。
+  await seed.idea(
+    'SupercalifragilisticexpialidociousSupercalifragilisticexpialidociousSupercalifragilisticexpialidocious',
+  );
+  await seed.idea('带标签的排版探测想法', { tags: ['排版探测标签'] });
+  // 再补 11 条：宽屏一屏要能看到 ≥10 条（规格 §9 的验收标准）。
+  for (let index = 4; index <= HOME_IDEA_COUNT; index += 1) {
+    await seed.idea(`排版探测想法 ${index}：用来把一屏填满的普通正文。`);
+  }
+}
+
+/** 在底部输入框里记一条想法。 */
+async function submitIdea(page: Page, content: string): Promise<void> {
+  await page.getByRole('textbox', { name: /记一条想法/ }).fill(content);
+  await page.getByRole('button', { name: '记下' }).click();
+}
 
 /* ------------------------------------------------------------------ *
  * 路由
@@ -74,12 +125,32 @@ interface RouteSpec {
   prepare(seed: Seed, api: IdeaApi): Promise<string>;
   /** 页面「加载好了」的判据：等它出现。 */
   ready(page: Page): Locator;
-  /** 关键元素：必须落在视口里（用户不用先滚一下）。 */
-  keyElements(page: Page): Named[];
+  /**
+   * 关键元素：必须落在视口里（用户不用先滚一下）。
+   *
+   * 视口宽窄要区分：窄屏（<1024px）过滤行**随内容滚走**，
+   * 它仍然存在且可见，但不在视口里 —— 「可见」与「在视口里」是两回事。
+   */
+  keyElements(page: Page, viewport: { width: number; height: number }): Named[];
   /** 关键容器：不能被内容撑出横向滚动条。 */
   containers(page: Page): Named[];
-  /** 关键文本块：文字不能被裁掉。 */
+  /**
+   * 关键文本块：文字不能被裁掉。
+   *
+   * 空数组 = 这个路由没有「非编辑态也必须看全」的文本块
+   * （主页的卡片正文会被 3 行截断，见 {@link RouteSpec.textBlocksWhenEditing}）。
+   */
   textBlocks(page: Page): Named[];
+  /**
+   * 只在编辑态里检查「文本没被裁掉」的块（编辑框里必须能看到全文）。
+   *
+   * 规格 §6.11：新卡片的正文**是**会被 3 行截断的（那是设计），
+   * 截断后读全文的唯一入口是「点正文进编辑态」—— 所以这条约束只对编辑态成立。
+   *
+   * ⚠️ 它是**函数**（跟 {@link RouteSpec.textBlocks} 一样），不是常量数组：
+   * 定位器要拿 `page` 才能造，造不出与页面无关的常量数组。
+   */
+  textBlocksWhenEditing?: (page: Page) => Named[];
   /** 额外的检查（只有主页有：固定元素不许互相遮挡）。 */
   extraChecks?(page: Page, label: string): Promise<void>;
 }
@@ -97,34 +168,35 @@ const ROUTES: RouteSpec[] = [
   {
     name: 'home',
     async prepare(seed) {
-      await seed.project('布局测试项目');
-      await seed.idea('排版探测想法：第一行\n第二行正文，用来测试正文换行。');
-      // 一条特别长的、里面没有空格的正文：窄屏上最容易把容器撑破。
-      await seed.idea(
-        'SupercalifragilisticexpialidociousSupercalifragilisticexpialidociousSupercalifragilisticexpialidocious',
-      );
-      await seed.idea('带标签的排版探测想法', { tags: ['排版探测标签'] });
+      await seedHomeIdeas(seed);
       return '/';
     },
     // 想法没有标题了：就绪探针取正文里的一个文本。
     ready: (page) => page.getByText('排版探测想法', { exact: false }).first(),
-    keyElements: (page) => [
+    keyElements: (page, viewport) => [
       { name: '标题「想法」', locator: page.getByRole('heading', { name: '想法', exact: true }) },
-      { name: '状态过滤组', locator: page.getByRole('group', { name: '状态过滤' }) },
+      // 窄屏过滤行随内容滚走 → 不在视口里，「关键元素必须在视口里」这条对它不成立。
+      // （它仍然存在且可见 —— 别把「可见」与「在视口里」混为一谈。）
+      ...(viewport.width >= 1024
+        ? [{ name: '状态过滤组', locator: page.getByRole('group', { name: '状态过滤' }) }]
+        : []),
       { name: '底部输入框', locator: page.getByRole('textbox', { name: /记一条想法/ }) },
       { name: '「记下」按钮', locator: page.getByRole('button', { name: '记下' }) },
+      { name: '顶栏的「⋯」菜单', locator: page.getByRole('button', { name: '更多' }) },
     ],
     containers: (page) => [
-      // 消息流的滚动容器、整块内容区。
+      // 消息流的滚动容器、整块内容区、顶栏。
       // 用 BEM class 定位：这些是纯布局容器，没有 role / aria-label 可用。
       { name: '.home__scroll', locator: page.locator('.home__scroll') },
       { name: '.home__content', locator: page.locator('.home__content') },
+      { name: '.home__topbar', locator: page.locator('.home__topbar') },
       { name: '.composer', locator: page.locator('.composer') },
     ],
-    textBlocks: (page) => [
-      // 没有标题层了（<h2 class="title"> 已拆掉）：文本块只剩正文。
-      { name: '想法条目的正文', locator: page.locator('.idea .body').first() },
-      { name: '超长不换行正文', locator: page.locator('.idea .body').nth(1) },
+    // 非编辑态没有「必须看全」的文本块：卡片正文按规格 §6.11 被 3 行截断
+    // （那是设计，不是排版事故），所以它挪到 textBlocksWhenEditing 里查。
+    textBlocks: () => [],
+    textBlocksWhenEditing: (page) => [
+      { name: '编辑态的正文', locator: page.locator('.idea .editor').first() },
     ],
     extraChecks: checkFixedElements,
   },
@@ -339,6 +411,31 @@ async function expectTextNotClipped(
   expect(measured, `${label}：一个文本块都没量到（选择器可能没打中）`).toBeGreaterThan(0);
 }
 
+/**
+ * 编辑态里「文本没被裁掉」。
+ *
+ * 规格 §6.11：新卡片的正文**是**会被 3 行截断的（`-webkit-line-clamp`）——
+ * 那是设计，不是排版事故。正文被截断后，读全文的唯一入口是
+ * 「点正文进编辑态」，所以「文本没被裁掉」这条约束**只对编辑态成立**。
+ *
+ * 做法：先点开正文进入编辑态（编辑框替身正文），再量编辑框。
+ */
+async function expectTextNotClippedWhileEditing(
+  page: Page,
+  blocks: Named[],
+  label: string,
+): Promise<void> {
+  const body = page.locator('.idea .body').first();
+  await expect(body, `${label}：找不到可以点开进入编辑态的正文`).toBeVisible();
+  await body.click();
+  // 编辑框是正文那一格的替身：它出现了才算进了编辑态。
+  await expect(
+    page.locator('.idea .editor').first(),
+    `${label}：点正文没进编辑态（编辑框没出现）`,
+  ).toBeVisible();
+  await expectTextNotClipped(page, blocks, label);
+}
+
 /** 元素在视口里的位置与尺寸（CSS 像素，与视口左上角为原点）。 */
 interface Box {
   x: number;
@@ -369,6 +466,38 @@ function viewportOverflows(box: Box, viewport: { width: number; height: number }
     out.push(`下边超出 ${Math.round(box.y + box.height - viewport.height)}px`);
   }
   return out;
+}
+
+/**
+ * 一屏里有几个想法（**在视口里**的才算）。
+ *
+ * ⚠️ 不能用 `page.locator('.idea:visible').count()`：
+ * `:visible` 只说明「没被 `display:none` 藏起来」，屏幕外但没藏的卡片照样数得到 ——
+ * 「一屏能看到几条」问的是「用户不用滚就能看到几条」。
+ */
+async function countIdeasInViewport(page: Page): Promise<number> {
+  const viewport = page.viewportSize();
+  expect(viewport, '拿不到视口尺寸').not.toBeNull();
+  if (!viewport) {
+    return 0;
+  }
+  const boxes = await page.locator('.idea').evaluateAll((elements) =>
+    elements.map((el) => {
+      const rect = el.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }),
+  );
+  return boxes.filter((box) => intersectsViewport(box, viewport)).length;
+}
+
+/**
+ * 读一个元素的不透明度（显形规则就靠它）。
+ *
+ * 真浏览器里读得到计算样式（Vitest 的 jsdom 读不到，别学它）。
+ */
+async function readOpacity(locator: Locator): Promise<number> {
+  const value = await locator.evaluate((el) => Number(getComputedStyle(el).opacity));
+  return value;
 }
 
 /**
@@ -525,8 +654,19 @@ test.describe('排版与响应式', () => {
 
         await expectNoHorizontalOverflow(page, label);
         await expectNoUnexpectedHorizontalScroll(page, route.containers(page), label);
-        await expectTextNotClipped(page, route.textBlocks(page), label);
-        await expectKeyElementsInViewport(page, route.keyElements(page), label);
+        // 非编辑态的文本块：卡片正文被 3 行截断（规格 §6.11），主页这一档是空的。
+        const textBlocks = route.textBlocks(page);
+        if (textBlocks.length > 0) {
+          await expectTextNotClipped(page, textBlocks, label);
+        }
+        await expectKeyElementsInViewport(page, route.keyElements(page, viewport), label);
+
+        // 编辑态的文本块：截断后读全文的唯一入口就是编辑框（规格 §6.11）。
+        // 放在关键元素检查之后 —— 点正文会把列表滚上去，别影响前面的视口断言。
+        const editingBlocks = route.textBlocksWhenEditing?.(page) ?? [];
+        if (editingBlocks.length > 0) {
+          await expectTextNotClippedWhileEditing(page, editingBlocks, label);
+        }
 
         if (route.extraChecks) {
           await route.extraChecks(page, label);
@@ -761,5 +901,340 @@ test.describe('排版与响应式', () => {
     // 唯一的一层边框在输入框自己身上。
     expect(borders!.textarea.widths).toEqual(['1px', '1px', '1px', '1px']);
     expect(borders!.textarea.style).toBe('solid');
+  });
+
+  // ── 新外壳：宽屏铺满、两列交错、窄屏单列 ──────────────────────────────
+
+  /**
+   * 造主页的数据并打开主页。
+   *
+   * ⚠️ **每条用例自己造数据**：这些用例不在「路由 × 视口」那个循环里，
+   * 不会自动拿到 prepare 造的数据。
+   *
+   * ⚠️ **必须等列表出现**：想法列表是挂载后**异步**从服务端拉来的，
+   * `page.goto()` 只等 load 事件 —— 不等就去量，量到的可能是空的列表（假红）。
+   */
+  async function openHome(
+    page: Page,
+    seed: Seed,
+    viewport: { width: number; height: number },
+  ): Promise<void> {
+    await seedHomeIdeas(seed);
+    await page.setViewportSize(viewport);
+    await page.goto('/');
+    await expect(page.getByRole('heading', { name: '想法', exact: true })).toBeVisible();
+    await expect(page.locator('.idea')).toHaveCount(HOME_IDEA_COUNT);
+  }
+
+  test('宽屏：侧栏贴左，主区铺到右边缘', async ({ page, seed }) => {
+    await openHome(page, seed, WIDE_VIEWPORT);
+
+    const sidebar = await page.locator('.home__sidebar').boundingBox();
+    expect(sidebar, '量不到侧栏的位置').not.toBeNull();
+    expect(sidebar!.x, `侧栏左边距 ${sidebar!.x}px（规格 §8：侧栏贴左边缘）`).toBeLessThanOrEqual(2);
+
+    const content = await page.locator('.home__content').boundingBox();
+    expect(content, '量不到主区的位置').not.toBeNull();
+    const rightGap = WIDE_VIEWPORT.width - (content!.x + content!.width);
+    expect(
+      rightGap,
+      `主区离视口右边缘还有 ${rightGap}px（规格 §9：主区铺到右边缘）`,
+    ).toBeLessThanOrEqual(24);
+  });
+
+  test('宽屏：一屏能看到 ≥10 条想法', async ({ page, seed }) => {
+    await openHome(page, seed, WIDE_VIEWPORT);
+
+    const count = await countIdeasInViewport(page);
+    expect(
+      count,
+      `宽屏一屏只看到 ${count} 条想法（规格 §9：一屏 ≥10 条）`,
+    ).toBeGreaterThanOrEqual(10);
+  });
+
+  test('宽屏：想法排成两列', async ({ page, seed }) => {
+    await openHome(page, seed, WIDE_VIEWPORT);
+
+    const row = page.locator('.row').first();
+    const left = await row.locator('.cell--left .idea').boundingBox();
+    const right = await row.locator('.cell--right .idea').boundingBox();
+    expect(left, '量不到第一排左格的位置').not.toBeNull();
+    expect(right, '量不到第一排右格的位置').not.toBeNull();
+
+    const viewport = page.viewportSize()!;
+    expect(intersectsViewport(left!, viewport), '第一排左格不在视口里').toBe(true);
+    expect(intersectsViewport(right!, viewport), '第一排右格不在视口里').toBe(true);
+    expect(left!.x, '第一排左右格不在两列上').toBeLessThan(right!.x);
+  });
+
+  test('平板 768×1024：两列、无侧栏', async ({ page, seed }) => {
+    await openHome(page, seed, TABLET_VIEWPORT);
+
+    // 规格 §D9：768–1023px → 两列、无侧栏。
+    await expect(page.locator('.home__sidebar'), '平板（<1024px）不该有侧栏').toBeHidden();
+
+    const row = page.locator('.row').first();
+    const left = await row.locator('.cell--left .idea').boundingBox();
+    const right = await row.locator('.cell--right .idea').boundingBox();
+    expect(left, '量不到第一排左格的位置').not.toBeNull();
+    expect(right, '量不到第一排右格的位置').not.toBeNull();
+
+    const viewport = page.viewportSize()!;
+    expect(intersectsViewport(left!, viewport), '第一排左格不在视口里').toBe(true);
+    expect(intersectsViewport(right!, viewport), '第一排右格不在视口里').toBe(true);
+    expect(left!.x, '平板不是两列').toBeLessThan(right!.x);
+  });
+
+  test('窄屏 <768px：单列', async ({ page, seed }) => {
+    await openHome(page, seed, MOBILE_VIEWPORT);
+
+    const row = page.locator('.row').first();
+    // 每一格都得有想法：「单列」是「排成一条竖列」，不是「只显示一半」。
+    await expect(row.locator('.cell--left .idea')).toHaveCount(1);
+    await expect(row.locator('.cell--right .idea')).toHaveCount(1);
+
+    const left = await row.locator('.cell--left .idea').boundingBox();
+    const right = await row.locator('.cell--right .idea').boundingBox();
+    // 被 display:none 藏起来的元素量不到位置（boundingBox 是 null）。
+    expect(left, '量不到第一排左格想法的位置').not.toBeNull();
+    expect(right, '量不到第一排右格想法的位置').not.toBeNull();
+    expect(left!.x, `窄屏不是单列：两格的 x 不同（${left!.x} vs ${right!.x}）`).toBe(right!.x);
+    expect(left!.y, '窄屏不是单列：两格上下叠着才对').not.toBe(right!.y);
+  });
+
+  test('窄屏：没有想法被藏起来', async ({ page, seed }) => {
+    await openHome(page, seed, MOBILE_VIEWPORT);
+
+    // ⚠️ 不能用 `page.locator('.idea').count()`：Playwright 的 count() 数的是
+    // **匹配到的 DOM 节点**、不看可见性 —— 用 display:none 藏起来的照样数得到，
+    // 那个错法下它仍然是 14、照样绿。
+    await expect(page.locator('.idea:visible')).toHaveCount(HOME_IDEA_COUNT);
+  });
+
+  test('窄屏：钉死的外壳只有 2 行', async ({ page, seed }) => {
+    await openHome(page, seed, MOBILE_VIEWPORT);
+
+    // 钉死的两行：顶栏 + 输入条。
+    await expect(page.locator('.home__topbar'), '窄屏的顶栏不见了').toBeVisible();
+    await expect(page.locator('.composer'), '窄屏的输入条不见了').toBeVisible();
+
+    // 过滤行随内容滚走（规格 §D7）：滚到底之后它整个跑到视口上方。
+    await page.locator('.home__scroll').evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+    const filters = await page.locator('.home__filters').boundingBox();
+    expect(filters, '量不到过滤行的位置').not.toBeNull();
+    const viewport = page.viewportSize()!;
+    // ⚠️ 判据是「矩形与视口不相交」，不是「y > 667」——
+    // 过滤行滚走之后它的 y 是负数（整个在视口上方）。
+    expect(
+      intersectsViewport(filters!, viewport),
+      '过滤行还在视口里（它应该随内容滚走）',
+    ).toBe(false);
+  });
+
+  test('窄屏：一屏能看到 ≥5 条想法', async ({ page, seed }) => {
+    await openHome(page, seed, MOBILE_VIEWPORT);
+
+    const count = await countIdeasInViewport(page);
+    expect(
+      count,
+      `窄屏一屏只看到 ${count} 条想法（规格 §9：一屏 ≥5 条）`,
+    ).toBeGreaterThanOrEqual(5);
+  });
+
+  test('卡片只有一整块正文，没有标题层', async ({ page, seed }) => {
+    await openHome(page, seed, WIDE_VIEWPORT);
+
+    await expect(page.locator('.idea h2.title'), '卡片里还有标题层').toHaveCount(0);
+    await expect(page.locator('.idea .title'), '卡片里还有标题层').toHaveCount(0);
+  });
+
+  test('编号紧挨时间', async ({ page, seed }) => {
+    await openHome(page, seed, WIDE_VIEWPORT);
+
+    const num = await page.locator('.idea .meta__num').first().boundingBox();
+    const time = await page.locator('.idea .meta__time').first().boundingBox();
+    expect(num, '量不到编号的位置').not.toBeNull();
+    expect(time, '量不到时间的位置').not.toBeNull();
+    expect(num!.x, '编号不在时间左边').toBeLessThan(time!.x);
+    const gap = time!.x - (num!.x + num!.width);
+    expect(gap, `编号与时间之间隔了 ${gap}px（规格 §D3：紧挨着）`).toBeLessThanOrEqual(20);
+  });
+
+  test('主页顶栏的「⋯」能直接进回收站', async ({ page, seed }) => {
+    await openHome(page, seed, WIDE_VIEWPORT);
+
+    await page.getByRole('button', { name: '更多' }).click();
+    await page.getByRole('button', { name: '回收站' }).click();
+    await expect(page).toHaveURL(/\/trash$/);
+  });
+
+  test('窄屏点 🔍 滚回列表顶部并聚焦搜索框', async ({ page, seed }) => {
+    await openHome(page, seed, MOBILE_VIEWPORT);
+
+    // 先滚到底（过滤行已经滚走了）。
+    await page.locator('.home__scroll').evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+
+    await page.getByRole('button', { name: '搜索' }).click();
+
+    const active = await page.evaluate(
+      () => document.activeElement?.getAttribute('aria-label') ?? null,
+    );
+    expect(active, '点 🔍 之后焦点没落在搜索框上').toBe('搜索想法');
+
+    const scrollTop = await page.locator('.home__scroll').evaluate((el) => el.scrollTop);
+    expect(scrollTop, '点 🔍 之后没有滚回列表顶部').toBe(0);
+  });
+
+  test('桌面端：勾选框与 🏷🗑 悬停才显形，键盘聚焦也显形', async ({ page, seed }) => {
+    await openHome(page, seed, DESKTOP_VIEWPORT);
+
+    const select = page.locator('.idea .select').first();
+    const action = page.locator('.idea .meta__action').first();
+
+    // 默认（不悬停）：全透明。
+    expect(await readOpacity(select), '桌面端不悬停时勾选框不是隐藏的').toBe(0);
+    expect(await readOpacity(action), '桌面端不悬停时 🏷🗑 不是隐藏的').toBe(0);
+
+    // 悬停那条卡片：显形。
+    await page.locator('.idea').first().hover();
+    await expect.poll(() => readOpacity(select), '悬停后勾选框没有显形').toBe(1);
+    await expect.poll(() => readOpacity(action), '悬停后 🏷🗑 没有显形').toBe(1);
+
+    // 鼠标移开：又藏回去。
+    await page.mouse.move(0, 0);
+    await expect.poll(() => readOpacity(select), '鼠标移开后勾选框还亮着').toBe(0);
+
+    // 键盘聚焦到它：也得显形 —— 悬停才显形的按钮不能是某个操作的「唯一入口」。
+    await select.focus();
+    await expect.poll(() => readOpacity(select), '聚焦后勾选框没有显形').toBe(1);
+    await expect.poll(() => readOpacity(action), '聚焦后 🏷🗑 没有显形').toBe(1);
+  });
+
+  test('窄屏：勾选框与 🏷🗑 常驻', async ({ page, seed }) => {
+    await openHome(page, seed, MOBILE_VIEWPORT);
+
+    expect(
+      await readOpacity(page.locator('.idea .select').first()),
+      '窄屏的勾选框不是常驻的',
+    ).toBe(1);
+    expect(
+      await readOpacity(page.locator('.idea .meta__action').first()),
+      '窄屏的 🏷🗑 不是常驻的',
+    ).toBe(1);
+  });
+
+  test('无悬停能力的设备：勾选框与 🏷🗑 常驻', async ({ browser, baseURL, seed }) => {
+    await seed.idea('无悬停能力设备的探测想法');
+
+    // 判据是「这台设备有没有悬停能力」，不是屏宽（规格 §D8）：
+    // 另开一个带触摸能力的 context，1280 宽也照样常驻。
+    const context = await browser.newContext({
+      baseURL,
+      viewport: { width: DESKTOP_VIEWPORT.width, height: DESKTOP_VIEWPORT.height },
+      hasTouch: true,
+      locale: 'zh-CN',
+    });
+    const page = await context.newPage();
+    try {
+      await page.goto('/');
+      await expect(page.locator('.idea').first()).toBeVisible();
+
+      const hoverNone = await page.evaluate(() => window.matchMedia('(hover: none)').matches);
+      expect(hoverNone, '这个 context 没有模拟出「没有悬停能力」').toBe(true);
+
+      expect(
+        await readOpacity(page.locator('.idea .select').first()),
+        '没有悬停能力的设备上勾选框不是常驻的',
+      ).toBe(1);
+      expect(
+        await readOpacity(page.locator('.idea .meta__action').first()),
+        '没有悬停能力的设备上 🏷🗑 不是常驻的',
+      ).toBe(1);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('窄屏：顶栏的新触发器够大', async ({ page, seed }) => {
+    await openHome(page, seed, MOBILE_VIEWPORT);
+
+    await expectTapTarget(page.getByRole('button', { name: '更多' }), '顶栏的「⋯」菜单');
+    await expectTapTarget(page.getByRole('button', { name: '搜索' }), '顶栏的「🔍」');
+    await expectTapTarget(page.locator('.project-dropdown__trigger'), '顶栏的项目下拉触发器');
+  });
+
+  test('宽屏：新记的一条落在最下面，且左右按奇偶交替', async ({ page, seed }) => {
+    await openHome(page, seed, WIDE_VIEWPORT);
+
+    // 这一轮已造 14 条 → 第 15 条是**奇数位** → 左格。
+    await submitIdea(page, '新记的第一条想法');
+    const lastRow = page.locator('.row').last();
+    await expect(lastRow.locator('.cell--left .idea .meta__num')).toHaveText('15');
+    await expect(lastRow.locator('.cell--right .idea')).toHaveCount(0);
+
+    // 第 16 条是**偶数位** → 右格（与它挨着的那条一起排在最后一行）。
+    await submitIdea(page, '新记的第二条想法');
+    await expect(lastRow.locator('.cell--left .idea .meta__num')).toHaveText('15');
+    await expect(lastRow.locator('.cell--right .idea .meta__num')).toHaveText('16');
+  });
+
+  test('宽屏：编辑一条靠前的想法，它跳到最下面，其下方卡片左右互换', async ({ page, seed }) => {
+    await openHome(page, seed, WIDE_VIEWPORT);
+
+    const row1 = page.locator('.row').first();
+    const left = row1.locator('.cell--left .idea');
+    const right = row1.locator('.cell--right .idea');
+    await expect(left.locator('.meta__num')).toHaveText('1');
+    await expect(right.locator('.meta__num')).toHaveText('2');
+
+    // 记住「原来在它下面那条」（第一排右格那条）的位置 —— 编辑之后它要换到左边。
+    const xBefore = (await right.boundingBox())!.x;
+
+    // 编辑第一条并保存。
+    await left.locator('.body').click();
+    const editor = left.locator('.editor');
+    await expect(editor, '没进编辑态').toBeVisible();
+    await editor.fill('改过正文的第一条想法');
+    await editor.press('Control+Enter');
+
+    // 它跳到流的最下边（排序是 updated_at ASC，改过的那条最新）→ 14 条里的第 14 位。
+    await expect(page.locator('.idea').last().locator('.meta__num')).toHaveText('14');
+    await expect(page.locator('.idea').last().locator('.body')).toHaveText('改过正文的第一条想法');
+
+    // 原来在它下面那条上移一格 → 奇偶翻转 → 左右互换：
+    // 它从右格换到了左格（x 变小）。
+    // ⚠️ 它的**编号**也跟着变（编号是位置，不是身份：规格 §D4）——
+    // 所以这里比的是 x，不是编号。
+    // ⚠️ 这是规格 §9 明确批准的取舍（§D6），不是 bug。
+    const moved = page.locator('.idea').filter({ hasText: 'Supercalifragilistic' });
+    await expect(moved, '原来在它下面那条不见了').toHaveCount(1);
+    const xAfter = (await moved.boundingBox())!.x;
+    expect(xAfter, '原来在它下面那条没有左右互换（x 没变）').toBeLessThan(xBefore);
+    await expect(
+      page.locator('.row').first().locator('.cell--left .idea').filter({ hasText: 'Supercalifragilistic' }),
+      '原来在它下面那条没有换到左格',
+    ).toHaveCount(1);
+  });
+
+  test('管理页铺满，Webhook 表单保持窄', async ({ page, seed }) => {
+    await seed.idea('管理页铺满的探测想法');
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+
+    for (const path of ['/trash', '/projects']) {
+      await page.goto(path);
+      const box = await page.locator('.page').boundingBox();
+      expect(box, `量不到 ${path} 的 .page 的位置`).not.toBeNull();
+      const rightGap = DESKTOP_VIEWPORT.width - (box!.x + box!.width);
+      expect(rightGap, `${path} 没铺满（右边还空着 ${rightGap}px）`).toBeLessThanOrEqual(24);
+    }
+
+    await page.goto('/webhooks');
+    const narrow = await page.locator('.page--narrow').boundingBox();
+    expect(narrow, '量不到 Webhook 表单容器的位置').not.toBeNull();
+    expect(narrow!.width, 'Webhook 表单没有保持窄').toBeLessThanOrEqual(720);
   });
 });
