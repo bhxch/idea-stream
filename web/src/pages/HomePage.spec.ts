@@ -564,14 +564,15 @@ describe('HomePage', () => {
     const wrapper = mount(HomePage);
     await flushPromises();
 
-    const button = wrapper.get('button.done');
-    expect(button.text()).toBe('标记完成');
+    const button = wrapper.get('button.meta__done');
+    // 按钮上只画字形（○/●），完整名字给在 aria-label 上。
+    expect(button.attributes('aria-label')).toBe('标记完成');
 
     await button.trigger('click');
     await flushPromises();
 
     expect(apiSend).toHaveBeenCalledWith('POST', '/ideas/idea-1/complete', { done: true });
-    expect(wrapper.get('button.done').text()).toBe('已完成');
+    expect(wrapper.get('button.meta__done').attributes('aria-label')).toBe('已完成');
     wrapper.unmount();
   });
 
@@ -839,7 +840,7 @@ describe('HomePage', () => {
     const wrapper = mount(HomePage);
     await flushPromises();
 
-    const button = wrapper.get('button.done');
+    const button = wrapper.get('button.meta__done');
     // 连点两次，第二次赶在重新渲染之前（真实的手速就是这样）：
     // 两次都会进处理器，只能靠请求在飞的保护挡住第二次。
     button.trigger('click');
@@ -854,8 +855,8 @@ describe('HomePage', () => {
     resolveToggle?.({ ...idea, done: true });
     await flushPromises();
 
-    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(false);
-    expect(wrapper.get('button.done').text()).toBe('已完成');
+    expect((wrapper.get('button.meta__done').element as HTMLButtonElement).disabled).toBe(false);
+    expect(wrapper.get('button.meta__done').attributes('aria-label')).toBe('已完成');
     wrapper.unmount();
   });
 
@@ -929,13 +930,13 @@ describe('HomePage', () => {
     await flushPromises();
 
     // 在飞：条目上的按钮禁用（这条传播链不能断）。
-    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(true);
-    expect((wrapper.get('button.action--tags').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('button.meta__done').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('button.meta__action--tags').element as HTMLButtonElement).disabled).toBe(true);
 
     resolvePatch?.({ ...plainIdea, content: '改过的正文' });
     await flushPromises();
 
-    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(false);
+    expect((wrapper.get('button.meta__done').element as HTMLButtonElement).disabled).toBe(false);
     wrapper.unmount();
   });
 
@@ -952,19 +953,19 @@ describe('HomePage', () => {
     const wrapper = mount(HomePage);
     await flushPromises();
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('新标签');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
 
     // 在飞：条目上的按钮禁用。
-    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(true);
-    expect((wrapper.get('button.action--tags').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('button.meta__done').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('button.meta__action--tags').element as HTMLButtonElement).disabled).toBe(true);
 
     resolvePut?.({ ...idea, tags: ['新标签'] });
     await flushPromises();
 
-    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(false);
+    expect((wrapper.get('button.meta__done').element as HTMLButtonElement).disabled).toBe(false);
     wrapper.unmount();
   });
 
@@ -981,13 +982,13 @@ describe('HomePage', () => {
     const wrapper = mount(HomePage);
     await flushPromises();
 
-    await wrapper.get('button.action--delete').trigger('click');
+    await wrapper.get('button.meta__action--delete').trigger('click');
     await wrapper.get('button.confirm__delete').trigger('click');
     await flushPromises();
 
     // 在飞：条目上的按钮禁用。
-    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(true);
-    expect((wrapper.get('button.action--delete').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('button.meta__done').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('button.meta__action--delete').element as HTMLButtonElement).disabled).toBe(true);
 
     resolveDelete?.(undefined);
     await flushPromises();
@@ -1086,7 +1087,7 @@ describe('HomePage', () => {
     const wrapper = mount(HomePage);
     await flushPromises();
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('建');
     await flushPromises();
 
@@ -1104,7 +1105,7 @@ describe('HomePage', () => {
     const wrapper = mount(HomePage);
     await flushPromises();
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('新标签');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
@@ -1122,7 +1123,7 @@ describe('HomePage', () => {
     const wrapper = mount(HomePage);
     await flushPromises();
 
-    await wrapper.get('button.action--delete').trigger('click');
+    await wrapper.get('button.meta__action--delete').trigger('click');
     // 还没确认，不该发请求。
     expect(apiSend).not.toHaveBeenCalled();
 

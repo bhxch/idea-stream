@@ -75,8 +75,8 @@ describe('MessageList', () => {
     const wrapper = mountList();
 
     await wrapper.get('input.select').trigger('change');
-    await wrapper.get('button.done').trigger('click');
-    await wrapper.get('button.action--delete').trigger('click');
+    await wrapper.get('button.meta__done').trigger('click');
+    await wrapper.get('button.meta__action--delete').trigger('click');
     await wrapper.get('button.confirm__delete').trigger('click');
 
     expect(wrapper.emitted('toggle-select')).toEqual([['idea-1']]);

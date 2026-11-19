@@ -21,6 +21,8 @@ function mountItem(overrides: Record<string, unknown> = {}) {
     props: {
       idea,
       selected: false,
+      // position 是必填 prop：不在 props 里的话 vue-tsc 会报「缺少属性 position」。
+      position: 1,
       suggest: () => [],
       onSaveContent: async () => 'saved' as const,
       onSaveTags: async () => 'saved' as const,
@@ -38,19 +40,19 @@ describe('MessageItem', () => {
   it('请求在飞时禁用「标记完成」按钮', () => {
     const wrapper = mountItem({ busy: true });
 
-    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(true);
+    expect((wrapper.get('button.meta__done').element as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('没有请求在飞时按钮可点', () => {
     const wrapper = mountItem();
 
-    expect((wrapper.get('button.done').element as HTMLButtonElement).disabled).toBe(false);
+    expect((wrapper.get('button.meta__done').element as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('点「标记完成」发出 toggle-done', async () => {
     const wrapper = mountItem();
 
-    await wrapper.get('button.done').trigger('click');
+    await wrapper.get('button.meta__done').trigger('click');
 
     expect(wrapper.emitted('toggle-done')).toEqual([['idea-1']]);
   });
@@ -357,7 +359,7 @@ describe('MessageItem', () => {
   it('删除要二次确认，确认后才发出 delete', async () => {
     const wrapper = mountItem();
 
-    await wrapper.get('button.action--delete').trigger('click');
+    await wrapper.get('button.meta__action--delete').trigger('click');
     // 第一次点只是问一句，还没删。
     expect(wrapper.emitted('delete')).toBeUndefined();
 
@@ -368,7 +370,7 @@ describe('MessageItem', () => {
   it('删除的二次确认可以取消', async () => {
     const wrapper = mountItem();
 
-    await wrapper.get('button.action--delete').trigger('click');
+    await wrapper.get('button.meta__action--delete').trigger('click');
     await wrapper.get('button.confirm__cancel').trigger('click');
 
     expect(wrapper.emitted('delete')).toBeUndefined();
@@ -379,7 +381,7 @@ describe('MessageItem', () => {
     const onSaveTags = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ onSaveTags });
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('新标签');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
@@ -391,7 +393,7 @@ describe('MessageItem', () => {
     const onSaveTags = vi.fn(async () => 'failed' as const);
     const wrapper = mountItem({ onSaveTags });
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('新标签');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
@@ -404,7 +406,7 @@ describe('MessageItem', () => {
     const onSaveTags = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ onSaveTags });
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('甲');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
@@ -426,14 +428,17 @@ describe('MessageItem', () => {
   it('点「✓ 完成编辑」收起标签编辑器', async () => {
     const wrapper = mountItem();
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     expect(wrapper.findAll('.tag-editor')).toHaveLength(1);
     // 措辞跟条目上的「标记完成」区分开：这里说的是「编辑完了」。
-    expect(wrapper.get('button.action--tags').text()).toBe('✓ 完成编辑');
+    // 按钮上只画字形，完整名字给在 aria-label 上（屏幕阅读器读到的是完整名字）。
+    expect(wrapper.get('button.meta__action--tags').text()).toBe('✓');
+    expect(wrapper.get('button.meta__action--tags').attributes('aria-label')).toBe('✓ 完成编辑');
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     expect(wrapper.findAll('.tag-editor')).toHaveLength(0);
-    expect(wrapper.get('button.action--tags').text()).toBe('🏷 标签');
+    expect(wrapper.get('button.meta__action--tags').text()).toBe('🏷');
+    expect(wrapper.get('button.meta__action--tags').attributes('aria-label')).toBe('🏷 标签');
   });
 
   it('草稿跟服务端不一致时收起会再问一次（不能静默丢掉未保存的改动）', async () => {
@@ -441,13 +446,13 @@ describe('MessageItem', () => {
     const onSaveTags = vi.fn(async () => 'failed' as const); // 保存失败：改动没落库
     const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('乙');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
     expect(onSaveTags).toHaveBeenCalledWith('idea-1', ['甲', '乙'], { silent: false });
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
 
     // 收起了要问一句：刚才那次保存失败了，用户可能没留意到。
     expect(confirmSpy).toHaveBeenCalledTimes(1);
@@ -462,17 +467,17 @@ describe('MessageItem', () => {
     const onSaveTags = vi.fn(async () => 'failed' as const);
     const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('乙');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     expect(confirmSpy).toHaveBeenCalledTimes(1);
     expect(wrapper.findAll('.tag-editor')).toHaveLength(0);
 
     // 再打开：没存上的改动还在（并会再存一次），不用重敲一遍。
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     expect(wrapper.findAll('.chip__name').map((chip) => chip.text())).toEqual(['甲', '乙']);
   });
 
@@ -480,8 +485,8 @@ describe('MessageItem', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] } });
 
-    await wrapper.get('button.action--tags').trigger('click');
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
 
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(wrapper.findAll('.tag-editor')).toHaveLength(0);
@@ -492,12 +497,12 @@ describe('MessageItem', () => {
     const onSaveTags = vi.fn(async () => 'saved' as const);
     const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('乙');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(wrapper.findAll('.tag-editor')).toHaveLength(0);
   });
@@ -512,7 +517,7 @@ describe('MessageItem', () => {
     );
     const wrapper = mountItem({ onSaveTags });
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('甲');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     expect(onSaveTags).toHaveBeenCalledTimes(1);
@@ -553,7 +558,7 @@ describe('MessageItem', () => {
     await wrapper.get('.body').trigger('click');
     const editor = wrapper.get('textarea.editor');
     await editor.setValue('改过的正文');
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
 
     // 在飞：正文的失焦与标签的改动都先攒着。
     await wrapper.setProps({ busy: true });
@@ -587,7 +592,7 @@ describe('MessageItem', () => {
     const onSaveTags = vi.fn(async (): Promise<SaveOutcome> => (blocked ? 'busy' : 'saved'));
     const wrapper = mountItem({ onSaveTags });
 
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('甲');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
@@ -611,15 +616,15 @@ describe('MessageItem', () => {
     const wrapper = mountItem({ idea: { ...idea, tags: ['甲'] }, onSaveTags });
 
     // 先制造一份「没存上的改动」：保存失败 → 用户确认收起。
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await wrapper.get('.tag-editor input').setValue('乙');
     await wrapper.get('.tag-editor input').trigger('keydown', { key: 'Enter' });
     await flushPromises();
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     expect(confirmSpy).toHaveBeenCalledTimes(1);
 
     // 再打开 → 捡回那版并自动补存：这次是静默的（用户没主动保存过）。
-    await wrapper.get('button.action--tags').trigger('click');
+    await wrapper.get('button.meta__action--tags').trigger('click');
     await flushPromises();
 
     expect(onSaveTags).toHaveBeenLastCalledWith('idea-1', ['甲', '乙'], { silent: true });
@@ -628,9 +633,75 @@ describe('MessageItem', () => {
   it('删除的二次确认条在请求在飞时禁用（点了会被在飞保护挡下，用户只看到「没反应」）', async () => {
     const wrapper = mountItem();
 
-    await wrapper.get('button.action--delete').trigger('click');
+    await wrapper.get('button.meta__action--delete').trigger('click');
     await wrapper.setProps({ busy: true });
 
     expect((wrapper.get('button.confirm__delete').element as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // ── 卡片 = 一整块正文 + 底部 meta 行 ────────────────────────────────────
+
+  it('the_body_is_one_block_of_text', () => {
+    // 正文是一整块：首行没被摘走（想法没有标题了）。
+    const wrapper = mountItem({
+      idea: { ...idea, content: '第一行\n第二行' },
+    });
+
+    const body = wrapper.get('.body').text();
+    expect(body).toContain('第一行');
+    expect(body).toContain('第二行');
+  });
+
+  it('there_is_no_title_element', () => {
+    const wrapper = mountItem();
+
+    expect(wrapper.find('h2.title').exists()).toBe(false);
+    expect(wrapper.find('.title').exists()).toBe(false);
+  });
+
+  it('the_position_is_rendered_next_to_the_time', () => {
+    const wrapper = mountItem({ position: 12 });
+
+    expect(wrapper.get('.meta__num').text()).toBe('12');
+
+    // 编号在时间前面（DOM 顺序）。
+    const num = wrapper.get('.meta__num').element;
+    const time = wrapper.get('.meta__time').element;
+    expect(num.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('the_done_button_is_always_visible', () => {
+    const wrapper = mountItem();
+
+    const done = wrapper.find('.meta__done');
+    expect(done.exists()).toBe(true);
+    // 完成态是「翻看整理」时最常用的动作 —— 常驻：没有「悬停才显形」的标记。
+    expect(done.attributes('data-hover-only')).toBeUndefined();
+    expect(done.element.closest('[data-hover-only]')).toBeNull();
+  });
+
+  it('the_tag_and_delete_buttons_are_marked_as_hover_only', () => {
+    const wrapper = mountItem();
+
+    expect(wrapper.get('.meta__action--tags').attributes('data-hover-only')).toBeDefined();
+    expect(wrapper.get('.meta__action--delete').attributes('data-hover-only')).toBeDefined();
+  });
+
+  it('the_checkbox_is_marked_as_hover_only', () => {
+    const wrapper = mountItem();
+
+    expect(wrapper.get('input.select').attributes('data-hover-only')).toBeDefined();
+  });
+
+  it('the_delete_button_still_asks_for_confirmation', async () => {
+    const wrapper = mountItem();
+
+    await wrapper.get('.meta__action--delete').trigger('click');
+    // 先问一句，还没删。
+    expect(wrapper.emitted('delete')).toBeUndefined();
+    expect(wrapper.find('.confirm').exists()).toBe(true);
+
+    await wrapper.get('button.confirm__delete').trigger('click');
+    expect(wrapper.emitted('delete')).toEqual([['idea-1']]);
   });
 });

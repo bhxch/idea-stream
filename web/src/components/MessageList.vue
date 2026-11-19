@@ -52,9 +52,10 @@ const emit = defineEmits<{
   <div class="list" :data-at-bottom="atBottom">
     <p v-if="ideas.length === 0 && !loading" class="empty">这里还没有想法。</p>
     <MessageItem
-      v-for="idea in ideas"
+      v-for="(idea, index) in ideas"
       :key="idea.id"
       :idea="idea"
+      :position="index + 1"
       :selected="selectedIds.has(idea.id)"
       :busy="busyIds.has(idea.id)"
       :highlight="idea.id === highlightId"

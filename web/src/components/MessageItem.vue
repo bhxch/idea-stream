@@ -24,6 +24,12 @@ const props = defineProps<{
    * 高亮由页面层控制时长：定位完 1.5 秒就把这个标志撤掉。
    */
   highlight?: boolean;
+  /**
+   * 这一条在当前流里的位置序号（1 = 最老的那条，屏幕最上面那个）。
+   *
+   * 编号是「位置」不是身份：往上翻加载更早的一批，已有条目的编号会 +P。
+   */
+  position: number;
   /** 标签补全：父组件提供（请求在页面层发，组件不碰网络）。 */
   suggest: (prefix: string) => string[];
   /**
@@ -544,25 +550,18 @@ function confirmDelete(): void {
     :class="{ 'idea--done': idea.done, 'idea--selected': selected, highlight }"
     :data-idea-id="idea.id"
   >
-    <div class="head">
-      <input
-        class="select"
-        type="checkbox"
-        :checked="selected"
-        :aria-label="`选择 ${accessibleName}`"
-        @change="emit('toggle-select', idea.id)"
-      />
-      <button
-        class="done"
-        type="button"
-        :disabled="busy"
-        :aria-pressed="idea.done"
-        @click="emit('toggle-done', idea.id)"
-      >
-        {{ idea.done ? '已完成' : '标记完成' }}
-      </button>
-      <time class="time">{{ formatRelativeTime(idea.updatedAt) }}</time>
-    </div>
+    <!--
+      勾选框：正文的左边那一栏。
+      桌面端悬停/聚焦才显形（见样式里的媒体查询），窄屏与无悬停能力的设备常驻。
+    -->
+    <input
+      class="select"
+      type="checkbox"
+      data-hover-only
+      :checked="selected"
+      :aria-label="`选择 ${accessibleName}`"
+      @change="emit('toggle-select', idea.id)"
+    />
 
     <!-- 正文一律按纯文本渲染（插值），绝不用 v-html：内容是用户随手写的，
          里面可能有 <b>、& 之类的字符，按 HTML 解析会被吞掉或变成注入。
@@ -586,35 +585,72 @@ function confirmDelete(): void {
 
     <TagEditor
       v-if="tagEditing"
+      class="idea__tag-editor"
       v-model:value="tagDraft"
       :suggest="suggest"
       @update:value="onTagsChange"
     />
-    <ul v-else-if="idea.tags.length > 0" class="tags">
-      <!-- 关键词打在标签名上时，命中的 chip 也包 <mark>（与正文同一套样式）。
-           按「整枚 chip」标，不做片段级 —— 标签很短，整枚看得清。 -->
-      <li v-for="(tag, index) in idea.tags" :key="tag" class="chip">
-        <mark v-if="tagHits[index]">{{ tag }}</mark>
-        <template v-else>{{ tag }}</template>
-      </li>
-    </ul>
 
-    <div class="actions">
+    <!--
+      meta 行：完成态、标签 chips、编号、时间、🏷 与 🗑。
+
+      顺序照规格 §D3 的排法；编号与时间紧挨着（编号是「位置」，不是身份）。
+    -->
+    <div class="meta">
+      <!-- 完成态：一个小圆圈，常驻（翻看整理时最常用的动作）。 -->
       <button
-        class="action action--tags"
+        class="meta__done"
         type="button"
         :disabled="busy"
+        :aria-pressed="idea.done"
+        :aria-label="idea.done ? '已完成' : '标记完成'"
+        @click="emit('toggle-done', idea.id)"
+      >
+        {{ idea.done ? '●' : '○' }}
+      </button>
+
+      <!--
+        标签 chips：常驻（有才显示）。
+        class 名保留 `.tags` / `.chip`（旧样式与断言按它们选），
+        `.meta__tags` 是它在 meta 行里的位置钩子。
+      -->
+      <ul v-if="!tagEditing && idea.tags.length > 0" class="tags meta__tags">
+        <!-- 关键词打在标签名上时，命中的 chip 也包 <mark>（与正文同一套样式）。
+             按「整枚 chip」标，不做片段级 —— 标签很短，整枚看得清。 -->
+        <li v-for="(tag, index) in idea.tags" :key="tag" class="chip">
+          <mark v-if="tagHits[index]">{{ tag }}</mark>
+          <template v-else>{{ tag }}</template>
+        </li>
+      </ul>
+
+      <!-- 编号：淡色圆底 + 普通数字（不用 ①②③ —— 一页有 101 条，带圈字符没一致的写法）。 -->
+      <span class="meta__num num">{{ position }}</span>
+
+      <time class="meta__time">{{ formatRelativeTime(idea.updatedAt) }}</time>
+
+      <!--
+        🏷 与 🗑：低频动作，桌面上悬停/聚焦才显形。
+        可见的是字形，名字给在 aria-label 上（屏幕阅读器读到的是完整名字）。
+      -->
+      <button
+        class="meta__action meta__action--tags"
+        type="button"
+        data-hover-only
+        :disabled="busy"
+        :aria-label="tagEditing ? '✓ 完成编辑' : '🏷 标签'"
         @click="toggleTagEdit"
       >
-        {{ tagEditing ? '✓ 完成编辑' : '🏷 标签' }}
+        {{ tagEditing ? '✓' : '🏷' }}
       </button>
       <button
-        class="action action--delete"
+        class="meta__action meta__action--delete"
         type="button"
+        data-hover-only
         :disabled="busy"
+        aria-label="🗑 删除"
         @click="requestDelete"
       >
-        🗑 删除
+        🗑
       </button>
     </div>
 
@@ -622,19 +658,29 @@ function confirmDelete(): void {
       <span class="confirm__text">删除这条？它会进回收站。</span>
       <!-- 在飞时禁用：删除请求被在飞保护挡下的话，用户点了会「没反应」
            （父组件的守卫是静默返回的）。按钮禁用本身就是可见反馈。 -->
-      <button class="action confirm__delete" type="button" :disabled="busy" @click="confirmDelete">
+      <button class="confirm__delete" type="button" :disabled="busy" @click="confirmDelete">
         确认删除
       </button>
-      <button class="action confirm__cancel" type="button" @click="cancelDelete">取消</button>
+      <button class="confirm__cancel" type="button" @click="cancelDelete">取消</button>
     </div>
   </article>
 </template>
 
 <style scoped>
+/*
+ * 卡片 = 「一整块正文 + 底部 meta 行」。
+ *
+ * 两列网格：左列是勾选框（正文左边的窄栏），右列是正文；
+ * 标签编辑器、meta 行与删除确认条横跨两列，各占一行。
+ */
 .idea {
-  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: start;
+  padding: 9px 11px 7px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -668,46 +714,36 @@ function confirmDelete(): void {
 }
 
 /*
- * 卡片头：勾选框、「标记完成」、时间戳并排。
+ * 勾选框：正文左边的窄栏。
  *
- * 纵向对齐用 baseline（不是 center）：控件高度不一时，center 会把它们
- * 拉到彼此的正中，看着像挂着；baseline 让它们跟文字**首行**齐平。
- */
-.head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-/*
- * 复选框没有文字基线，单独顶对齐。
- *
- * 不这样的话整行的基线由它决定（复选框的基线是它的下边缘），
- * 旁边的按钮与时间戳会被顶到复选框下边缘那条线上，高一截。
+ * 顶对齐（不是居中）：窄屏那个 32×32 的自绘复选框基线在下边缘，
+ * 居中/基线对齐都会把正文顶下去一截。
  */
 .select {
-  align-self: flex-start;
-}
-
-/* 请求在飞：按钮不可点，别让它看起来还能按。 */
-.done:disabled,
-.action:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.time {
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
+  grid-column: 1;
+  grid-row: 1;
+  align-self: start;
 }
 
 .body {
-  margin-top: 6px;
+  grid-column: 2;
+  grid-row: 1;
   min-height: 1.6em;
+  font-size: 12.5px;
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   cursor: text;
+  /*
+   * 正文截断到 3 行（宽屏窄屏都是 3 行）。
+   *
+   * 用 -webkit-line-clamp（不是 max-height + overflow: hidden）：
+   * 前者能正确收尾加省略号，后者在多行文本上收得很生硬。
+   */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
 }
 
 /*
@@ -723,48 +759,167 @@ function confirmDelete(): void {
   border-radius: 3px;
 }
 
+/* 编辑态：编辑框占正文那一格（勾选框左边，正文右边）。 */
 .editor {
+  grid-column: 2;
+  grid-row: 1;
   display: block;
   width: 100%;
-  margin-top: 6px;
   resize: vertical;
 }
 
+/* 标签编辑器：横跨两列，排在 meta 行上方。 */
+.idea__tag-editor {
+  grid-column: 1 / -1;
+}
+
+/*
+ * meta 行：完成态、标签 chips、编号、时间、🏷 与 🗑。
+ *
+ * 整行（横跨两列），排在正文下面。
+ */
+.meta {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 10.5px;
+}
+
+/* 完成态：一个小圆圈，常驻（翻看整理时最常用的动作）。 */
+.meta__done {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* 编号：淡色圆底 + 普通数字（不用 ①②③ —— 一页有 101 条，带圈字符没一致的写法）。 */
+.meta__num {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  font-size: 10.5px;
+}
+
+.meta__time {
+  flex: none;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 🏷 与 🗑：低频动作，桌面上悬停/聚焦才显形。 */
+.meta__action {
+  flex: none;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.meta__action--delete {
+  color: var(--danger);
+}
+
+/* 标签 chips：常驻（有才显示）。 */
 .tags {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 8px 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* 窄栏里放不下时，chips 自己在里面换行，不要把 meta 行撑破。 */
+.meta__tags {
+  min-width: 0;
+}
+
 .chip {
-  padding: 1px 8px;
+  padding: 0 6px;
   border-radius: 999px;
   background: var(--chip-bg);
+  font-size: 10.5px;
+}
+
+/* 请求在飞：按钮不可点，别让它看起来还能按。 */
+.meta__done:disabled,
+.meta__action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 删除的二次确认条：横跨两列，排在 meta 行下面。 */
+.confirm {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+}
+
+.confirm__text {
+  flex: 1;
   font-size: 12px;
 }
 
-.actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.action {
+.confirm__delete,
+.confirm__cancel {
   padding: 2px 8px;
   font-size: 12px;
 }
 
 /*
- * 手机上点按目标不小于 32×32。
+ * 桌面端（宽屏 + 有悬停能力）：勾选框与 🏷🗑 悬停/聚焦才显形。
+ *
+ * 键盘 Tab 到它们时也必须显形（:focus-within）——
+ * 悬停才显形的按钮不能是某个操作的「唯一入口」。
+ */
+@media (min-width: 768px) and (hover: hover) {
+  .idea .select,
+  .idea .meta__action {
+    opacity: 0;
+    transition: opacity 120ms ease-in-out;
+  }
+
+  .idea:hover .select,
+  .idea:hover .meta__action,
+  .idea:focus-within .select,
+  .idea:focus-within .meta__action {
+    opacity: 1;
+  }
+}
+
+/*
+ * 窄屏（≤767px）或这台设备没有悬停能力：一律常驻。
+ *
+ * 用媒体查询判断，不用 JS（JS 的 ontouchstart 会把「触屏笔记本」误判成纯触屏）。
+ */
+@media (max-width: 767px), (hover: none) {
+  .idea .select,
+  .idea .meta__action {
+    opacity: 1;
+  }
+}
+
+/*
+ * 窄屏（≤767px）：点按目标不小于 32×32。
  *
  * - 勾选框：原生复选框只有 13×13，手指根本点不中 ——
  *   窄屏上改成自绘的 32×32 方框（勾在中间），外观与其它输入控件一致。
- * - 小按钮（标签 / 删除）：12px 的字配 2px 内边距只有 25px 高 —— 窄屏上加高。
+ * - meta 行里的控件：字形保持小，用 min-width/min-height 撑开 hit area。
  */
-@media (max-width: 640px) {
+@media (max-width: 767px) {
   .select {
     appearance: none;
     -webkit-appearance: none;
@@ -786,35 +941,13 @@ function confirmDelete(): void {
     transform: rotate(45deg) translate(-1px, -1px);
   }
 
-  .action {
-    padding: 6px 8px;
+  .idea .meta__done,
+  .idea .meta__action {
+    min-width: 32px;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
-
-  /*
-   * 窄屏上控件那一行：时间戳靠右（其余控件挨着排）。
-   * 标题层没有了，`.head` 不再换行 —— 一行放得下。
-   */
-  .time {
-    margin-left: auto;
-  }
-}
-
-.action--delete {
-  color: var(--danger);
-}
-
-.confirm {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  padding: 6px 8px;
-  border: 1px solid var(--danger);
-  border-radius: 6px;
-}
-
-.confirm__text {
-  flex: 1;
-  font-size: 12px;
 }
 </style>
