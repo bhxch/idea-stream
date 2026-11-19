@@ -18,6 +18,9 @@ const idea: Idea = {
 /** 第二条想法（比第一条新，列表顺序按传入顺序渲染）。 */
 const newerIdea: Idea = { ...idea, id: 'idea-2', content: '另一条想法' };
 
+/** 第三条想法（两列交错流里它落在第 2 排的左格）。 */
+const thirdIdea: Idea = { ...idea, id: 'idea-3', content: '第三条想法' };
+
 /** 挂一个列表。 */
 function mountList(overrides: Record<string, unknown> = {}) {
   return mount(MessageList, {
@@ -111,5 +114,34 @@ describe('MessageList', () => {
     await wrapper.setProps({ loading: false });
 
     expect(wrapper.get('.empty').text()).toBe('这里还没有想法。');
+  });
+
+  it('the_odd_ones_are_on_the_left', () => {
+    const wrapper = mountList({ ideas: [idea, newerIdea, thirdIdea] });
+
+    // 第 1、3 条在左格，第 2 条在右格 —— 编号与左右由同一个位置序号决定。
+    expect(
+      wrapper.get('.row:nth-child(1) .cell--left .idea').attributes('data-idea-id'),
+    ).toBe('idea-1');
+    expect(
+      wrapper.get('.row:nth-child(1) .cell--right .idea').attributes('data-idea-id'),
+    ).toBe('idea-2');
+    expect(
+      wrapper.get('.row:nth-child(2) .cell--left .idea').attributes('data-idea-id'),
+    ).toBe('idea-3');
+  });
+
+  it('the_last_row_leaves_the_right_cell_empty', () => {
+    const wrapper = mountList({ ideas: [idea, newerIdea, thirdIdea] });
+
+    // 3 条 → 第 2 排只有左格，右格空着（不是一条都不渲染）。
+    expect(wrapper.findAll('.row')).toHaveLength(2);
+    expect(wrapper.get('.row:nth-child(2) .cell--right').find('.idea').exists()).toBe(false);
+  });
+
+  it('the_position_is_the_index_plus_one', () => {
+    const wrapper = mountList({ ideas: [idea, newerIdea, thirdIdea] });
+
+    expect(wrapper.findAll('.meta__num').map((num) => num.text())).toEqual(['1', '2', '3']);
   });
 });
