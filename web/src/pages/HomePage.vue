@@ -100,6 +100,14 @@ const requestedPrefixes = new Set<string>();
 const scrollContainer = ref<HTMLElement | null>(null);
 
 /**
+ * 过滤栏的组件引用（窄屏顶栏的 🔍 要聚焦它的搜索框）。
+ *
+ * 类型只写暴露出来的那一个方法 —— `<script setup>` 里拿不到组件的完整类型，
+ * 用 `InstanceType<typeof FilterBar>` 反而绕。
+ */
+const filterBarRef = ref<{ focusSearch: () => void } | null>(null);
+
+/**
  * 滚动跟随：贴底时新内容自动跟到底，用户往上翻看时不抢滚动。
  */
 const { atBottom, onNewContent, scrollToBottom, pendingCount } = useScrollFollow(scrollContainer);
@@ -441,13 +449,17 @@ function goWebhooks(): void {
 }
 
 /**
- * 滚回列表顶部并聚焦搜索框（Task 13 补齐聚焦逻辑）。
+ * 窄屏顶栏的 🔍：滚回列表顶部并聚焦过滤行里的搜索框。
  *
- * 这一轮只占位：顶栏先把「🔍」摆出来，窄屏的过滤行怎么收、
- * 搜索框的引用怎么暴露，是 Task 13 的事 —— 这里不引第二套搜索状态。
+ * ⚠️ **不引入第二套搜索状态** —— 聚焦的是过滤行里那个输入框，
+ * 它绑的就是同一份 `filter.keyword`。
  */
 function focusSearch(): void {
   void nextTick();
+  // `scrollTo` 在 jsdom 里没有（浏览器才有），可选调用：没有就跳过，
+  // 别让「滚回顶部」这件事把「聚焦搜索框」一起带崩。
+  scrollContainer.value?.scrollTo?.({ top: 0 });
+  filterBarRef.value?.focusSearch();
 }
 
 /**
@@ -1235,12 +1247,21 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <div class="home__filters">
-        <FilterBar :filter="activeFilter" :all-tags="allTags" @update:filter="onFilterUpdate" />
-      </div>
-
       <div class="home__body">
         <div ref="scrollContainer" class="home__scroll">
+          <!--
+            过滤行：宽屏钉在列表上方（sticky），窄屏随内容滚走。
+            它过滤的是下面这片内容，放在列表上方才说得通（规格 §D7）。
+          -->
+          <div class="home__filters">
+            <FilterBar
+              ref="filterBarRef"
+              :filter="activeFilter"
+              :all-tags="allTags"
+              @update:filter="onFilterUpdate"
+            />
+          </div>
+
           <p v-if="listLoading" class="hint">加载中…</p>
 
           <!--
@@ -1402,9 +1423,20 @@ onBeforeUnmount(() => {
   justify-content: center;
 }
 
-/* 宽屏：过滤栏在消息流上面。 */
+/*
+ * 过滤行：宽屏钉在列表顶部，窄屏随内容滚走。
+ *
+ * 它在滚动容器（.home__scroll）里：宽屏用 sticky 把它钉在列表上方，
+ * 窄屏用 static 让它随内容滚走 —— 钉死的每一行都是从内容里扣的钱
+ * （规格 §D7）。
+ */
 .home__filters {
-  order: 2;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 6px 0;
+  /* 钉住时背景要是不透明，滚上来的卡片会从它下面透出来。 */
+  background: var(--bg);
 }
 
 .home__body {
@@ -1486,9 +1518,16 @@ onBeforeUnmount(() => {
     order: 3;
   }
 
-  /* 过滤行挪到列表顶部（它过滤的是下面那片内容）。 */
+  /*
+    过滤行随内容滚走（不钉死）。
+    ⚠️ 这里用的是 1023px（跟侧栏的断点一致：「窄屏」= 没有侧栏的那一档），
+    而过滤栏**形态**的切换（状态三态收成下拉）用的是 767px（触摸目标那一档）——
+    这两套断点并存是规格本身的样子（§D7 与 §D9/§6.10）。
+  */
   .home__filters {
-    order: 2;
+    position: static;
+    background: none;
+    padding: 0;
   }
 
   .composer {

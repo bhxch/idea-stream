@@ -2581,9 +2581,12 @@ describe('HomePage', () => {
 
     // 哨兵必须在列表**前面**：往回翻的方向是上（底部是当下，新内容靠 SSE
     // 送过来）。放到底部的话，触发的是「快到最新」而不是「快到最旧」。
-    // （首屏那条「加载中…」提示这时已经不在了 —— 列表加载完之后它就没了，
-    // 所以哨兵就是 `.home__scroll` 的第一个元素。）
-    expect(scroller.firstElementChild).toBe(sentinel);
+    //
+    // ⚠️ 滚动容器里现在**过滤行排在最前面**（Task 13：窄屏上过滤行随内容滚走，
+    // 它因此进了滚动容器）。过滤行是过滤控件、不是消息流的内容 ——
+    // 哨兵仍然是「内容」里的第一个（首屏那条「加载中…」提示加载完之后就没了）。
+    const filters = wrapper.get('.home__filters').element as HTMLElement;
+    expect(filters.nextElementSibling).toBe(sentinel);
     const list = scroller.querySelector('.list');
     expect(list, '找不到消息流列表').not.toBeNull();
     expect([...scroller.children].indexOf(sentinel)).toBeLessThan(
@@ -2812,5 +2815,44 @@ describe('HomePage', () => {
     expect(ideas.value[0].id).not.toBe('idea-older-0');
     // 深度也要还回去：这一页没进列表。
     expect(scrolledItems.value).toBe(0);
+  });
+
+  it('the_narrow_search_button_scrolls_to_the_top_and_focuses_the_search_box', async () => {
+    // jsdom 里没有 Element.scrollTo（浏览器才有）：打一个桩，
+    // 才能断言「确实滚回列表顶部了」。
+    const scrollTo = vi.fn();
+    Object.defineProperty(Element.prototype, 'scrollTo', {
+      configurable: true,
+      writable: true,
+      value: scrollTo,
+    });
+    // 焦点断言要真的 document：元素得挂在 document 里（不然 focus() 不生效）。
+    const wrapper = mount(HomePage, { attachTo: document.body });
+    await flushPromises();
+    try {
+      await wrapper.get('.home__topbar-search').trigger('click');
+      await flushPromises();
+
+      // 滚回列表顶部。
+      expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+      // 焦点落在过滤行里那个搜索框上（不是别处）。
+      expect(document.activeElement).toBe(wrapper.get('input[type="search"]').element);
+    } finally {
+      wrapper.unmount();
+      document.body.innerHTML = '';
+      Reflect.deleteProperty(Element.prototype, 'scrollTo');
+    }
+  });
+
+  it('the_narrow_search_button_does_not_create_a_second_search_state', async () => {
+    const wrapper = mount(HomePage);
+    await flushPromises();
+
+    await wrapper.get('.home__topbar-search').trigger('click');
+    await flushPromises();
+
+    // 页面里只有一个搜索框：🔍 聚焦的就是过滤行里那一个，
+    // 不是另开一个（另开一个就是第二套搜索状态）。
+    expect(wrapper.findAll('input[type="search"]')).toHaveLength(1);
   });
 });

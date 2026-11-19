@@ -20,9 +20,10 @@ function makeFilter(overrides: Partial<IdeaFilter> = {}): IdeaFilter {
 }
 
 /** 挂一个过滤栏。 */
-function mountBar(filter: IdeaFilter = makeFilter()) {
+function mountBar(filter: IdeaFilter = makeFilter(), options: { attachTo?: Element } = {}) {
   return mount(FilterBar, {
     props: { filter, allTags },
+    ...options,
   });
 }
 
@@ -106,5 +107,46 @@ describe('FilterBar', () => {
     await wrapper.get('.filter-bar__status-button:last-child').trigger('click');
 
     expect(wrapper.emitted('update:filter')).toEqual([[makeFilter({ status: 'done', tags: ['想法'], keyword: '点子' })]]);
+  });
+
+  it('the_status_buttons_are_replaced_by_a_dropdown_on_narrow_screens', async () => {
+    const wrapper = mountBar();
+
+    expect(wrapper.find('.filter-bar__status-panel').exists()).toBe(false);
+
+    await wrapper.get('.filter-bar__status-trigger').trigger('click');
+
+    // 面板里有状态三态（窄屏形态：三个分段按钮收成这一个下拉）。
+    const panel = wrapper.get('.filter-bar__status-panel');
+    expect(panel.text()).toContain('全部');
+    expect(panel.text()).toContain('未完成');
+    expect(panel.text()).toContain('已完成');
+  });
+
+  it('picking_a_status_emits_the_filter_update', async () => {
+    const wrapper = mountBar();
+
+    await wrapper.get('.filter-bar__status-trigger').trigger('click');
+    const option = wrapper
+      .findAll('.filter-bar__status-option')
+      .find((item) => item.text() === '已完成');
+    expect(option, '下拉里没有「已完成」这一项').toBeTruthy();
+    await option!.trigger('click');
+
+    expect(wrapper.emitted('update:filter')).toEqual([[makeFilter({ status: 'done' })]]);
+  });
+
+  it('focusSearch_puts_the_focus_in_the_search_box', async () => {
+    // 焦点断言要真的 document：元素得挂在 document 里（不然 focus() 不生效）。
+    const wrapper = mountBar(makeFilter(), { attachTo: document.body });
+    try {
+      wrapper.vm.focusSearch();
+      await wrapper.vm.$nextTick();
+
+      expect(document.activeElement).toBe(searchInput(wrapper).element);
+    } finally {
+      wrapper.unmount();
+      document.body.innerHTML = '';
+    }
   });
 });
