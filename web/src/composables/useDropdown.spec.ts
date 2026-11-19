@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineComponent, h } from 'vue';
-import { mount } from '@vue/test-utils';
+import { mount, type VueWrapper } from '@vue/test-utils';
 import { useDropdown } from './useDropdown';
 
 /**
@@ -25,17 +25,33 @@ const Host = defineComponent({
 });
 
 /**
+ * 挂着的组件：每个用例结束后都要**卸载**。
+ *
+ * 只清 `document.body.innerHTML` 是不够的：组件还「挂」着，
+ * useDropdown 注册在 document 上的 click / keydown 监听也不会被摘掉，
+ * 会留到后面的用例里去。
+ */
+const mounted = new Set<VueWrapper>();
+
+/**
  * 挂一个下拉。
  *
  * `attachTo: document.body` 是必须的：组件内部的点击要能冒泡到 document，
  * 「点组件内部不收起」那条才不是空转的。
  */
-function mountHost() {
-  return mount(Host, { attachTo: document.body });
+function mountHost(): VueWrapper {
+  const wrapper = mount(Host, { attachTo: document.body });
+  mounted.add(wrapper);
+  return wrapper;
 }
 
-// 挂在 body 上的组件要清掉：不然残留的 DOM 会影响后面的用例。
 afterEach(() => {
+  // 卸载：组件的 onBeforeUnmount 会把 document 上的监听摘掉。
+  for (const wrapper of mounted) {
+    wrapper.unmount();
+  }
+  mounted.clear();
+  // 挂在 body 上的 DOM 也要清掉：不然残留会影响后面的用例。
   document.body.innerHTML = '';
 });
 
@@ -99,6 +115,8 @@ describe('useDropdown', () => {
     const wrapper = mountHost();
 
     wrapper.unmount();
+    // 已经卸载过：afterEach 里别再卸一次（Vue 会警告「app 没挂载」）。
+    mounted.delete(wrapper);
 
     expect(remove).toHaveBeenCalledWith('click', expect.any(Function));
     expect(remove).toHaveBeenCalledWith('keydown', expect.any(Function));
