@@ -117,6 +117,19 @@ interface Named {
   locator: Locator;
 }
 
+/**
+ * 一条想法的编辑态文本块。
+ *
+ * 「哪一条」得单说：编辑框是**逐条**的（点谁进谁），
+ * 不知道要点第几条，就只会量到第一条 —— 其余条目的守卫等于没写。
+ */
+interface EditingTextBlocks {
+  /** 这一条想法在列表里的序号（0 = 第一条）。 */
+  ideaIndex: number;
+  /** 这一条想法编辑态下要量的块。 */
+  blocks: Named[];
+}
+
 /** 一个路由的排版检查项。 */
 interface RouteSpec {
   /** 截图文件名里的短名（不含路径分隔符）。 */
@@ -149,8 +162,12 @@ interface RouteSpec {
    *
    * ⚠️ 它是**函数**（跟 {@link RouteSpec.textBlocks} 一样），不是常量数组：
    * 定位器要拿 `page` 才能造，造不出与页面无关的常量数组。
+   *
+   * ⚠️ 它按**条**分组（{@link EditingTextBlocks}），不是平铺的块列表：
+   * 编辑框是逐条的（点谁进谁），不写清「第几条」就只会量到第一条 ——
+   * 第二条那些守卫（超长不换行正文）就等于没写。
    */
-  textBlocksWhenEditing?: (page: Page) => Named[];
+  textBlocksWhenEditing?: (page: Page) => EditingTextBlocks[];
   /** 额外的检查（只有主页有：固定元素不许互相遮挡）。 */
   extraChecks?(page: Page, label: string): Promise<void>;
 }
@@ -195,8 +212,29 @@ const ROUTES: RouteSpec[] = [
     // 非编辑态没有「必须看全」的文本块：卡片正文按规格 §6.11 被 3 行截断
     // （那是设计，不是排版事故），所以它挪到 textBlocksWhenEditing 里查。
     textBlocks: () => [],
+    // 两条都要查（裁决 F2）：
+    // - 第一条：普通正文 —— 编辑框里必须能看到全文；
+    // - 第二条：102 个不换行字符的长正文 —— 它最容易把编辑框撑破，
+    //   「编辑框里也看得下」这条守卫正是为它留的。
     textBlocksWhenEditing: (page) => [
-      { name: '编辑态的正文', locator: page.locator('.idea .editor').first() },
+      {
+        ideaIndex: 0,
+        blocks: [
+          {
+            name: '编辑态的正文（第一条）',
+            locator: page.locator('.idea').nth(0).locator('.editor'),
+          },
+        ],
+      },
+      {
+        ideaIndex: 1,
+        blocks: [
+          {
+            name: '编辑态的正文（超长不换行那条）',
+            locator: page.locator('.idea').nth(1).locator('.editor'),
+          },
+        ],
+      },
     ],
     extraChecks: checkFixedElements,
   },
@@ -418,22 +456,40 @@ async function expectTextNotClipped(
  * 那是设计，不是排版事故。正文被截断后，读全文的唯一入口是
  * 「点正文进编辑态」，所以「文本没被裁掉」这条约束**只对编辑态成立**。
  *
- * 做法：先点开正文进入编辑态（编辑框替身正文），再量编辑框。
+ * 做法：逐条点开正文进入编辑态（编辑框替身正文），再量编辑框。
+ *
+ * ⚠️ **逐条**是必须的：编辑框是逐条的（点谁进谁），
+ * 一次只量第一条的话，其余条目的守卫（超长不换行正文）就白写了。
+ * 每条量完先按 Esc 收起（Esc 是「放弃这次编辑」，不发请求），
+ * 免得下一条被上一条的失焦保存带跑。
  */
 async function expectTextNotClippedWhileEditing(
   page: Page,
-  blocks: Named[],
+  groups: EditingTextBlocks[],
   label: string,
 ): Promise<void> {
-  const body = page.locator('.idea .body').first();
-  await expect(body, `${label}：找不到可以点开进入编辑态的正文`).toBeVisible();
-  await body.click();
-  // 编辑框是正文那一格的替身：它出现了才算进了编辑态。
-  await expect(
-    page.locator('.idea .editor').first(),
-    `${label}：点正文没进编辑态（编辑框没出现）`,
-  ).toBeVisible();
-  await expectTextNotClipped(page, blocks, label);
+  for (const group of groups) {
+    const item = page.locator('.idea').nth(group.ideaIndex);
+    const body = item.locator('.body');
+    await expect(
+      body,
+      `${label}：第 ${group.ideaIndex + 1} 条想法找不到可以点开进入编辑态的正文`,
+    ).toBeVisible();
+    await body.click();
+    // 编辑框是正文那一格的替身：它出现了才算进了编辑态。
+    const editor = item.locator('.editor');
+    await expect(
+      editor,
+      `${label}：第 ${group.ideaIndex + 1} 条想法没进编辑态（编辑框没出现）`,
+    ).toBeVisible();
+    await expectTextNotClipped(page, group.blocks, label);
+    // 收起编辑态：Esc 是「放弃这次编辑」（不发请求）。
+    await editor.press('Escape');
+    await expect(
+      item.locator('.editor'),
+      `${label}：第 ${group.ideaIndex + 1} 条想法的编辑态没收起`,
+    ).toHaveCount(0);
+  }
 }
 
 /** 元素在视口里的位置与尺寸（CSS 像素，与视口左上角为原点）。 */
@@ -663,9 +719,9 @@ test.describe('排版与响应式', () => {
 
         // 编辑态的文本块：截断后读全文的唯一入口就是编辑框（规格 §6.11）。
         // 放在关键元素检查之后 —— 点正文会把列表滚上去，别影响前面的视口断言。
-        const editingBlocks = route.textBlocksWhenEditing?.(page) ?? [];
-        if (editingBlocks.length > 0) {
-          await expectTextNotClippedWhileEditing(page, editingBlocks, label);
+        const editingGroups = route.textBlocksWhenEditing?.(page) ?? [];
+        if (editingGroups.length > 0) {
+          await expectTextNotClippedWhileEditing(page, editingGroups, label);
         }
 
         if (route.extraChecks) {
@@ -1220,8 +1276,8 @@ test.describe('排版与响应式', () => {
     ).toHaveCount(1);
   });
 
-  test('管理页铺满，Webhook 表单保持窄', async ({ page, seed }) => {
-    await seed.idea('管理页铺满的探测想法');
+  test('管理页铺满，Webhook 表单保持窄', async ({ page }) => {
+    // 这条量的是**容器**的宽度，不需要数据（造了也没人断言它 → 死数据）。
     await page.setViewportSize(DESKTOP_VIEWPORT);
 
     for (const path of ['/trash', '/projects']) {
