@@ -193,8 +193,11 @@ function confirmDelete(): void {
 /*
  * 手机上点按目标不小于 32×32（与 MessageItem 里的同名规则一致）：
  * 批量操作条上的按钮也是一行字高，手指点不中。
+ *
+ * 断点取 767px（不是 640px）：触摸目标的 32×32 规则跟两列断点对齐 ——
+ * 原来的 640px 会让 641–767px 那一段既按手机渲染又不满足触摸目标。
  */
-@media (max-width: 640px) {
+@media (max-width: 767px) {
   .action {
     padding: 6px 10px;
   }

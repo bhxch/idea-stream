@@ -309,4 +309,16 @@ describe('TrashPage', () => {
     expect(wrapper.get('.trash__empty').text()).toContain('空');
     wrapper.unmount();
   });
+
+  it('the_list_page_has_no_width_cap', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    // 列表页不套窄容器：铺满是 .page 的事（宽度上限已经拿掉）。
+    // 窄容器留给表单页（Webhook）—— 表单一行拉到 1800px 没法看。
+    const root = wrapper.get('main');
+    expect(root.classes()).toContain('page');
+    expect(root.classes()).not.toContain('page--narrow');
+    wrapper.unmount();
+  });
 });

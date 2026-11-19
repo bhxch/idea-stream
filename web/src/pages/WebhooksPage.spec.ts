@@ -237,4 +237,16 @@ describe('WebhooksPage', () => {
     wrapper.unmount();
     toastHost.unmount();
   });
+
+  it('the_webhook_form_page_uses_the_narrow_container', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    // Webhook 是表单页：套窄容器（表单一行拉到 1800px 没法看）。
+    // 列表页不套 —— 那是 .page 铺满的事。
+    const root = wrapper.get('main');
+    expect(root.classes()).toContain('page');
+    expect(root.classes()).toContain('page--narrow');
+    wrapper.unmount();
+  });
 });

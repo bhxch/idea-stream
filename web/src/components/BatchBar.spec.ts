@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
 import BatchBar from './BatchBar.vue';
+// 组件源码（?raw）：触摸目标的断点写在 CSS 里，渲染出来的 DOM 上读不到。
+import batchBarSource from './BatchBar.vue?raw';
 
 /** 挂一个批量操作条。 */
 function mountBar(overrides: Record<string, unknown> = {}) {
@@ -130,5 +132,18 @@ describe('BatchBar', () => {
     await wrapper.setProps({ busy: true });
 
     expect((wrapper.get('button.action--apply-tags').element as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  /**
+   * 触摸目标的断点：源码级守卫。
+   *
+   * jsdom 不求值媒体查询，「窄屏上按钮有没有被撑到 32px 高」在单测里读不出来
+   * —— 视觉验证归 e2e。这里钉住**断点值本身**：32×32 的规则跟两列断点对齐
+   * （≤767px），否则 641–767px 那一段既按手机渲染又不满足触摸目标。
+   */
+  it('触摸目标的断点统一到 767px', () => {
+    expect(batchBarSource).toContain('@media (max-width: 767px)');
+    // 旧的 640px 那一档得整个没了（不是「再加一条 767px」）。
+    expect(batchBarSource).not.toContain('@media (max-width: 640px)');
   });
 });

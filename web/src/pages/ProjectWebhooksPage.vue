@@ -26,7 +26,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="page">
+  <!-- 窄容器：这是表单页，表单一行拉到 1800px 没法看（规格 §D10）。 -->
+  <main class="page page--narrow">
     <PageNav />
 
     <h1>{{ projectName ? `项目 Webhook · ${projectName}` : '项目 Webhook' }}</h1>

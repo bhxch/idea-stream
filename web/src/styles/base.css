@@ -72,15 +72,24 @@ select {
   outline-offset: 2px;
 }
 
-/* 页面容器：窄屏时左右留白收窄。 */
+/* 页面容器：列表页铺满（没有宽度上限），表单页用 .page--narrow 保持窄。 */
 .page {
-  max-width: 960px;
-  margin: 0 auto;
+  margin: 0;
   padding: 24px 16px;
+}
+
+/* 窄容器：表单页用（表单本来就不该宽，一行拉到 1800px 没法看）。 */
+.page--narrow {
+  max-width: 720px;
+  margin: 0 auto;
 }
 
 @media (min-width: 1024px) {
   .page {
+    padding: 32px 24px;
+  }
+
+  .page--narrow {
     padding: 32px 24px;
   }
 }

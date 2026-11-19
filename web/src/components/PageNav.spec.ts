@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import PageNav from './PageNav.vue';
+// 组件源码（?raw）：触摸目标的断点写在 CSS 里，渲染出来的 DOM 上读不到。
+import pageNavSource from './PageNav.vue?raw';
 
 /** 路由表：与 web/src/router.ts 一致（这里只需要路径能匹配上）。 */
 const routes = [
@@ -89,5 +91,20 @@ describe('PageNav', () => {
 
     expect(wrapper.get('.page-nav__home').attributes('aria-current')).toBeUndefined();
     wrapper.unmount();
+  });
+
+  /**
+   * 触摸目标的断点：源码级守卫。
+   *
+   * jsdom 不求值媒体查询（`window.matchMedia` 是 undefined），
+   * 「窄屏上链接有没有被撑到 32px 高」在单测里读不出来 —— 视觉验证归 e2e。
+   * 这里能钉住的只有**断点值本身**：触摸目标的 32×32 规则必须跟两列断点对齐
+   * （≤767px），否则 641–767px 那一段既按手机渲染又不满足触摸目标。
+   */
+  it('触摸目标的断点统一到 767px', () => {
+    expect(pageNavSource).toContain('@media (max-width: 767px)');
+    // 旧的 640px 那一档得整个没了（不是「再加一条 767px」—— 两条都在的话，
+    // 641–767px 那一段照样落进手机档）。
+    expect(pageNavSource).not.toContain('@media (max-width: 640px)');
   });
 });

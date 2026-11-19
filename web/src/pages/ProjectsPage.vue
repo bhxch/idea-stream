@@ -233,6 +233,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <!-- 列表页：不套窄容器 —— 列表铺满到右边缘（规格 §D10）。 -->
   <main class="page">
     <PageNav />
 
