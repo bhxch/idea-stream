@@ -107,11 +107,11 @@ describe('ProjectSidebar', () => {
     expect(wrapper.get('[data-testid="project-sidebar-name-project-3"]').text()).toBe('第三个项目');
   });
 
-  it('侧栏 nav 有 aria-label="项目"（与窄屏 Tab 条刻意不同名）', () => {
+  it('侧栏 nav 有 aria-label="项目"', () => {
     const wrapper = mountSidebar();
 
-    // 窄屏 Tab 条那个是「项目切换」：两套导航同时在 DOM 里（一套用 CSS 隐藏），
-    // 同名会让读屏听到两个同名地标，也会让选择器同时命中两处。
+    // 侧栏是页面里唯一的导航地标，名字要说清它是干什么的
+    // （读屏用户在地标列表里靠这个名字区分「项目」与「管理」那套导航）。
     expect(wrapper.get('nav').attributes('aria-label')).toBe('项目');
   });
 
