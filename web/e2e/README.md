@@ -235,8 +235,10 @@ test('回收站一开始是空的', async ({ page }) => {
    - `aria-label="选择 <正文首行>"`（想法条目的复选框）、`aria-label="删除标签 <标签名>"`
    - `role="status"`（全局提示条 ToastHost）
 3. **可见文字**：`page.getByText('想法二')` —— 用户看得见的文案。
-4. **BEM class**（`page.locator('.bar__title')`）：**最后手段**。
+4. **BEM class**（`page.locator('.home__topbar-title')`）：**最后手段**。
    class 是实现细节，改样式就会红；只在没有别的办法时用，并在用例里写一句注释说明为什么。
+   （举的例子要是**现在真的存在**的 class —— 顶栏标题上一版叫 `.bar__title`，
+   布局重设计之后改成了 `.home__topbar-title`。）
 
 不要写的东西：
 
