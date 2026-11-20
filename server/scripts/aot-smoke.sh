@@ -274,7 +274,7 @@ echo "==> POST /api/ideas"
 check_endpoint "/api/ideas" "201" \
     'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("id", out var id) && id.GetString() is { Length: 32 }' \
     POST \
-    '{"content":"AOT 冒烟","title":"标题","tags":["冒烟"]}'
+    '{"content":"AOT 冒烟","tags":["冒烟"]}'
 
 echo "==> GET /api/webhooks"
 # 返回静态类型 List<WebhookDto>（裸数组）。白名单里少登记这个集合包装类型时，
@@ -328,7 +328,7 @@ echo "==> POST /api/ideas（触发一次投递）"
 check_endpoint "/api/ideas" "201" \
     'root.ValueKind == JsonValueKind.Object' \
     POST \
-    '{"content":"AOT 冒烟 投递","title":"投递"}'
+    '{"content":"AOT 冒烟 投递"}'
 
 echo "==> GET /api/webhooks/{id}/deliveries（等第一条投递记录落库）"
 # 投递是异步的：事件发布之后 worker 才去投递，记录也就才落库。轮询等它出现。
@@ -387,7 +387,7 @@ fi
 check_endpoint "/api/ideas" "201" \
     'root.ValueKind == JsonValueKind.Object && root.TryGetProperty("id", out var id) && id.GetString() is { Length: 32 }' \
     POST \
-    '{"content":"AOT 冒烟 SSE","title":"SSE"}'
+    '{"content":"AOT 冒烟 SSE"}'
 
 # 轮询等事件帧到达：curl 还活着（--max-time 30 > 这段预算），
 # 帧到了就收工 —— 不用干等到 max-time。
