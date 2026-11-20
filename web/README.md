@@ -12,8 +12,8 @@ Idea 记事本的 Web 前端。Vue 3 + TypeScript + Vite 7，无 UI 框架、无
 | 构建 | Vite 7 |
 | 路由 | vue-router 4（history 模式） |
 | 状态 | 组合式函数 + `ref`（`src/stores/`），没有引入 Pinia |
-| 测试 | Vitest 3 + jsdom + `@vue/test-utils` |
-| 类型检查 | `vue-tsc` |
+| 测试 | Vitest 3 + jsdom + `@vue/test-utils`；端到端用 Playwright |
+| 类型检查 | `vue-tsc`（应用与 e2e 各一份 tsconfig，见下） |
 | 依赖管理 | npm（`package-lock.json` 提交进仓库） |
 
 ## 目录结构
@@ -25,6 +25,10 @@ web/
   package.json          scripts 与依赖
   tsconfig.json         应用侧 TS 配置
   tsconfig.node.json    vite.config.ts 等 Node 侧文件的 TS 配置
+  e2e/
+    tsconfig.json       e2e 侧 TS 配置（node 类型；应用那份是纯浏览器的）
+    fixtures.ts         公共夹具（复位、造数据、API 封装）与类型
+    *.spec.ts           端到端用例（Playwright）
   src/
     main.ts             应用入口：createApp + router + 样式
     App.vue             根组件：路由出口（RouterView）+ 全局提示条（ToastHost）
@@ -137,6 +141,24 @@ npm run typecheck
 ```
 
 `vue-tsc --noEmit`，只检查不产出。改完 `.vue` 或 `.ts` 建议先跑一遍。
+
+它跑**两遍**，各用一份 tsconfig：
+
+- **应用**（`tsconfig.json`）：`types` 只有 `vite/client` —— 纯浏览器，
+  没有 node 的全局（`process`、`Buffer`…）。这是故意的：让「在浏览器里
+  用了 node API」这类错在编译期就红。
+- **e2e**（`e2e/tsconfig.json`）：`types` 是 `node` —— 它确实要起进程、
+  读文件、发 HTTP。两份分开，**应用那边不会因为 e2e 要用 node 就拿到
+  node 全局**。
+
+e2e 那份还带来两个好处：
+
+- e2e 的 **近 6900 行** TypeScript 从此也在类型检查里 ——
+  以前只有运行时才会暴露类型错误。
+- e2e 的类型**直接用应用的那份**（`import type`，纯类型导入，运行时不
+  产生依赖）。早先 e2e 自己手抄了一份，两边各自独立、编译器看不出来
+  漂移；改成类型导入后，「e2e 用的字段在应用里不存在」与「两边形状对不上」
+  都会在编译期红。
 
 ## 与后端的接线
 

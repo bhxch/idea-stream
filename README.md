@@ -116,10 +116,14 @@ bash server/scripts/aot-smoke.sh
 bash verify.sh
 ```
 
-它按四步跑：.NET 测试（服务端，含 skill 分发端点与文档漂移守卫）→
+它按七步跑：.NET 测试（服务端，含 skill 分发端点与文档漂移守卫）→
 取件器的 Python 单测 → AOT 冒烟（真 AOT 产物 + **跨栈**检查）→
-取件器自己的测试脚本（带一条真 HTTP 服务端的冒烟）。
+取件器自己的测试脚本（带一条真 HTTP 服务端的冒烟）→
+前端类型检查（应用 + e2e）→ 前端单测（vitest）→ 端到端用例（Playwright）。
 **任一步失败即失败**，退出码非 0。
+
+> 前端那三步要 `web/node_modules` 在位（`cd web && npm ci`）；
+> 缺 node/npm 或缺依赖时脚本**直接失败**，不静默跳过 —— 跳过等于没跑。
 
 ## 运行
 
