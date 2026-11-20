@@ -100,9 +100,15 @@ function onKeydown(event: KeyboardEvent): void {
   border: 1px solid var(--border);
 }
 
-.input:focus {
-  outline: none;
-}
+/*
+ * 焦点圈：**不要**在这里把 outline 去掉。
+ *
+ * 之前这里有一条 `.input:focus { outline: none }` —— 它把全局的
+ * `:focus-visible { outline: 2px solid var(--accent) }` 盖掉了
+ * （scoped 选择器带属性限定，权重比全局那条高）：
+ * 键盘 Tab 到输入框上时**一点焦点痕迹都没有**。
+ * 输入框自己有边框，焦点圈加在边框外面，两层不打架。
+ */
 
 .send {
   flex: none;
