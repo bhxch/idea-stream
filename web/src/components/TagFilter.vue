@@ -114,6 +114,8 @@ function toggleMode(): void {
 .tag-filter__count {
   color: var(--muted);
   font-size: 12px;
+  /* 等宽数字：标签下拉里一列条数，要能上下对齐着比。 */
+  font-variant-numeric: tabular-nums;
 }
 
 .tag-filter__empty {

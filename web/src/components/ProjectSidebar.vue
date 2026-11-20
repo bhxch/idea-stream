@@ -223,6 +223,8 @@ function toggleMode(): void {
 .project-sidebar__count {
   color: var(--muted);
   font-size: 12px;
+  /* 等宽数字：条数是用户判断「这个项目里有什么」的依据，要能上下对齐着比。 */
+  font-variant-numeric: tabular-nums;
 }
 
 .project-sidebar__item.is-active .project-sidebar__count,

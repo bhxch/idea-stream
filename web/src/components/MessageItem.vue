@@ -808,6 +808,9 @@ function confirmDelete(): void {
   border-radius: 999px;
   background: var(--chip-bg);
   font-size: 10.5px;
+  /* 等宽数字：一页上 1、2、…、101 排下来，位数不同的话字宽不同，
+     看着是「跳」的（编号是位置，用户会拿它跟别的编号比）。 */
+  font-variant-numeric: tabular-nums;
 }
 
 .meta__time {
