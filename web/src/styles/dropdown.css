@@ -21,6 +21,9 @@
   gap: 4px;
   max-height: 260px;
   overflow-y: auto;
+  /* 面板里的滚动**关在面板里**：滑到头不要再把后面的页面一起带着滚
+     （滚穿「边界」的那一下叫滚动串联）。 */
+  overscroll-behavior: contain;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 8px;

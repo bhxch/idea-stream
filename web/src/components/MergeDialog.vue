@@ -94,6 +94,8 @@ watch(
   width: min(640px, 100%);
   max-height: 90vh;
   overflow-y: auto;
+  /* 对话框里的滚动**关在对话框里**：滑到头不要再把后面的页面一起带着滚。 */
+  overscroll-behavior: contain;
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 10px;
