@@ -5,6 +5,13 @@
  * 不提供手动切换开关 —— 一次跟随，两端一致。
  */
 :root {
+  /*
+   * color-scheme：让浏览器知道这个页面是亮色的。
+   *
+   * 不写的话，原生控件（滚动条、表单控件的默认外观、焦点圈的系统色）
+   * 永远按亮色画 —— 暗色主题下那条亮白的滚动条特别扎眼。
+   */
+  color-scheme: light;
   --bg: #f6f6f8;
   --fg: #1c1c1e;
   --muted: #6b6b73;
@@ -19,6 +26,8 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    /* 暗色主题下原生控件也走暗色（滚动条、焦点圈的系统色…）。 */
+    color-scheme: dark;
     --bg: #15151a;
     --fg: #ececf1;
     --muted: #9a9aa5;

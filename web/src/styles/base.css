@@ -58,6 +58,20 @@ button:hover {
   border-color: var(--accent);
 }
 
+/*
+ * 触摸目标：去掉「双击缩放」带来的那 300ms 延迟。
+ *
+ * manipulation = 保留滚动与双指缩放，只关掉双击缩放 ——
+ * 于是点按钮是**立刻**有反应的，不会让人觉得「点了没反应」。
+ *
+ * 只给按钮与链接：文本框的双击缩放（放大看的字）是有用的，别动。
+ */
+button,
+a[href],
+[role='button'] {
+  touch-action: manipulation;
+}
+
 input,
 textarea,
 select {
