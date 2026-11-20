@@ -572,6 +572,7 @@ function confirmDelete(): void {
       v-model="draft"
       class="editor"
       rows="4"
+      aria-label="编辑正文"
       :disabled="busy"
       @blur="saveEdit"
       @keydown="onEditorKeydown"

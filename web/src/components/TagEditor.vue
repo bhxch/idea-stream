@@ -133,6 +133,7 @@ function onKeydown(event: KeyboardEvent): void {
         v-model="draft"
         class="tag-editor__input"
         type="text"
+        aria-label="加标签"
         placeholder="加标签…"
         @keydown="onKeydown"
       />

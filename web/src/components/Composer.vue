@@ -60,6 +60,7 @@ function onKeydown(event: KeyboardEvent): void {
       v-model="text"
       class="input"
       rows="3"
+      aria-label="记一条想法"
       placeholder="记一条想法…（Enter 提交，Shift+Enter 换行）"
       @keydown="onKeydown"
     ></textarea>
