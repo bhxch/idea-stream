@@ -28,7 +28,7 @@
 - **排序语义不变**：`GET /api/ideas` 恒为 `updated_at ASC, id ASC`（最老在顶）。分页是「往回翻历史」，返回的数组仍是这个顺序。
 - **⚠️ `title` 这个词在本仓库被严重超载，别误伤**（规格 §4.5）：`ApiProblem.title` / `ProblemDetails.title`、HTML 的 `title=` 属性、CSS 类名里带 "title" 的（`.merge-dialog__title`、`.bar__title` 等）、`UnicodeCategory.TitlecaseLetter`、webhook 模板里的 `{{title}}`（**消息**标题，不是想法标题）—— **全都不要动**。只有 `{{idea.title}}` 与想法的 `title` 字段要删。
 - **主题跟随系统**（没有手动切换开关）；只用现有主题变量（`--border` / `--accent` / `--chip-bg` / `--muted` / `--panel` / `--danger` / `--chip-bg` 等，见 `web/src/styles/theme.css`），**不引入新颜色**。
-- **断点**：侧栏 `1024px`（沿用现状）、两列 `768px`、触摸目标统一 `767px`（把现有的 `640px` 一并改掉，规格 §D9 / §6.10）。
+- **断点**：侧栏 `1024px`（沿用现状）、过滤栏**形态**切换 `1023px`（窄屏 = 没有侧栏的那一档，状态三态收成下拉）、两列 `768px`、触摸目标统一 `767px`（把现有的 `640px` 一并改掉，规格 §D9 / §6.10）。**三套断点并存是规格本身的样子**（§D7 与 §D9/§6.10）：形态跟着「有没有侧栏」走，两列与触摸目标跟着「屏幕多窄」走。
 - **注释与文档用中文**，与仓库现有风格一致；每个公开类型/方法都要有 XML 文档注释 / TSDoc 说明「为什么」。
 - **E2E 一轮 = 一个端口 + 一个库**，端口从 5300 起（见 `web/e2e/README.md`）。用例必须 `import { test, expect } from './fixtures'`（从 `@playwright/test` 导入则每例的自动复位不生效）。
 - **因结构变化而改写的既有断言，要逐条说明理由**（规格 §9 回归第 1 条）：理由写在**该 task 的提交说明**里 —— 「结构变了，断言没写错」。
@@ -1013,7 +1013,10 @@
   - 合并端点（`:103`）：`ids`（数组）、\`content\`、\`title\` → `ids`（数组）、\`content\`。
   - 逐端点字段表（`:183`/`:185`/`:199`）：**三行 `title` 行整个删掉**（`POST /api/ideas`、`PATCH /api/ideas/{id}`、`POST /api/ideas/merge` 各一行）。
   - `matches.field` 的取值列表（`:232`）：`"title" / "content" / "tags" / "project"` → `"content" / "tags" / "project"`。
-  - ⚠️ **两处散文里也提到标题**（守卫扫的是全文，光改表格不够）：
+  - ⚠️ **两处散文里也提到标题**（这两处是**准确性**问题，**不是守卫问题** ——
+    守卫只扫 ASCII 的 `` `title` `` / `"title"` / `{{idea.title}}` 三种形态，
+    中文「标题」它扫不到，也**不应该**扫：手册里必须留着「老客户端仍然发这个字段会被静默忽略」
+    那两句中文说明，扫中文会把自己人判成违规）：
     - `:60`「**按相关度排**：标题命中比正文命中更相关。」→「**按相关度排**：正文与标签命中**同权**，项目名命中的权重低一档（得分还受词频与文档长度影响，不是同权就一定同分）。」
       ⚠️ **别写「正文比标签更相关」**：真实权重是 `content=5.0 / tags=5.0 / project=3.0`
       （`SearchRepository.cs` 的 `IdeaFtsWeights`，列序 content/tags/project）——
@@ -1657,6 +1660,8 @@
   - 面板：`v-if="open"` 的一块绝对定位的层，**第一项是「全部项目」**，其余是 `projects`（顺序照 `projects` 数组 —— 后端已经按排序方式排好了，前端不重排）；
   - 每一项是一个 `<button>`，点了就 `emit('select', id)` 并收起面板；
   - 面板的 CSS 照 `TagFilter.vue` 的 `.tag-filter__panel` 抄（`position: absolute`、`min-width: 180px`、`border: 1px solid var(--border)` 等），**只用现有主题变量**；
+    ⚠️ **实现时把面板的公共外观收到了 `web/src/styles/dropdown.css`**（Task 13 引入）：面板 `max-width: calc(100vw - 24px)`、面板项 `display: block` + `overflow-wrap: anywhere`（长项目名要能换行，不能顶出面板），
+    四个下拉组件（TagFilter / ProjectDropdown / MoreMenu / 新的状态下拉）都挂这个共享 class —— 抄一份改一处、漏一处就是「面板的样子对不上」；
   - ⚠️ **触发器要满足触摸目标**（规格 §6.10 末句：「新加的下拉触发器、发送按钮同样适用」）：
     ```css
     @media (max-width: 767px) {
@@ -2387,6 +2392,17 @@
 
 - [ ] **Step 1: 写失败的测试**
 
+  在 `web/src/composables/useDropdown.spec.ts` 里追加（这个文件在 Files 清单里，
+  **但收敛动作本身没有测试就是白收敛** —— 四个组件共用同一份「点外面收起 / Esc 收起」，
+  逻辑回归了要有一个地方先红）：
+
+  | 测试 | 断言 |
+  |---|---|
+  | `it_exposes_the_root_element_and_the_open_flag` | `useDropdown(root)` 返回 `{ open, root }`；`open` 初始为 false |
+  | `clicking_outside_closes_the_panel` | 点根节点外面 → `open` 变 false |
+  | `pressing_escape_closes_the_panel` | 按 Esc → `open` 变 false |
+  | `clicking_inside_keeps_the_panel_open` | 点根节点里面 → `open` 仍是 true |
+
   在 `web/src/components/FilterBar.spec.ts` 里追加：
 
   | 测试 | 断言 |
@@ -2404,7 +2420,7 @@
 
 - [ ] **Step 2: 跑测试确认它失败**
 
-  Run: `cd web && npm test -- src/components/FilterBar.spec.ts src/pages/HomePage.spec.ts`
+  Run: `cd web && npm test -- src/composables/useDropdown.spec.ts src/components/FilterBar.spec.ts src/pages/HomePage.spec.ts`
   Expected: 失败（状态下拉与 `focusSearch` 还不存在）。
 
 - [ ] **Step 3: 改 `FilterBar.vue`（窄屏紧凑形态）**
