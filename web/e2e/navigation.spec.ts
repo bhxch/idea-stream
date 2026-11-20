@@ -220,8 +220,8 @@ for (const item of [
 test('主页面上的「新建项目」入口能到项目管理页', async ({ page }) => {
   await openApp(page, '/');
 
-  // 侧栏的「＋」按钮（title="新建项目"；可访问名是符号本身）。
-  await page.locator('nav[aria-label="项目"]').getByRole('button', { name: '＋' }).click();
+  // 侧栏的「＋」按钮（可见的是符号，无障碍名是 aria-label="新建项目"）。
+  await page.locator('nav[aria-label="项目"]').getByRole('button', { name: '新建项目' }).click();
 
   await expect(page).toHaveURL(/\/projects$/);
   await expect(page.getByRole('heading', { name: '项目管理', exact: true })).toBeVisible();
@@ -301,7 +301,7 @@ test('浏览器后退回到主页面：内容还是想法列表', async ({ page 
   await openApp(page, '/');
   await expect(page.getByRole('heading', { name: '想法', exact: true })).toBeVisible();
 
-  await page.locator('nav[aria-label="项目"]').getByRole('button', { name: '＋' }).click();
+  await page.locator('nav[aria-label="项目"]').getByRole('button', { name: '新建项目' }).click();
   await expect(page).toHaveURL(/\/projects$/);
 
   await page.goBack();

@@ -528,6 +528,9 @@ export function freshDatabase(): void {
  * ⚠️ 不悬停直接点会**卡在 Playwright 的命中检查上**（元素收不到指针事件），
  * 表现是用例超时 —— 不是应用坏了。
  *
+ * ⚠️ 悬停的是**条目**，不是控件本身：控件自己 `pointer-events: none`，
+ * 直接 hover 它同样会卡在命中检查上。
+ *
  * @param item 条目容器（`article[data-idea-id]`）。
  * @param name 控件的无障碍名（「🏷 标签」/「🗑 删除」）。
  */
@@ -540,6 +543,30 @@ export async function clickHoverOnly(item: Locator, name: string): Promise<void>
     })
     .toBe('auto');
   await button.click();
+}
+
+/**
+ * 勾上 / 取消条目上的勾选框。
+ *
+ * 勾选框在桌面上也是「悬停才显形」的控件（同 {@link clickHoverOnly}）：
+ * 用户得先把鼠标移到那条卡片上，它才点得到。
+ *
+ * @param item 条目容器（`article[data-idea-id]`）。
+ * @param checked true = 勾上，false = 取消。
+ */
+export async function setSelected(item: Locator, checked: boolean): Promise<void> {
+  await item.hover();
+  const checkbox = item.getByRole('checkbox');
+  await expect
+    .poll(async () => checkbox.evaluate((element) => getComputedStyle(element).pointerEvents), {
+      message: '勾选框没有因为悬停而恢复成可点',
+    })
+    .toBe('auto');
+  if (checked) {
+    await checkbox.check();
+  } else {
+    await checkbox.uncheck();
+  }
 }
 
 /** e2e 目录（夹具文件所在目录）。 */

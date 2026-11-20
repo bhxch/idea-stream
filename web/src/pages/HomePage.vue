@@ -1296,7 +1296,12 @@ onBeforeUnmount(() => {
           它冒出来时屏幕阅读器未必会念 —— 活区一直挂在 DOM 里，
           内容一变就会被念出来（异步更新要有 aria-live）。
         -->
-        <p class="sr-only" role="status" aria-live="polite">
+        <!--
+          活区只写 aria-live，不写 role="status"：
+          role="status" 在这个应用里是「全局提示条 ToastHost」的钩子
+          （e2e 与 README 都按它定位），这里再给一个会让那个定位命中两处。
+        -->
+        <p class="sr-only" aria-live="polite">
           <template v-if="pendingCount > 0">有 {{ pendingCount }} 条新内容</template>
         </p>
         <button

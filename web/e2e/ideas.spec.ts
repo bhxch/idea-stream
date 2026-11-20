@@ -13,7 +13,7 @@
  *   （data-idea-id、aria-label="选择 …" 等）——想法条目上还没有 data-testid
  *   （项目侧栏与窄屏的项目下拉上有了，见 projects.spec.ts）。
  */
-import { test, expect, clickHoverOnly } from './fixtures';
+import { test, expect, clickHoverOnly, setSelected } from './fixtures';
 import type { Locator, Page } from '@playwright/test';
 
 // 复位由公共夹具的自动夹具统一负责（见 web/e2e/fixtures.ts 的 resetBeforeEach）：
@@ -291,27 +291,28 @@ test('删除想法：条目从列表消失，并进了回收站', async ({ page,
 // ── 多选与批量操作 ───────────────────────────────────────────────────────
 
 test('多选：勾选后批量条出现且条数正确', async ({ page, seed }) => {
-  await seed.idea('甲');
+  const first = await seed.idea('甲');
   await seed.idea('乙');
-  await seed.idea('丙');
+  const third = await seed.idea('丙');
   await page.goto('/');
 
   // 一条都没勾：没有批量条。
   await expect(batchBar(page)).toHaveCount(0);
 
-  await page.getByLabel('选择 甲').check();
+  // 勾选框在桌面上是「悬停才显形」的控件：先悬停到条目上再点。
+  await setSelected(ideaItem(page, first.id), true);
   await expect(batchBar(page)).toBeVisible();
   await expect(batchBar(page).getByText('已选 1 条')).toBeVisible();
 
-  await page.getByLabel('选择 丙').check();
+  await setSelected(ideaItem(page, third.id), true);
   await expect(batchBar(page).getByText('已选 2 条')).toBeVisible();
 
   // 取消一个：条数跟着减。
-  await page.getByLabel('选择 甲').uncheck();
+  await setSelected(ideaItem(page, first.id), false);
   await expect(batchBar(page).getByText('已选 1 条')).toBeVisible();
 
   // 全取消：批量条消失。
-  await page.getByLabel('选择 丙').uncheck();
+  await setSelected(ideaItem(page, third.id), false);
   await expect(batchBar(page)).toHaveCount(0);
 });
 
@@ -321,8 +322,8 @@ test('批量完成：勾选的几条都被标记完成', async ({ page, api, see
   const untouched = await seed.idea('没勾的丙');
   await page.goto('/');
 
-  await page.getByLabel('选择 批量甲').check();
-  await page.getByLabel('选择 批量乙').check();
+  await setSelected(ideaItem(page, first.id), true);
+  await setSelected(ideaItem(page, second.id), true);
   await expect(batchBar(page).getByText('已选 2 条')).toBeVisible();
 
   await batchBar(page).getByRole('button', { name: '标记完成', exact: true }).click();
@@ -350,8 +351,8 @@ test('批量加标签：勾选的几条都加上标签', async ({ page, api, see
   const second = await seed.idea('批量标签乙');
   await page.goto('/');
 
-  await page.getByLabel('选择 批量标签甲').check();
-  await page.getByLabel('选择 批量标签乙').check();
+  await setSelected(ideaItem(page, first.id), true);
+  await setSelected(ideaItem(page, second.id), true);
   await expect(batchBar(page).getByText('已选 2 条')).toBeVisible();
 
   await batchBar(page).getByRole('button', { name: '加标签', exact: true }).click();
@@ -381,8 +382,8 @@ test('批量删除：勾选的几条都从列表消失并进回收站', async ({
   await seed.idea('留下的丙');
   await page.goto('/');
 
-  await page.getByLabel('选择 批量删除甲').check();
-  await page.getByLabel('选择 批量删除乙').check();
+  await setSelected(ideaItem(page, first.id), true);
+  await setSelected(ideaItem(page, second.id), true);
   await expect(batchBar(page).getByText('已选 2 条')).toBeVisible();
 
   await batchBar(page).getByRole('button', { name: '删除', exact: true }).click();
@@ -411,8 +412,8 @@ test('合并：选多条合并，结果内容正确且原条目消失', async ({
   const second = await seed.idea('想法乙');
   await page.goto('/');
 
-  await page.getByLabel('选择 想法甲').check();
-  await page.getByLabel('选择 想法乙').check();
+  await setSelected(ideaItem(page, first.id), true);
+  await setSelected(ideaItem(page, second.id), true);
   await expect(batchBar(page).getByText('已选 2 条')).toBeVisible();
 
   await batchBar(page).getByRole('button', { name: '合并', exact: true }).click();
@@ -460,12 +461,12 @@ test('合并：选多条合并，结果内容正确且原条目消失', async ({
 });
 
 test('合并：改过对话框里的正文，合并结果用改后的内容', async ({ page, api, seed }) => {
-  await seed.idea('想法甲');
-  await seed.idea('想法乙');
+  const first = await seed.idea('想法甲');
+  const second = await seed.idea('想法乙');
   await page.goto('/');
 
-  await page.getByLabel('选择 想法甲').check();
-  await page.getByLabel('选择 想法乙').check();
+  await setSelected(ideaItem(page, first.id), true);
+  await setSelected(ideaItem(page, second.id), true);
   await batchBar(page).getByRole('button', { name: '合并', exact: true }).click();
 
   const dialog = page.getByRole('dialog', { name: '合并想法' });

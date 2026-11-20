@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { Locator, Page } from '@playwright/test';
 
-import { test, expect, type IdeaApi, type Seed } from './fixtures';
+import { test, expect, setSelected, type IdeaApi, type Seed } from './fixtures';
 
 /* ------------------------------------------------------------------ *
  * 视口
@@ -655,7 +655,8 @@ async function checkFixedElements(page: Page, label: string): Promise<void> {
   await expect(composer, `${label}：底部输入框不在视口里`).toBeVisible();
   await expectFullyInsideViewport(composer, '底部输入框', label);
 
-  await page.getByRole('checkbox', { name: /选择/ }).first().check();
+  // 勾选框在桌面上是「悬停才显形」的控件：先悬停到条目上再点。
+  await setSelected(page.locator('article').first(), true);
 
   const batchBar = page.getByRole('group', { name: '批量操作' });
   await expect(batchBar).toBeVisible();
