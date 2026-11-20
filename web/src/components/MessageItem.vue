@@ -684,6 +684,16 @@ function confirmDelete(): void {
   border-radius: 10px;
   background: var(--panel);
   box-shadow: var(--shadow);
+  /*
+   * 焦点滚动时留出过滤行的高度。
+   *
+   * 宽屏上过滤行是 sticky 的（钉在列表顶上，不随内容滚走）——
+   * 不留这一段的话，Tab 到正好被它盖住的那张卡片时，浏览器会把它滚到
+   * 视口顶上，那儿正压在过滤行底下：焦点到了，用户却看不见焦点在哪。
+   * 56px ≈ 过滤行在宽屏上的高度（含 padding），窄屏上过滤行不钉着，
+   * 多留的这点空隙无害。
+   */
+  scroll-margin-top: 56px;
 }
 
 .idea--selected {
