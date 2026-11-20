@@ -104,7 +104,17 @@ function toggleMode(): void {
       >
         {{ mode === 'recent' ? '最近活动' : '手动排序' }}
       </button>
-      <button class="project-sidebar__new" type="button" title="新建项目" @click="emit('new-project')">
+      <!--
+        「＋」是个符号按钮：光有 title 不够 —— 屏幕阅读器读出来是「全角加号」，
+        不是「新建项目」。名字给在 aria-label 上（title 留着，鼠标悬停仍给提示）。
+      -->
+      <button
+        class="project-sidebar__new"
+        type="button"
+        aria-label="新建项目"
+        title="新建项目"
+        @click="emit('new-project')"
+      >
         ＋
       </button>
     </div>

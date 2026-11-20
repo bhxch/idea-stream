@@ -5,7 +5,7 @@ import WebhookManager from '../components/WebhookManager.vue';
 
 <template>
   <!-- 窄容器：这是表单页，表单一行拉到 1800px 没法看（规格 §D10）。 -->
-  <main class="page page--narrow">
+  <main id="main-content" tabindex="-1" class="page page--narrow">
     <PageNav />
 
     <h1>Webhook</h1>

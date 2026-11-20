@@ -114,7 +114,7 @@ onMounted(() => {
 
 <template>
   <!-- 列表页：不套窄容器 —— 列表铺满到右边缘（规格 §D10）。 -->
-  <main class="page">
+  <main id="main-content" tabindex="-1" class="page">
     <PageNav />
 
     <h1>回收站</h1>

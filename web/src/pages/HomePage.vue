@@ -1200,7 +1200,7 @@ onBeforeUnmount(() => {
     两版布局：同一份项目数据渲染两次（宽屏侧栏、窄屏顶栏的项目下拉），
     互斥显示由下面的媒体查询决定（断点 1024px）。
   -->
-  <main class="home">
+  <main id="main-content" tabindex="-1" class="home">
     <aside class="home__sidebar">
       <ProjectSidebar
         :projects="projects"
@@ -1291,7 +1291,14 @@ onBeforeUnmount(() => {
 
         <!--
           用户往上翻看时来了新内容：不能抢滚动，但要告诉他有几条新的。
+
+          下面那个活区（.sr-only）负责**报**这件事：按钮是条件渲染的，
+          它冒出来时屏幕阅读器未必会念 —— 活区一直挂在 DOM 里，
+          内容一变就会被念出来（异步更新要有 aria-live）。
         -->
+        <p class="sr-only" role="status" aria-live="polite">
+          <template v-if="pendingCount > 0">有 {{ pendingCount }} 条新内容</template>
+        </p>
         <button
           v-if="pendingCount > 0"
           class="new-content"
