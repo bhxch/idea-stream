@@ -29,7 +29,7 @@
 | Use `<button>` for actions and `<a>` for navigation | 📌 | `MoreMenu.vue` 用 button + `router.push`（📌） |
 | Images require `alt` | — | 应用里没有图片 |
 | Decorative icons require `aria-hidden="true"` | ✅ | `ProjectDropdown.vue:55`、`FilterBar.vue:132` 的 ▾、`HomePage.vue:1271` 的哨兵都标了 |
-| Async updates require `aria-live="polite"` | 🔧 | 「↓ 有 N 条新内容」那个按钮是条件渲染的，冒出来时读屏未必会念 → 已补一个常驻的 `role="status"` 活区。`ToastHost.vue:40` 本来就有 |
+| Async updates require `aria-live="polite"` | 🔧 | 「↓ 有 N 条新内容」那个按钮是条件渲染的，冒出来时读屏未必会念 → 已补一个常驻的 `aria-live="polite"` 活区（**不写 `role="status"`**：那个 role 在本应用里是「全局提示条 ToastHost」的钩子，e2e 与 README 都按它定位）。`ToastHost.vue:40` 本来就有 |
 | Prefer semantic HTML over ARIA | ✅ | 地标用 `nav` / `main` / `aside` / `header`，ARIA 只在补语义时用 |
 | Maintain hierarchical headings and provide a skip link | 🔧 | 五个页面各有 `h1`、侧栏 `nav` 有 `aria-label`；但**没有跳到主内容的链接** → 已补（`App.vue` 的 `.skip-link` + 五个页面 `<main>` 的 `id="main-content"` / `tabindex="-1"`） |
 | Heading anchors require `scroll-margin-top` | — | 没有标题锚点 |
@@ -236,7 +236,7 @@ web/src/components/MergeDialog.vue:90 - 对话框里的滚动没关在容器里 
 
 ## web/src/pages/HomePage.vue
 
-web/src/pages/HomePage.vue:1299 - 「有 N 条新内容」按钮条件渲染，读屏未必念 → 已补常驻的 role="status" 活区
+web/src/pages/HomePage.vue:1299 - 「有 N 条新内容」按钮条件渲染，读屏未必念 → 已补常驻的 aria-live 活区
 web/src/pages/HomePage.vue:1203 - 没有跳到主内容的链接 → 已补 skip-link 与 id="main-content"
 
 ## web/src/styles/base.css
@@ -274,6 +274,7 @@ web/index.html:10 - 没有 theme-color → 已按亮/暗两档补上
 | `f7dbda4` | 拖动项目时别把文字选出来 |
 | `42bd18b` | 亮色的强调色调深一点，正文对比度够 4.5:1 |
 | `cf32703` | 焦点滚到列表顶部时别落在钉着的过滤行底下 |
+| `b1b3546` | 连带：勾选框与「＋」的选择器跟着可见性规则与无障碍名走 |
 
 ---
 
