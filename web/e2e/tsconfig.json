@@ -1,0 +1,19 @@
+{
+  // e2e 的类型检查配置。
+  //
+  // 为什么要单独一份：**应用代码是浏览器里的**，它的 tsconfig 的
+  // `types` 只有 `vite/client` —— 没有 node 的全局（process、Buffer…）。
+  // 把 e2e 塞进那一份，就得给它加 `node`，于是**应用代码也拿到了 node 全局**：
+  // 「在浏览器里用了 node API」这类错就悄悄过了检查。
+  //
+  // 分开之后：应用那边一个字节不动（还是纯浏览器），e2e 这边有 node 的类型
+  // （它确实要起进程、读文件、发 HTTP）。
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // e2e 跑在 node 里：process、node:fs、node:path 这些都要有类型。
+    "types": ["node"],
+    "noEmit": true
+  },
+  // e2e 目录下的全部 TS，加上 playwright 的配置（它也是 TS，也用 node API）。
+  "include": ["**/*.ts", "../playwright.config.ts"]
+}
