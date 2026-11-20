@@ -1128,12 +1128,26 @@ test.describe('排版与响应式', () => {
     expect(gap, `编号与时间之间隔了 ${gap}px（规格 §D3：紧挨着）`).toBeLessThanOrEqual(20);
   });
 
-  test('主页顶栏的「⋯」能直接进回收站', async ({ page, seed }) => {
+  test('主页顶栏的「⋯」能一步进回收站、Webhook 与项目管理', async ({ page, seed }) => {
     await openHome(page, seed, WIDE_VIEWPORT);
 
-    await page.getByRole('button', { name: '更多' }).click();
-    await page.getByRole('button', { name: '回收站' }).click();
-    await expect(page).toHaveURL(/\/trash$/);
+    // 三个入口各自走一遍（规格 §9：「⋯ 能直接进 回收站 / Webhook（一步）」）。
+    // ⚠️ 窄屏下顶栏的项目 Tab 条已经删了，「⋯ → 回收站 / Webhook」是**唯一**入口 ——
+    // 所以这条守卫不能只测回收站那一个。
+    const entries: Array<{ name: string; url: RegExp }> = [
+      { name: '回收站', url: /\/trash$/ },
+      { name: 'Webhook', url: /\/webhooks$/ },
+      { name: '项目管理', url: /\/projects$/ },
+    ];
+
+    for (const entry of entries) {
+      await page.goto('/');
+      await expect(page.getByRole('heading', { name: '想法', exact: true })).toBeVisible();
+
+      await page.getByRole('button', { name: '更多' }).click();
+      await page.getByRole('button', { name: entry.name }).click();
+      await expect(page, `点「${entry.name}」没跳到对应的页面`).toHaveURL(entry.url);
+    }
   });
 
   test('窄屏点 🔍 滚回列表顶部并聚焦搜索框', async ({ page, seed }) => {
@@ -1260,6 +1274,72 @@ test.describe('排版与响应式', () => {
     await submitIdea(page, '新记的第二条想法');
     await expect(lastRow.locator('.cell--left .idea .meta__num')).toHaveText('15');
     await expect(lastRow.locator('.cell--right .idea .meta__num')).toHaveText('16');
+  });
+
+  test('宽屏：往回翻加载更早的一页，已有卡片不换边', async ({ page, api }) => {
+    await page.setViewportSize(WIDE_VIEWPORT);
+
+    /*
+     * 造 203 条 —— 这个数是算出来的，不是拍脑袋：
+     *
+     * - 首屏是**满页**：101 条（前端多要一条探针，用来判断还有没有更旧的）；
+     * - 往回翻那一页也正好是**满页**：101 条 → 丢掉最老的那条探针 → 净增 100 条
+     *   （**偶数**）→ 已有卡片的奇偶不变 → 不换边
+     *   （规格 §6.4：「到底那一页仍是奇数 → 会换边一次」是规格明确接受的取舍，
+     *   这里要守的是**满页**那一次的不换边）；
+     * - 203 = 101 + 101 + 1：万一再多翻一页（第二页也满），净增的仍是偶数条，
+     *   断言不会因为「多翻了一次」而误报。
+     *
+     * ⚠️ 满页这一档是关键：不满页时（净增 100 条）探针那一步根本不执行，
+     * 「丢掉的是最老的那条、不是最新的那条」这条就断了牙。
+     */
+    const ids: string[] = [];
+    for (let index = 1; index <= 203; index += 1) {
+      const idea = await api.createIdea({ content: `第 ${index} 条想法` });
+      ids.push(idea.id);
+    }
+
+    // 服务端那两页的口径（顺便钉住「往回翻拿的是更旧的那一页」）。
+    const newestPage = await api.listIdeas({ limit: 101, offset: 0 });
+    const olderPage = await api.listIdeas({ limit: 101, offset: 101 });
+    expect(newestPage, '首屏不是满页（101 条）').toHaveLength(101);
+    expect(olderPage, '往回翻那一页不是满页（101 条）').toHaveLength(101);
+    expect(olderPage[0].id, '往回翻拿到的不是更旧的那一页').toBe(ids[1]);
+
+    await page.goto('/');
+    await expect(page.locator('article')).toHaveCount(101);
+
+    // 盯着一条**在右格**里的卡片（首屏里的第 2 条 = 位置序号 2）。
+    const watchedId = ids[103];
+    const watched = page.locator(`article[data-idea-id="${watchedId}"]`);
+    const before = await watched.boundingBox();
+    expect(before, '量不到那条卡片的位置').not.toBeNull();
+    await expect(
+      page.locator(`.cell--right article[data-idea-id="${watchedId}"]`),
+      '那条卡片一开始就不在右格里',
+    ).toHaveCount(1);
+
+    // 往回翻：滚到顶部 → 哨兵进入视野 → 加载更早的一页并拼到**前面**。
+    await page.locator('.home__scroll').evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    // 净增 100 条（满页 101 丢掉探针）：101 → 201。
+    await expect(page.locator('article'), '往回翻之后列表没有变长').toHaveCount(201);
+
+    // 已有卡片还在原来那一格：x 坐标没变。
+    //
+    // ⚠️ 比的是 **x**（哪一格），不是编号：编号是「位置」，往回翻之后
+    // 位置变了（它往后挪了 100 个位置），编号当然跟着变（规格 §D4）。
+    const after = await watched.boundingBox();
+    expect(after, '往回翻之后量不到那条卡片的位置').not.toBeNull();
+    expect(
+      Math.abs(after!.x - before!.x),
+      `往回翻之后那条卡片换边了（x ${before!.x} → ${after!.x}）`,
+    ).toBeLessThanOrEqual(1);
+    await expect(
+      page.locator(`.cell--right article[data-idea-id="${watchedId}"]`),
+      '往回翻之后那条卡片不在右格里了',
+    ).toHaveCount(1);
   });
 
   test('宽屏：编辑一条靠前的想法，它跳到最下面，其下方卡片左右互换', async ({ page, seed }) => {
