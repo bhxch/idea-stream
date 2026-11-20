@@ -81,6 +81,25 @@ const HOME_IDEA_COUNT = 14;
 const MIN_TAP_TARGET = 32;
 
 /**
+ * 那条超长正文的种子文本。
+ *
+ * 只写一份：种子用它造数据，编辑态的守卫要逐字核对「框里是完整正文」，
+ * 两边必须是同一段字。
+ */
+const LONG_BODY = 'Supercalifragilisticexpialidocious'.repeat(10);
+
+/** 那条普通正文的种子文本（同上，守卫要逐字核对）。 */
+const PLAIN_BODY = '排版探测想法：第一行\n第二行正文，用来测试正文换行。';
+
+/**
+ * 主页那次造的数据里，我们盯着的那两条的 id。
+ *
+ * 守卫用它指认「哪一条」—— 不用位置下标（那是跟造数顺序硬绑定的，
+ * 将来插一条种子就会量到另一条想法）。
+ */
+let homeSeeded: { plain: string; long: string } | null = null;
+
+/**
  * 主页的造数据。
  *
  * 每条新用例自己造（用例之间互不依赖，夹具在 beforeEach 里复位），
@@ -88,16 +107,22 @@ const MIN_TAP_TARGET = 32;
  */
 async function seedHomeIdeas(seed: Seed): Promise<void> {
   await seed.project('布局测试项目');
-  await seed.idea('排版探测想法：第一行\n第二行正文，用来测试正文换行。');
+  const plain = await seed.idea(PLAIN_BODY);
   // 一条特别长的、里面没有空格的正文：窄屏上最容易把容器撑破。
-  await seed.idea(
-    'SupercalifragilisticexpialidociousSupercalifragilisticexpialidociousSupercalifragilisticexpialidocious',
-  );
+  //
+  // 长度是算出来的，不是拍脑袋：编辑框 4 行高（clientHeight 108），
+  // 而 Chromium 的 textarea 默认 `overflow-wrap: break-word` ——
+  // 102 个字符断成 3 行就装下了（scrollHeight 108 == clientHeight 108），
+  // 「编辑框里也看得下全文」这条守卫根本咬不动它（恒真）。
+  // 340 个字符断成 6 行（scrollHeight 228 > clientHeight 108）才真的撑破 ——
+  // 这时它量到的是「能滚着看全文」，不是「被裁掉了」。
+  const long = await seed.idea(LONG_BODY);
   await seed.idea('带标签的排版探测想法', { tags: ['排版探测标签'] });
   // 再补 11 条：宽屏一屏要能看到 ≥10 条（规格 §9 的验收标准）。
   for (let index = 4; index <= HOME_IDEA_COUNT; index += 1) {
     await seed.idea(`排版探测想法 ${index}：用来把一屏填满的普通正文。`);
   }
+  homeSeeded = { plain: plain.id, long: long.id };
 }
 
 /** 在底部输入框里记一条想法。 */
@@ -115,6 +140,14 @@ interface Named {
   /** 报错时说明是哪个元素。 */
   name: string;
   locator: Locator;
+  /**
+   * 这个块里**应该有的完整文本**（可选）。
+   *
+   * 给了就多断一条：这个块里的文本必须**一字不差地是它** ——
+   * 用来钉「编辑框里是完整正文，没有被截断」这条规格承诺
+   * （§6.11：正文被 3 行截断后，全文的唯一入口就是编辑框）。
+   */
+  fullText?: string;
 }
 
 /**
@@ -124,8 +157,13 @@ interface Named {
  * 不知道要点第几条，就只会量到第一条 —— 其余条目的守卫等于没写。
  */
 interface EditingTextBlocks {
-  /** 这一条想法在列表里的序号（0 = 第一条）。 */
-  ideaIndex: number;
+  /**
+   * 这一条想法的 id。
+   *
+   * 用 id 指认，**不用位置下标**：下标跟造数顺序硬绑定 —— 将来往种子里插一条，
+   * 守卫就会安静地量到另一条想法（不会红，但语义漂移了）。
+   */
+  ideaId: string;
   /** 这一条想法编辑态下要量的块。 */
   blocks: Named[];
 }
@@ -214,28 +252,43 @@ const ROUTES: RouteSpec[] = [
     textBlocks: () => [],
     // 两条都要查（裁决 F2）：
     // - 第一条：普通正文 —— 编辑框里必须能看到全文；
-    // - 第二条：102 个不换行字符的长正文 —— 它最容易把编辑框撑破，
+    // - 第二条：340 个不换行字符的长正文 —— 它最容易把编辑框撑破，
     //   「编辑框里也看得下」这条守卫正是为它留的。
-    textBlocksWhenEditing: (page) => [
-      {
-        ideaIndex: 0,
-        blocks: [
-          {
-            name: '编辑态的正文（第一条）',
-            locator: page.locator('.idea').nth(0).locator('.editor'),
-          },
-        ],
-      },
-      {
-        ideaIndex: 1,
-        blocks: [
-          {
-            name: '编辑态的正文（超长不换行那条）',
-            locator: page.locator('.idea').nth(1).locator('.editor'),
-          },
-        ],
-      },
-    ],
+    //
+    // 用 id 指认（不是位置下标）：下标跟造数顺序硬绑定，种子一改就会漂。
+    textBlocksWhenEditing: (page) => {
+      const seeded = homeSeeded;
+      const byIndex = (index: number) => page.locator('.idea').nth(index);
+      const plain = seeded
+        ? page.locator(`article[data-idea-id="${seeded.plain}"]`)
+        : byIndex(0);
+      const long = seeded
+        ? page.locator(`article[data-idea-id="${seeded.long}"]`)
+        : byIndex(1);
+      return [
+        {
+          ideaId: seeded?.plain ?? '',
+          blocks: [
+            {
+              name: '编辑态的正文（第一条）',
+              locator: plain.locator('.editor'),
+              // 「编辑框里是完整正文」这条承诺：逐字核对。
+              fullText: PLAIN_BODY,
+            },
+          ],
+        },
+        {
+          ideaId: seeded?.long ?? '',
+          blocks: [
+            {
+              name: '编辑态的正文（超长不换行那条）',
+              locator: long.locator('.editor'),
+              fullText: LONG_BODY,
+            },
+          ],
+        },
+      ];
+    },
     extraChecks: checkFixedElements,
   },
   {
@@ -411,6 +464,11 @@ async function expectNoUnexpectedHorizontalScroll(
  *
  * 判定：scrollWidth/scrollHeight 不超出 clientWidth/clientHeight。
  * 允许 1px 的误差 —— 小数高度取整时会差一点点，不是真的裁了。
+ *
+ * ⚠️ **可滚动的容器要另判**：编辑框（`<textarea>`）的 UA 样式是
+ * `overflow: auto` —— 里面的正文比框高是**能滚着看**，不是「被裁掉」，
+ * 拿 scrollHeight > clientHeight 去判它「裁掉了」是误判。
+ * 只有**滚不到**（overflow 是 hidden/clip）才算真的裁掉。
  */
 async function expectTextNotClipped(
   page: Page,
@@ -428,22 +486,39 @@ async function expectTextNotClipped(
         clientWidth: el.clientWidth,
         scrollHeight: el.scrollHeight,
         clientHeight: el.clientHeight,
+        // 能滚（auto/scroll）= 溢出是看得见的；hidden/clip = 内容被藏起来。
+        scrollableX: /^(auto|scroll)$/.test(style.overflowX),
+        scrollableY: /^(auto|scroll)$/.test(style.overflowY),
+        // 输入框的「内容」是它的值，不是文本节点。
+        value: 'value' in el ? String(el.value) : null,
       };
     });
     if (!info.measurable) {
       continue;
     }
     measured += 1;
-    expect(
-      info.scrollWidth,
-      `${label}：文本「${block.name}」被横向裁掉了` +
-        `（scrollWidth ${info.scrollWidth} > clientWidth ${info.clientWidth}）`,
-    ).toBeLessThanOrEqual(info.clientWidth + 1);
-    expect(
-      info.scrollHeight,
-      `${label}：文本「${block.name}」被纵向裁掉了` +
-        `（scrollHeight ${info.scrollHeight} > clientHeight ${info.clientHeight}）`,
-    ).toBeLessThanOrEqual(info.clientHeight + 1);
+    if (!info.scrollableX) {
+      expect(
+        info.scrollWidth,
+        `${label}：文本「${block.name}」被横向裁掉了` +
+          `（scrollWidth ${info.scrollWidth} > clientWidth ${info.clientWidth}）`,
+      ).toBeLessThanOrEqual(info.clientWidth + 1);
+    }
+    if (!info.scrollableY) {
+      expect(
+        info.scrollHeight,
+        `${label}：文本「${block.name}」被纵向裁掉了` +
+          `（scrollHeight ${info.scrollHeight} > clientHeight ${info.clientHeight}）`,
+      ).toBeLessThanOrEqual(info.clientHeight + 1);
+    }
+    // 「能看到全文」这条承诺：块里必须有那段完整文本，一字不差。
+    if (block.fullText !== undefined) {
+      expect(
+        info.value,
+        `${label}：文本「${block.name}」不是完整的那一段` +
+          `（长度 ${info.value?.length ?? 0} ≠ ${block.fullText.length}）`,
+      ).toBe(block.fullText);
+    }
   }
   // 一个都没量到 = 选择器没打中，检查是空转的 —— 那不算通过。
   expect(measured, `${label}：一个文本块都没量到（选择器可能没打中）`).toBeGreaterThan(0);
@@ -469,25 +544,25 @@ async function expectTextNotClippedWhileEditing(
   label: string,
 ): Promise<void> {
   for (const group of groups) {
-    const item = page.locator('.idea').nth(group.ideaIndex);
+    const item = page.locator(`article[data-idea-id="${group.ideaId}"]`);
     const body = item.locator('.body');
     await expect(
       body,
-      `${label}：第 ${group.ideaIndex + 1} 条想法找不到可以点开进入编辑态的正文`,
+      `${label}：想法 ${group.ideaId} 找不到可以点开进入编辑态的正文`,
     ).toBeVisible();
     await body.click();
     // 编辑框是正文那一格的替身：它出现了才算进了编辑态。
     const editor = item.locator('.editor');
     await expect(
       editor,
-      `${label}：第 ${group.ideaIndex + 1} 条想法没进编辑态（编辑框没出现）`,
+      `${label}：想法 ${group.ideaId} 没进编辑态（编辑框没出现）`,
     ).toBeVisible();
     await expectTextNotClipped(page, group.blocks, label);
     // 收起编辑态：Esc 是「放弃这次编辑」（不发请求）。
     await editor.press('Escape');
     await expect(
       item.locator('.editor'),
-      `${label}：第 ${group.ideaIndex + 1} 条想法的编辑态没收起`,
+      `${label}：想法 ${group.ideaId} 的编辑态没收起`,
     ).toHaveCount(0);
   }
 }
@@ -894,7 +969,12 @@ test.describe('排版与响应式', () => {
     await page.locator('.project-dropdown__trigger').click();
     const panel = page.locator('.project-dropdown__panel');
     await expect(panel).toBeVisible();
-    // 面板本身也不能超出视口（长名字在面板里同样要截断）。
+    // 面板本身也不能超出视口。
+    //
+    // ⚠️ 面板里**不截断**：长项目名在面板项里换行显示（面板项 `display: block`
+    // + `overflow-wrap: anywhere`，见 `web/src/styles/dropdown.css`）——
+    // 面板是那个名字唯一的全文出口，截掉就再也看不到完整的名字了。
+    // 面板**自身**不许超出视口（右边缘要在视口内），那是另一条约束。
     const panelBox = await panel.boundingBox();
     expect(panelBox, '量不到项目下拉面板的位置').not.toBeNull();
     expect(
