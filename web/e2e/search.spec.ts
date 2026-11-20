@@ -178,11 +178,20 @@ for (const viewport of [
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
 
     // 首屏一页是 101 条（前端按「一页 + 一条」要，好判断还有没有更旧的）。
-    // 造 102 条：首屏拿到最新的 101 条，再往回翻一页就能多出更旧的那一条。
+    //
+    // 造 **203** 条（首屏满页 + 往回翻那页也满页 + 一条余量），不是为了凑数：
+    // 满页才会走「丢掉探针、净增 100 条」那条路，而**净增 100 条（偶数）在两列
+    // 布局下会让内容长高 50 排** —— 视口补偿这时才有事可做，宽屏那一档才断得了
+    // 「补偿被破坏」。
+    //
+    // ⚠️ 只造 102 条时多出来的是 **1** 条：两列布局下它填进最后一排的空格里，
+    // 列表高度压根没变，补偿做与不做都看不出来 —— 宽屏那一档等于没验。
+    // （变异测试实测：关掉高度差补偿与锚点校正，窄屏那条红、宽屏那条仍绿。）
+    //
     // id 留着：光看**条数**分不出「从最新一端数」与「从最老一端数」—— 两种口径下
-    // offset=0 都返回 101 条、offset=101 都返回 1 条。要看返回的是**哪一条**。
+    // offset=0 都返回 101 条。要看返回的是**哪一条**。
     const ids: string[] = [];
-    for (let index = 1; index <= 102; index += 1) {
+    for (let index = 1; index <= 203; index += 1) {
       const idea = await api.createIdea({ content: `第 ${index} 条想法` });
       ids.push(idea.id);
     }
@@ -196,10 +205,12 @@ for (const viewport of [
     const newestPage = await api.listIdeas({ limit: 101, offset: 0 });
     const olderPage = await api.listIdeas({ limit: 101, offset: 101 });
     expect(newestPage).toHaveLength(101);
-    expect(olderPage).toHaveLength(1);
-    // 更旧的那一页就是**最老**的那一条（不是最新那一条）。
-    expect(olderPage[0].id).toBe(ids[0]);
-    // 最新那页里不能混进最老的那一条。
+    expect(olderPage).toHaveLength(101);
+    // 更旧的那一页的第一条是**这一页里最老的那一条**（服务端按时间升序返回）——
+    // 它就是那条「探针」：满页时被丢掉的那一条。
+    expect(olderPage[0].id).toBe(ids[1]);
+    // 最新那页里不能混进更老那一页的任何一条。
+    expect(newestPage.some((idea) => idea.id === ids[1])).toBe(false);
     expect(newestPage.some((idea) => idea.id === ids[0])).toBe(false);
 
     // 往回翻的请求：offset 从**最新**一端数，已经加载了多少条就是多少。
@@ -219,16 +230,21 @@ for (const viewport of [
     });
 
     await older;
-    // 更旧的那一条拼到了列表**前面**：列表变长了。
-    await expect(page.locator('article')).toHaveCount(102);
+    // 更旧的那一页拼到了列表**前面**：列表变长了。
+    //
+    // 净增 **100** 条（满页 101 丢掉最老的那条探针）：101 → 201。
+    await expect(page.locator('article')).toHaveCount(201);
     // 翻完之后，最老的那一条排在列表**第一**（列表按更新时间升序，最老的在顶）。
+    //
+    // ⚠️ 掉出去的那条是 ids[1]（更老那一页里最老的那条 = 探针），
+    // 所以窗口里最老的是 ids[2]。
     //
     // ⚠️ 这一条**断不了「更旧的一页拼在前面还是后面」**：显示层按 updated_at
     // 重排过一遍，两种拼法排出来的顺序与滚动几何**完全一样** ——
     // 实测把 `HomePage.vue` 的 prepend 改成 append，这条用例照样全绿。
     // prepend 的语义由单测钉住：`web/src/pages/HomePage.spec.ts`
     // 「更旧的一页拼到 store 数组的前面（不是后面）」—— 断言的正是**没排序**的那一份。
-    await expect(page.locator('article').first()).toHaveAttribute('data-idea-id', ids[0]);
+    await expect(page.locator('article').first()).toHaveAttribute('data-idea-id', ids[2]);
 
     // 往回翻之后**视口没有跳走**：用户原来看着的那一条还在视口顶上
     // （新加载的内容落在视口**上方**，滚动修正把视口钉回原处）。
