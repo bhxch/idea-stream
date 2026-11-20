@@ -79,8 +79,12 @@
 - ⚠️ **`idea` 表不需要迁移**：`CREATE TABLE IF NOT EXISTS` 意味着旧库保留那一列（永远是 NULL，代码不再读写）✓ 无害；新库没有这一列。**代码不得依赖这一列在不在。**
 - ⚠️ **`idea_fts` 必须重建**（这是本节最大的坑）：
   - FTS5 虚拟表的**列清单是建表时定死的**，`IF NOT EXISTS` 意味着旧库永远保持 4 列。
-  - `bm25()` 的权重个数**必须等于列数**（`SearchRepository.cs:228` 现在是 `bm25(idea_fts, 10.0, 1.0, 5.0, 3.0)`，4 个权重配 4 列）。
-  - 去掉 title 列后，若旧库不重建：3 个权重配 4 列 → SQLite 报 **"wrong number of arguments to function bm25()"** → **`/api/search` 对每个旧库用户 500**。
+  - `bm25()` 的权重是**按列序**给的（`SearchRepository.cs:228` 现在是 `bm25(idea_fts, 10.0, 1.0, 5.0, 3.0)`，4 个权重配 4 列）。
+  - ⚠️ **旧库不重建的后果不是「报错」，是「静默错位」**（实施时实测，SQLite 3.53.3 + 仓库自己的 `Microsoft.Data.Sqlite 10.0.14`）：
+    - 3 个权重配 4 列**不会**报 "wrong number of arguments" —— 实测 `bm25(5.0, 5.0, 3.0)` 在 4 列的 `idea_fts` 上正常返回。
+    - 真正的后果是：旧库的 `idea_fts` 永远留着 title 列，而新代码的 3 个权重会落到**前 3 列**上（content / tags / project）—— 权重与列错位，相关度排序悄悄变了，**没有任何报错**。
+    - 所以形状检查的价值是**提前发现这个静默错位**，不是「挡住一个 500」。
+  - ⚠️ **「测试先红」不能靠这个**：`bm25` 的权重个数不对**不会**让测试变红 —— 形状检查那条用例必须直接断言**列数**（`PRAGMA table_info(idea_fts)`），不能靠 `/api/search` 报不报错来证。
   - **现有的版本机制不够用**：`SearchIndex.CurrentVersion`（现在是 `"1"`）只触发「清空索引行 + 重新灌行」（`SearchIndexInitializer.cs:108-118` 是 `DELETE FROM idea_fts`），**改不了虚拟表的列清单**。
   - **做法**：在应用 schema 之前，用 `PRAGMA table_info(idea_fts)` 比对列名/列数；不一致就 `DROP TABLE idea_fts`，让新的 DDL 按 3 列重建。同时把 `SearchIndex.CurrentVersion` 升到 `"2"`，触发整表重建索引。具体放在 `SqliteDatabase.Initialize()` 里（它在 `SearchIndexInitializer.EnsureIndexed` 之前跑）还是做成一个独立的形状检查，实施者自定，但**效果必须等价**。
 - ⚠️ **bm25 权重要重新编号**：`bm25(idea_fts, 10.0, 1.0, 5.0, 3.0)`（标题 10 / 正文 1 / 标签 5 / 项目 3）→ `bm25(idea_fts, 1.0, 5.0, 3.0)`。
@@ -177,7 +181,7 @@
 ### 4.4 §4 的验收
 
 - [ ] `openapi/idea-v1.json` 重新生成后，全文搜不到 idea 的 title（ProblemDetails 的 `title` 与文档标题不算）。
-- [ ] **拿一个旧库升级上来**：`/api/search` 正常返回（bm25 的权重个数跟列数对得上），`/api/ideas` 正常。
+- [ ] **拿一个旧库升级上来**：`/api/search` 正常返回，`/api/ideas` 正常，且 `PRAGMA table_info(idea_fts)` 的列数是 3（不是靠「搜索没报错」来证 —— 权重错位是静默的）。
 - [ ] SSE 帧不再带 `title`，前端**不丢帧**（界面能实时更新）。
 - [ ] 搜索命中的 `matches[].field` 只剩 `content` / `tags` / `project`。
 - [ ] `SkillDocGuardTests` 与 `OpenApiDocumentTests` 全绿（手册与契约同步了）。
@@ -472,7 +476,7 @@
 ### 数据模型（§4）
 
 - [ ] `openapi/idea-v1.json` 重新生成后，全文搜不到 idea 的 title。
-- [ ] **拿一个旧库升级上来**：`/api/search` 正常返回，`/api/ideas` 正常。
+- [ ] **拿一个旧库升级上来**：`/api/search` 正常返回，`/api/ideas` 正常，且 `PRAGMA table_info(idea_fts)` 的列数是 3（权重错位是静默的，不能靠「搜索没报错」来证）。
 - [ ] SSE 帧不再带 `title`，前端**不丢帧**（界面能实时更新）。
 - [ ] 搜索命中的 `matches[].field` 只剩三种取值。
 - [ ] `SkillDocGuardTests` 与 `OpenApiDocumentTests` 全绿。
