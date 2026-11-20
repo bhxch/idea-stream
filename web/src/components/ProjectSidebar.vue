@@ -119,7 +119,7 @@ function toggleMode(): void {
       </button>
     </div>
 
-    <ul class="project-sidebar__list">
+    <ul class="project-sidebar__list" :class="{ 'is-dragging': draggingId !== null }">
       <li>
         <button
           class="project-sidebar__item"
@@ -203,6 +203,16 @@ function toggleMode(): void {
 
 .project-sidebar__row.is-dragging {
   opacity: 0.5;
+}
+
+/*
+ * 拖动中：别把文字选出来。
+ *
+ * 拖一下选一片字是浏览器的原生行为（拖动的默认动作是选中），
+ * 拖完还得把选区取消 —— 拖拽排序时这个副作用很烦。
+ */
+.project-sidebar__list.is-dragging {
+  user-select: none;
 }
 
 .project-sidebar__item {

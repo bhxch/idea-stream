@@ -276,7 +276,7 @@ onMounted(() => {
       手动排序模式下可以直接拖动项目：往下拖落到目标的后面，往上拖落到目标的前面。
     </p>
 
-    <ul class="projects__list">
+    <ul class="projects__list" :class="{ 'is-dragging': draggingId !== null }">
       <li
         v-for="project in projects"
         :key="project.id"
@@ -428,6 +428,13 @@ onMounted(() => {
 
 .projects__item.is-dragging {
   opacity: 0.5;
+}
+
+/*
+ * 拖动中：别把文字选出来（拖一下选一片字是浏览器的原生行为，很烦）。
+ */
+.projects__list.is-dragging {
+  user-select: none;
 }
 
 .projects__row {
