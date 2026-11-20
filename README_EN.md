@@ -6,7 +6,8 @@ reverse proxy (TLS and access control both live in the nginx layer).
 
 - **Backend**: .NET 10 + SQLite + Native AOT — hand-written SQL, no ORM, no reflection-based serialization, no template engine.
 - **Frontend**: Vue 3 + TypeScript + Vite, the build output drops straight into the backend's `wwwroot/`, served same-origin by the backend.
-- **Agent access**: REST API + SSE; the interface contract is the OpenAPI 3.1 document committed to the repository;
+- **Agent access**: REST API + SSE (a long-lived connection the server pushes events over one way); the interface
+  contract is the OpenAPI 3.1 document committed to the repository;
   the agent skill's manual is **distributed by the server**, so it is always the same version as the interface.
 
 [中文](README.md)
@@ -17,21 +18,43 @@ This document is written in English.
 
 | What you want to do | Where to look |
 |---|---|
+| Get the environment right first | [Prerequisites](#prerequisites) |
 | Get it running first | [Quick Start](#quick-start) |
 | Learn what the system can do | [Capability Overview](#capability-overview) |
 | Work on the backend | [Building](#building), [Configuration](#configuration), [Testing](#testing) |
 | Work on the frontend | [`web/README.md`](web/README.md), [`web/e2e/README.md`](web/e2e/README.md) |
 | Use the API / write an agent | [OpenAPI and API Usage](#openapi-and-api-usage), [Agent Skill](#agent-skill) |
 | Deploy it | [Deployment](#deployment) |
+| Look up a symptom | [Troubleshooting](#troubleshooting) |
 | Pass the gates before committing | [CI and Gates](#ci-and-gates) |
 | Know where the traps are | [Known Limitations and Gotchas](#known-limitations-and-gotchas) |
 | Know why it is built this way | [Design Trade-offs](#design-trade-offs) |
 
 ---
 
+## Prerequisites
+
+Get this table in place before you go any further — with the wrong version the build blows up already at the
+`restore` stage, and the error message does not point at the real cause.
+
+| Dependency | Version | Notes |
+|---|---|---|
+| .NET SDK | **10.0.113** | **The repository has no `global.json`, so nothing on the tooling side holds you to it** — install this version yourself; any other version fails at the `restore` stage (NU1903 / NU1101). CI pins the version at 10.0.113 with `actions/setup-dotnet` (`.github/workflows/ci.yml`), **so there is no such safety net locally**. The csproj explicitly bumps ILCompiler to 10.0.14 to avoid the advisory (GHSA-p3jp-9v83-76w9) hit by the 10.0.13 built into this SDK; `TreatWarningsAsErrors` turns NU1903 into an error → restore fails outright. Any conclusion about a different SDK version has to be re-verified |
+| Node / npm | Node **24** | Same as CI |
+| Python | **3.9+** | The fetcher uses only the standard library, no third-party dependencies |
+| clang + zlib1g-dev | Any recent version | The build dependencies for publishing Native AOT on Linux (`apt-get install -y clang zlib1g-dev`) |
+
+Check it with one line once it is installed:
+
+```bash
+dotnet --version   # it has to print 10.0.113
+```
+
+---
+
 ## Quick Start
 
-Four steps from zero to working. **Every step says which directory to run it in** — copy them as they are.
+Five steps from zero to working. **Every step says which directory to run it in** — copy them as they are.
 
 ```bash
 # ① Build the frontend (the output lands in server/IdeaApp/wwwroot/) — repo root
@@ -40,18 +63,27 @@ cd web && npm ci && npm run build && cd ..
 
 ```bash
 # ② Publish the Native AOT artifact — repo root
+#    Check first: dotnet --version has to print 10.0.113 (see "Prerequisites")
 dotnet publish server/IdeaApp/IdeaApp.csproj -c Release -r linux-x64 \
   -p:PublishAot=true -p:InvariantGlobalization=true
 ```
 
 ```bash
-# ③ Start the server — repo root (the artifact directory)
-cd server/IdeaApp/bin/Release/net10.0/linux-x64/publish && ./IdeaApp
+# ③ Start the server — repo root (the directory ② produces; it does not exist before the publish)
+PUBLISH=server/IdeaApp/bin/Release/net10.0/linux-x64/publish
+cd "$PUBLISH" && ./IdeaApp
 ```
 
 ```bash
 # ④ Install the agent skill — repo root (installs to ~/.zcode/skills/idea-manager by default)
 bash skills/install-agent-skill.sh
+```
+
+```bash
+# ⑤ Get the skill working locally first — repo root
+#    A local instance has no basic auth, so IDEA_USER / IDEA_PASS are not needed
+export IDEA_BASE_URL=http://127.0.0.1:5080
+python3 ~/.zcode/skills/idea-manager/scripts/fetch.py
 ```
 
 Once the server is up: the web UI is at <http://127.0.0.1:5080>, the API lives under `/api/**`, and the contract is
@@ -67,6 +99,11 @@ at `/openapi/v1.json`. The first start creates the database and the tables autom
 > ⚠️ **Step ② depends on .NET SDK 10.0.113 and clang**: with a different SDK version, `restore` can fail outright
 > (see [Known Limitations and Gotchas](#known-limitations-and-gotchas)). Publishing Native AOT on Linux additionally
 > needs the build dependencies `clang` and `zlib1g-dev`.
+
+> ⚠️ **After step ④ you still have to `export IDEA_BASE_URL`**, otherwise the fetcher fails right away with
+> `missing_config` (`IDEA_BASE_URL` is one of its required settings). That is what step ⑤ is for: **get the whole
+> chain working locally first**, and only then deal with the nginx side (domain + certificate + basic auth) — those
+> three obstacles have nothing to do with the local chain.
 
 ---
 
@@ -86,11 +123,11 @@ below; every entry states "what it does + how to call it". The per-endpoint para
 | Record an idea (optionally with tags) | `POST /api/ideas`, body `{"projectId":"","content":"…","tags":["a"]}` → 201 |
 | Change the body (send only the fields you want to change) | `PATCH /api/ideas/{id}`, body `{"content":"new body"}` |
 | Replace the tag set (**omitting `tags` clears it**) | `PUT /api/ideas/{id}/tags`, body `{"tags":["coffee"]}` |
-| Mark done / not done (`done` is **required**) | `POST /api/ideas/{id}/complete`, body `{"done":true}` |
+| Mark done / not done (`done` is required by the contract; **the server does not validate it** — omitting it means false = not done) | `POST /api/ideas/{id}/complete`, body `{"done":true}` |
 | Delete an idea (**soft delete**, it goes to the trash) | `DELETE /api/ideas/{id}` → 204 |
 | Restore an idea from the trash | `POST /api/ideas/{id}/restore` |
-| Bulk mark done | `POST /api/ideas/bulk/complete`, body `{"ids":[…],"done":true}` |
-| Bulk add tags (appends to the union; `replace:true` is the replacing form) | `POST /api/ideas/bulk/tags`, body `{"ids":[…],"tags":["a"]}` |
+| Bulk mark done (`done` is not validated either — omitting it means "not done") | `POST /api/ideas/bulk/complete`, body `{"ids":[…],"done":true}` |
+| Bulk add tags (appends to the union; only `replace: true` makes it a **whole-set replacement**) | `POST /api/ideas/bulk/tags`, body `{"ids":[…],"tags":["a"]}` |
 | Bulk delete (**soft delete**) | `POST /api/ideas/bulk/delete`, body `{"ids":[…]}` → 200 + array |
 | Merge several ideas into one (**the source ideas are hard-deleted**) | `POST /api/ideas/merge`, body `{"ids":[…, …],"content":"optional"}` |
 | Search the whole database (ideas / projects / tags, each paginated) | `GET /api/search?q=keyword&limit=&offset=&includeTrash=` |
@@ -102,11 +139,11 @@ below; every entry states "what it does + how to call it". The per-endpoint para
 | List projects | `GET /api/projects` |
 | Create a project | `POST /api/projects`, body `{"name":"coffee"}` |
 | Rename a project (`name` is **required**) | `PATCH /api/projects/{id}` |
-| Delete a project (**the ideas under it go to the trash with it**) | `DELETE /api/projects/{id}` → 204 |
+| Delete a project (**its not-yet-deleted ideas go to the trash with it**) | `DELETE /api/projects/{id}` → 204 |
 | Restore a project from the trash (the ideas deleted together with it are restored too) | `POST /api/projects/{id}/restore` |
 | Reorder the projects (the ones you leave out come last) | `POST /api/projects/reorder`, body `{"ids":["id1","id2"]}` |
 | Read the settings | `GET /api/settings` → `{"project.sort_mode":"recent"}` |
-| Change a setting (**only `project.sort_mode` is writable**) | `PUT /api/settings/project.sort_mode`, body `{"value":"recent\|manual"}` |
+| Change a setting (**only `project.sort_mode` is writable**) | `PUT /api/settings/{key}` (the key is currently only `project.sort_mode`), body `{"value":"recent\|manual"}` |
 | Tag dictionary (with usage counts) | `GET /api/tags` |
 | Tag completion suggestions | `GET /api/tags/suggest?projectId=&prefix=` |
 
@@ -115,7 +152,7 @@ below; every entry states "what it does + how to call it". The per-endpoint para
 | What it does | How to call it |
 |---|---|
 | Trash contents (deleted projects are containers; the top level holds individually deleted ideas) | `GET /api/trash` |
-| Automatic hard delete once the retention period expires | Read `Trash:RetentionDays` from the configuration only (30 days by default), a change takes effect after a restart; **there is no manual purge entry point** |
+| Automatic hard delete once the retention period expires | Configured only in `Trash:RetentionDays` (default 30 days) — neither the page nor the API can change it; a change takes effect after a restart, and **there is no manual purge entry point**. But `merge` hard-deletes the source ideas for you (they do not go to the trash, see below) |
 
 **Real-time events (SSE)**
 
@@ -167,26 +204,26 @@ feature × test-case mapping.
 | `/webhooks` | WebhooksPage | Create / edit / enable / disable global webhooks, subscribe to events, delivery records and retries |
 | `/projects/:id/webhooks` | ProjectWebhooksPage | Project-scoped webhooks, the same but limited to that project |
 
-**Home page layout** (two breakpoint sets, 1024px / 768px, live side by side)
+**Home page layout** (two breakpoint sets — 1024px and 768px — coexist)
 
 | Width | Layout |
 |---|---|
 | ≥1024px | A 220px project sidebar on the left + an idea stream that fills the right side (two interleaved columns); the top bar / list / composer are three separate bands, and only the list scrolls |
-| <1024px | The sidebar collapses into a project dropdown in the top bar, the filter row scrolls away with the content, and the top bar gains a 🔍 focus-search box |
+| <1024px | The sidebar collapses into a project dropdown in the top bar, the filter row scrolls away with the content, and the top bar gains a 🔍 button that scrolls the list back to the top and focuses the search box in the filter row |
 | <768px | Single-column list |
 
 **Home page interactions**
 
 | What it does | How to do it |
 |---|---|
-| Record an idea | Enter submits from the composer at the bottom, Shift+Enter inserts a newline; **it clears and restores the focus only on success, and keeps the draft on failure** |
+| Record an idea | Enter submits from the composer at the bottom, Shift+Enter inserts a newline; **it clears the input only on success and keeps the draft on failure; after submitting, the focus goes back to the input either way** |
 | Change the body | Click the body to enter edit mode → Ctrl+Enter saves, Esc cancels, losing focus saves automatically; an unchanged body sends no request |
 | Done / delete | Click the ○/● in the card's meta row to toggle done; 🗑 delete asks for confirmation first, and the idea lands in the trash |
 | Edit tags | Click 🏷 at the bottom right of the card → Enter / space / comma adds a tag, the arrow keys pick a candidate, × removes one; every change is persisted immediately |
 | Filter | The filter row at the top: a three-state status, a keyword, multi-select tags + an AND/OR switch; **filtering happens on the server**, one request returns the final result |
 | Bulk operations | Tick the checkboxes on the left of the cards → the action bar: mark done / unmark done / add tags (union) / merge / delete / clear selection |
 | Merge | "Merge" in the bulk bar → a dialog previews each body, joined with blank lines by default and editable; on confirmation the source entries are hard-deleted and a new entry is created |
-| Deep link to an entry | `/?idea=<idea id>` scrolls the home page to that entry and flashes a highlight |
+| Deep link to an entry (the URL carries the id, so it lands on that one entry) | `/?idea=<idea id>` scrolls the home page to that entry and flashes a highlight |
 | Scroll back through history | Scroll up: 400px from the top automatically preloads an older page, and after the prepend the viewport stays pinned in place; **the bottom is "now"** |
 | Live sync | The page subscribes to SSE automatically; on a disconnect it reconnects with exponential backoff (2s → 30s); on `resync` it reloads the whole list |
 | New-content notice | While pinned to the bottom it follows along; when you have scrolled up it does not steal the scroll and a "↓ N new items" button appears |
@@ -236,7 +273,7 @@ server/
     Domain/                 The domain model, MonotonicGuid (UUIDv7), the tokenizer
     Application/            The use-case service layer (projects / ideas / tags / trash / webhook / delivery / search)
     Infrastructure/         SQL, the event bus, SSE, webhook delivery, the OpenAPI export, schema.sql
-    Contracts/              DTOs, request bodies, the JSON source-generation context, the list of error codes
+    Contracts/              DTOs, request bodies, the JSON source-generation context (types precompiled for AOT, so no runtime reflection), the list of error codes
     Endpoints/              The endpoint mapping per resource (MapXxx extension methods)
     Program.cs              The composition root: registration, endpoint mapping, static files and the SPA fallback
     appsettings.json        The default configuration
@@ -255,7 +292,7 @@ web/                        The frontend (Vue 3 + TypeScript + Vite)
   e2e/                      The Playwright end-to-end cases and their harness
   playwright.config.ts      The Playwright configuration (port, baseURL, webServer)
 skills/
-  idea-manager/             The skill content source (index page + references/, distributed by the server)
+  idea-manager/             The skill content source (index page + references/, distributed by the server; at publish time the csproj copies it into the artifact's skill/ directory by an explicit file list — the runtime no longer reads the repository)
   idea-manager-client/      The thin shell installed on the agent side (pointer + fetcher)
   install-agent-skill.sh    Installs the thin shell into the agent's skills directory
 ```
@@ -342,15 +379,6 @@ bash server/scripts/aot-smoke.sh
 It publishes a real AOT artifact, exercises the endpoints, and then has the repository's **real fetcher** face it once
 (cross-stack check: sha256 verified file by file). A missing python3 is a **failure**, not a skip.
 
-### Prerequisites
-
-| Dependency | Version | Notes |
-|---|---|---|
-| .NET SDK | **10.0.113** | The csproj explicitly bumps ILCompiler to 10.0.14 to avoid the advisory (GHSA-p3jp-9v83-76w9) hit by the 10.0.13 built into this SDK; `TreatWarningsAsErrors` turns NU1903 into an error → restore fails outright. Any conclusion about a different SDK version has to be re-verified |
-| Node / npm | Node **24** | Same as CI |
-| Python | **3.9+** | The fetcher uses only the standard library, no third-party dependencies |
-| clang + zlib1g-dev | Any recent version | The build dependencies for publishing Native AOT on Linux (`apt-get install -y clang zlib1g-dev`) |
-
 ---
 
 ## Running
@@ -378,7 +406,8 @@ server runs on `http://127.0.0.1:5173`, and `/api` is forwarded by the Vite prox
 ### Production (AOT artifact)
 
 ```bash
-cd server/IdeaApp/bin/Release/net10.0/linux-x64/publish
+PUBLISH=server/IdeaApp/bin/Release/net10.0/linux-x64/publish
+cd "$PUBLISH"
 
 IDEA_Urls=http://127.0.0.1:5080 \
 IDEA_Trash__RetentionDays=30 \
@@ -417,7 +446,7 @@ coexist, and **the ones with the `IDEA_` prefix win** (the provider registered l
 |---|---|---|
 | `Urls` | `http://127.0.0.1:5080` | The Kestrel listen address (loopback only, everything external goes through nginx) |
 | `Database:Path` | `data/idea.db` | The SQLite file path. **A relative path is resolved against the application directory, independent of the current working directory** |
-| `Trash:RetentionDays` | `30` | How many days the trash is kept. **Neither the page nor the API can change it**; this is the only switch that leads to irreversible deletion, a value ≤0 is treated as 1 day and logged as a warning |
+| `Trash:RetentionDays` | `30` | How many days the trash is kept. **Neither the page nor the API can change it**; it is the only switch that makes the contents of the trash disappear once the period is over, a value ≤0 is treated as 1 day and logged as a warning. There is another, immediately irreversible path: `merge` hard-deletes the source ideas without putting them into the trash |
 | `PublicBaseUrl` | empty | Used to build `{{idea.url}}`, e.g. `https://ideas.example.com` |
 | `Api:MaxIdeasPerResponse` | `2000` | The cap on the number of hits **when no `limit` is given**; going over it reports 400 `too_many_ideas`. When `limit` is given the cap is **1000** (hard-coded in the service layer), and `offset` has to be given together with `limit` |
 | `Webhook:TimeoutSeconds` | `10` | The timeout of a single delivery |
@@ -446,11 +475,17 @@ CWD is `/`, and the database file would land in `/data/idea.db` — unpredictabl
 and it may clobber unrelated data. If you want the database file inside the project directory during development,
 give an absolute path explicitly (see [Running · Development](#development)).
 
+**If you follow the [Quick Start](#quick-start), the database lands inside the publish directory** —
+`server/IdeaApp/bin/Release/net10.0/linux-x64/publish/data/idea.db` — and `bin/` is in `.gitignore`
+(line 2 of `.gitignore`), so a single `git clean -xdf` wipes it together with the WAL. If you want a stable
+location, point `IDEA_Database__Path` outside the publish directory (for example `/var/lib/idea/idea.db`).
+
 ### Data and Storage
 
-- **Database**: a single SQLite file with hand-written SQL. The schema is embedded as a resource
-  (`server/IdeaApp/Infrastructure/schema.sql`); the first start creates the database and the tables and writes the
-  built-in inbox `inbox`.
+- **Database**: a SQLite database with hand-written SQL, running in **WAL mode** — while the application runs, the
+  data is spread over **three files** at once (see [Data and Backup](#data-and-backup) below). The schema is embedded
+  as a resource (`server/IdeaApp/Infrastructure/schema.sql`); the first start creates the database and the tables and
+  writes the built-in inbox `inbox`.
 - **Full-text index**: written in the **same transaction** as the business data, so it is strongly consistent. An old
   database is backfilled in one go at startup based on the `search_meta` version —
   **a failed backfill makes the startup fail**: when the index and the data disagree, search returns
@@ -463,6 +498,32 @@ give an absolute path explicitly (see [Running · Development](#development)).
 - **Ordering**: lists are always `updated_at ASC, id ASC` (the oldest on top); entries inserted at the same instant are
   ordered by id.
 
+### Data and Backup
+
+**There are three files on disk, not one** — the database runs in WAL mode (`PRAGMA journal_mode=WAL`), so while
+the application runs the data is in `idea.db`, `idea.db-wal` and `idea.db-shm` at the same time (`.gitignore`
+covers those three suffixes as well). **Copying `idea.db` while the application is running loses the writes that
+are still in the WAL and not checkpointed yet** — the copy looks successful and the data is short.
+
+There are two ways to back it up:
+
+| How | What you do | The price |
+|---|---|---|
+| Stop the application and copy everything (the safest) | Stop the process → copy `idea.db`, `idea.db-wal` and `idea.db-shm` **together** | The application is down |
+| Back up without stopping, via sqlite3 | Run this in the application directory: `sqlite3 data/idea.db ".backup '/backup/idea-$(date +%F).db'"` | The sqlite3 command line has to be installed |
+
+Restoring (the order matters):
+
+1. **Stop the application**;
+2. overwrite `idea.db` with the backup;
+3. **delete the leftover `idea.db-wal` and `idea.db-shm`** — left in place, SQLite replays the old WAL onto the
+   database you just restored;
+4. start the application.
+
+> ⚠️ **The hard delete when the trash expires is irreversible** — once the retention period is over, the background
+> job deletes the rows, and there is no intermediate state anything could rescue. **A backup is the only safety
+> net** (the hard delete of the source ideas by `merge` is the same: it does not even go through the trash).
+
 ---
 
 ## Deployment
@@ -472,7 +533,7 @@ access control live in the nginx layer — the application itself does no authen
 
 ```bash
 cp docs/nginx/idea.conf /etc/nginx/conf.d/idea.conf
-# Adjust server_name, the certificate paths and the htpasswd path for your own domain
+# Adjust server_name, the certificate paths and the htpasswd path for your own domain (there is a list below)
 htpasswd -c /etc/nginx/.htpasswd ideauser
 nginx -t && systemctl reload nginx
 ```
@@ -480,7 +541,16 @@ nginx -t && systemctl reload nginx
 > ⚠️ **The `http2 on;` in the configuration needs nginx ≥ 1.25.1** — older nginx versions fail already at the
 > `nginx -t` stage, so copying the configuration as it is leaves you stuck.
 
-Two things to watch in `docs/nginx/idea.conf`:
+There are **three places to change** for your own domain in `docs/nginx/idea.conf` (everything else is copied as it
+is):
+
+| Setting | The default in the file | Change it to |
+|---|---|---|
+| `server_name` | `ideas.example.com` | your domain |
+| `ssl_certificate` / `ssl_certificate_key` | `/etc/letsencrypt/live/ideas.example.com/fullchain.pem` / `…/privkey.pem` | your own certificate paths (both of them) |
+| `auth_basic_user_file` | `/etc/nginx/.htpasswd` | your own htpasswd path — it has to be the one the `htpasswd -c` command above writes |
+
+Two more things to watch in `docs/nginx/idea.conf`:
 
 - **SSE (`/api/events`) has its own block**: `proxy_buffering off` + `X-Accel-Buffering: no`, otherwise the live
   pushes are held back by nginx instead of being sent.
@@ -490,9 +560,17 @@ Two things to watch in `docs/nginx/idea.conf`:
   shape) but **deliberately carries no `code`** (connecting to Kestrel directly gives 413 with an empty body).
   **Changing this number means changing `references/errors.md` in the manual as well** — both describe the same thing.
 
-The published artifact carries the distributed copy of the skill (`skill/idea-manager/`) — that is where the agent's
-manual comes from, so copy it over together with the application when deploying. Without it, the endpoint that serves
-the manual answers 404 `skill_not_distributed` (where the copy lives is decided by `Skill:Path`);
+The published artifact carries the distributed copy of the skill — that is where the agent's manual comes from, so
+copy it to **`skill/idea-manager/` under the application directory** when deploying (that is the configuration item
+`Skill:Path`; the application directory is the directory the executable lives in). Check it afterwards:
+
+```bash
+# run this in the application directory (the one the executable lives in)
+ls skill/idea-manager/SKILL.md   # without it the manual endpoint answers 404 skill_not_distributed
+```
+
+Without it, the endpoint that serves the manual answers 404 `skill_not_distributed`
+(where the copy lives is decided by `Skill:Path`);
 **a wrong path gives two other codes**: a misspelled skill name → `skill_endpoint_not_found`, a misspelled
 file name → `skill_file_not_found` — different directions to debug.
 
@@ -502,6 +580,53 @@ on the same machine; when nginx runs on another machine you have to add `KnownPr
 headers have no effect (the application thinks it is still on http). Note that .NET 10's `ForwardedHeadersOptions`
 defaults to `ForwardedHeaders.None` — unless you explicitly name the headers to handle, the middleware is effectively
 not attached.
+
+### The first visit
+
+Open `https://<your domain>` in the browser and nginx pops up its **basic auth dialog** — log in with the account
+you created with `htpasswd -c` (**the application itself knows no accounts**: the authentication is entirely in the
+nginx layer, the application receives requests that already passed nginx).
+
+Agents use the same account: the environment variables `IDEA_USER` / `IDEA_PASS` (see
+[Connection settings](#connection-settings)). Against a local instance (`http://127.0.0.1:5080`) neither of them is
+needed.
+
+### Upgrading
+
+```bash
+# ① Back up the database first (see "Data and Backup")
+# ② Stop the service
+systemctl stop idea            # or just kill the process
+# ③ Replace the publish directory — leave data/ and a changed appsettings.json alone
+# ④ Start the service again
+systemctl start idea
+```
+
+- **Replace the publish directory only** (the executable + `wwwroot/` + `skill/` + `libe_sqlite3.so`).
+- **Keep `data/`** — the database lives in there, and publishing again does not overwrite it (`data/` is not part of
+  the publish output).
+- **Keep `appsettings.json`** — it **is** part of the publish output, so overwriting it resets a configuration you
+  changed back to the defaults; merge that one file by hand instead.
+- If you changed the content source in `skills/idea-manager/`, you also have to publish again and replace the
+  artifact, otherwise the agent's next fetch still gets the old manual (see [Agent Skill](#agent-skill)).
+
+---
+
+## Troubleshooting
+
+Look it up by symptom, not by module — symptom → cause → what to do:
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| **The page is blank and nothing reports an error** | `wwwroot/` was not built or not copied into the artifact | Build the frontend (`cd web && npm run build`) → publish again → have a look with `ls <application directory>/wwwroot/index.html` |
+| **It does not start: the port is taken / the bind fails** | The default port 5080 is already in use | Change the port: `IDEA_Urls=http://127.0.0.1:5190 ./IdeaApp` (the `IDEA_` prefix beats the command-line arguments) |
+| **Fetching the manual answers 404 `skill_not_distributed`** | The distributed copy was not copied, the path is not configured, or the copy is missing its entry file `SKILL.md` | `ls skill/idea-manager/SKILL.md` in the application directory; check `Skill:Path` |
+| **Fetching the manual answers 404 `skill_endpoint_not_found`** | The skill name is misspelled (the path is not under the `skill/idea-manager/` prefix) | Check the path prefix |
+| **Fetching the manual answers 404 `skill_file_not_found`** | The file name is misspelled, or the file is over the 4 MiB limit | Check the file name and its size |
+| **413 from nginx** | The request body is over `client_max_body_size 4m` (4 MiB) | Change the setting and change the manual's `references/errors.md` with it |
+| **The fetcher exits with code 3** | The server is temporarily unreachable and the previous version of the manual from the local cache is used | Exit code 3 is the exclusive "degraded" signal: retry once, or tell the user that the server is temporarily unreachable |
+| **The fetcher exits with code 1 and `missing_config`** | `IDEA_BASE_URL` was not exported (it is required) | `export IDEA_BASE_URL=http://127.0.0.1:5080` (a local instance) or your domain |
+| **The data in the database looks wrong / is incomplete** | The database runs in WAL mode — check the three files first | `ls <application directory>/data/idea.db*`; **do not copy `idea.db` alone** (see [Data and Backup](#data-and-backup)) |
 
 ---
 
@@ -607,7 +732,7 @@ with a machine-readable extension field `code`:
 >
 > | Case | Response |
 > |---|---|
-> | An illegal `bool` parameter in the query string (e.g. `?includeTrash=xyz`) | 400, **an empty body and no `code`** — the binding failure happens at the routing layer and bypasses the unified exit that only handles `BadHttpRequestException` |
+> | An illegal `bool` parameter in the query string (e.g. `?includeTrash=xyz`) | 400, **an empty body and no `code`** — the binding failure happens at the routing layer and bypasses the single error-handling exit point, which only handles `BadHttpRequestException` |
 > | 413 request body too large | Status code 413, **no `code`** (through nginx it is structured JSON but deliberately carries no `code`; connecting to Kestrel directly it is an empty body) |
 >
 > Branch on the **status code** for these two. That is exactly what the manual's `references/errors.md` says.
@@ -637,6 +762,9 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
   `IDEA_TOKEN` has a value.
 - **Do not put the credentials in the URL** — nginx writes the userinfo into the access log verbatim.
 - A request with a body needs `Content-Type: application/json` (without it you get 415).
+- **Always send `done` yourself** — the contract marks it required and the server does not validate it: leaving it
+  out means `false` (= not done), and **nothing reports an error**. When you send `complete` / `bulk/complete`, write
+  `"done":true` or `"done":false` explicitly.
 - **Do not build the request body by concatenating strings in the shell** — quotes, newlines and backslashes get eaten
   by the shell. Write it into a file, or feed it to curl with a quoted heredoc (the quotes in `<<'JSON'` cannot be
   omitted, otherwise the `$` inside the body is expanded):
@@ -652,30 +780,42 @@ JSON
 Once it works you see the response body: a list is a **bare array** (`[{...}]`), a single resource is an object, and
 `DELETE` is 204 with no response body.
 
-**The three places where data is easiest to lose**:
+**The places where data is easiest to lose**:
 
 1. **Replace vs. union for tags**: `PUT /api/ideas/{id}/tags` is a **whole-set replacement** (omitting `tags` clears
    it), while `POST /api/ideas/bulk/tags` **appends to the union** by default (only `replace: true` replaces). Using
    the wrong one loses tags.
-2. **`POST /api/ideas/merge` hard-deletes the source ideas** (they do not go to the trash). The bulk delete
-   (`POST /api/ideas/bulk/delete`) is the soft delete.
+2. **`POST /api/ideas/merge` hard-deletes the source ideas** (they do not go to the trash) — **a wrong merge cannot
+   be undone**, so copy the bodies out before you merge. The bulk delete (`POST /api/ideas/bulk/delete`) is the soft
+   delete.
 3. **A webhook's url and headers are masked by default** (the url keeps only `scheme://host[:port]`, and the path
    segments and the header values are shown as `***`). To get the original values you have to add `?unmask=true`
    explicitly, and **only `GET /api/webhooks` and `GET /api/webhooks/{id}` honour it** (the write endpoints always
    mask, adding it does nothing). When you change other fields, **do not write the masked values back** — leave those
    two keys out entirely.
+4. **A bulk completion without `done`** — the server does not validate that field, so leaving it out means `false` =
+   **not done**: a whole batch of completed ideas is turned back into unfinished ones, and **nothing reports an
+   error**.
 
 **The trap in pagination**: the `offset` of `/api/ideas` counts from the **newest** end (that is how you page back
 through history), while the `offset` of `/api/search` counts from the **most relevant** end — the two have opposite
 semantics, do not mix them up. The `limit` of `/api/ideas` is capped at 1000; the `limit` of `/api/search` is capped at
-100 and defaults to 20. The `q` of `/api/search` is **required** (an empty string → 400 `invalid_search_query`), but the
-contract marks it optional.
+100 and defaults to 20. The `q` of `/api/search` is **required** (an empty string → 400 `invalid_search_query`) —
+**the contract marks it as required as well** (`required: true`, aligned explicitly by
+`OpenApiQueryParameterTransformer`: the endpoint binds it as nullable, and the framework would mark it optional
+because of that).
 
 ### Endpoint list
 
 The complete contract is on the server at `/openapi/v1.json`; the index page of the manual
 [`skills/idea-manager/SKILL.md`](skills/idea-manager/SKILL.md) has the same "capability → method + path" table
-(33 API endpoints), and the table below is kept in sync with it.
+(**33 business endpoints**). The table below adds **2 skill distribution endpoints and the `/skill/**` fallback**
+on top of it (**36 rows** in total), and is kept in sync with it.
+
+**How the three numbers relate**: 33 business endpoints in the index page of the manual → 36 rows in the table below
+(2 skill distribution endpoints and 1 fallback more) → the contract `openapi/idea-v1.json` holds **29 paths / 36
+operations** (there are fewer paths than operations because one path carries several methods — for example
+`/api/webhooks/{id}` has GET / PATCH / DELETE). **`/openapi/v1.json` is the authority**.
 
 | Capability | Method + path |
 |---|---|
@@ -686,10 +826,10 @@ The complete contract is on the server at `/openapi/v1.json`; the index page of 
 | Change an idea (send only the fields you want to change) | PATCH /api/ideas/{id} |
 | Delete an idea (goes to the trash) | DELETE /api/ideas/{id} |
 | Replace the tag set (**omitting `tags` clears it**) | PUT /api/ideas/{id}/tags |
-| Mark done / not done (`done` is **required**) | POST /api/ideas/{id}/complete |
+| Mark done / not done (`done` is required by the contract; **the server does not validate it** — omitting it means false = not done) | POST /api/ideas/{id}/complete |
 | Restore an idea from the trash | POST /api/ideas/{id}/restore |
-| Bulk mark done / not done (`done` is **required**) | POST /api/ideas/bulk/complete |
-| Bulk add tags (appends to the union; `replace: true` is the **replacing** form) | POST /api/ideas/bulk/tags |
+| Bulk mark done / not done (`done` is not validated either — omitting it means false = not done) | POST /api/ideas/bulk/complete |
+| Bulk add tags (appends to the union; `replace: true` is the **whole-set replacement**) | POST /api/ideas/bulk/tags |
 | Bulk delete ideas (goes to the trash) | POST /api/ideas/bulk/delete |
 | Merge several ideas into one | POST /api/ideas/merge |
 | List projects | GET /api/projects |
@@ -714,6 +854,7 @@ The complete contract is on the server at `/openapi/v1.json`; the index page of 
 | Manually retry one delivery | POST /api/webhooks/{id}/deliveries/{deliveryId}/retry |
 | Skill manifest (version + file list + a sha256 for each file) | GET /skill/idea-manager/version |
 | Fetch the body of a skill file | GET /skill/idea-manager/{path} |
+| The `/skill/**` fallback (a mistyped path answers 404, not 200 + HTML) | GET /skill/{rest} |
 
 ---
 
@@ -764,7 +905,8 @@ bash skills/install-agent-skill.sh                       # installs to ~/.zcode/
 bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager
 ```
 
-The script is idempotent: **the known files left behind by the old skill** are removed from the target directory
+The script is idempotent (doing the same thing twice has the same result as doing it once): **the known files left
+behind by the old skill** are removed from the target directory
 (`scripts/idea.py`, `scripts/run-tests.sh`, `references/openapi.json`, `tests/test_cli.py`, the `.pyc` files in
 `__pycache__`), and the directory is only removed **once it is empty** (`rmdir`) — if your own files are still in
 there they are kept, and entries it does not recognize only produce a warning and are not deleted. The convention of
@@ -789,6 +931,10 @@ Environment variables, not the repository (the command line does not accept pass
 | `IDEA_PASS` | No | The nginx basic auth password |
 | `IDEA_TOKEN` | No | Optional. Set it when nginx additionally validates an `X-Api-Key` header |
 | `IDEA_SKILL_CACHE_DIR` | No | The cache root of the fetcher (default `${XDG_CACHE_HOME:-~/.cache}/idea-skill`) |
+
+**A local instance**: when you run one locally (`./IdeaApp`, `http://127.0.0.1:5080` by default),
+`export IDEA_BASE_URL=http://127.0.0.1:5080` is enough — **it has no basic auth, so `IDEA_USER` / `IDEA_PASS` are
+not needed**.
 
 Set them once and every later command can use them (`export` only affects the current shell):
 
@@ -817,9 +963,9 @@ python3 "$SKILL/scripts/fetch.py" /openapi/v1.json       # the complete interfac
 ```
 
 The fetcher downloads every file in the manifest and verifies each sha256; only when they all pass does it switch to
-the new version — if it fails halfway the previous version is kept, so you never end up with "the manual is new and
-the rest is old". The cache keeps two versions (`~/.cache/idea-skill/<version>/`), and a cache hit still recomputes
-the hashes.
+the new version — if it fails halfway the previous version is kept, so you never end up with a mix where the index
+page is new but the detail files are old. The cache keeps two versions (`~/.cache/idea-skill/<version>/`), and a
+cache hit still recomputes the hashes.
 
 When the server is temporarily unreachable but a **sound** cache is present locally, it prints one `degraded_cache:`
 line on stderr and exits with **exit code 3** — what is on stdout then is the **previous** version of the manual (not
@@ -846,15 +992,16 @@ python3 "$SKILL/scripts/fetch.py"
 
 **Running the self-check without credentials fails immediately with `auth_error`** (exit code 1): the standard
 deployment of this project goes through nginx basic auth, and only an instance without basic auth can be used with
-empty credentials.
+empty credentials — for example a local instance (`IDEA_BASE_URL=http://127.0.0.1:5080`, with the `IDEA_USER` /
+`IDEA_PASS` lines left out).
 
 ### Calling the API
 
 Call the API directly with curl, following the manual, with no wrapper in between — the templates and the pitfalls
 are in [How to call](#how-to-call). The complete contract is on the server at `/openapi/v1.json` (served live).
-The `openapi/idea-v1.json` at the repo root is a snapshot of the same thing, but that is
-**a matter of the repository** — the distributed copy has **no second contract**, and the copy the agent holds
-is served live by the server at runtime.
+The `openapi/idea-v1.json` at the repo root is a snapshot of the same thing, but that only concerns the repository
+itself: the distributed copy contains **no second contract** — the copy the agent holds is served live by the server
+at runtime.
 
 The index page of the manual [`skills/idea-manager/SKILL.md`](skills/idea-manager/SKILL.md) has the capability list,
 the curl templates, the easiest mistakes to make, and a routing table pointing at the files under `references/`:
@@ -871,8 +1018,8 @@ the curl templates, the easiest mistakes to make, and a routing table pointing a
 
 ## Testing
 
-Four gates plus one AOT smoke test. `bash verify.sh` at the repo root runs all of them at once (see
-[CI and Gates](#ci-and-gates)). Run them individually:
+The same seven steps `verify.sh` runs, one row each (see [CI and Gates](#ci-and-gates)). `bash verify.sh` at the
+repo root runs all of them at once. Run them individually:
 
 | Command | Directory | What it covers |
 |---|---|---|
@@ -927,14 +1074,21 @@ them in parallel would reset each other.
 
 - **No manual purge**: deletion has exactly one path — a soft delete into the trash, and a background job hard-deletes
   it once the retention period expires (every hour, and once at startup).
-  **The retention period is the only switch that leads to irreversible deletion**; neither the page nor the API
-  has an entry point for it, and changing it means changing the configuration and restarting. A value ≤0 is
-  treated as 1 day and logged as a warning. The cleanup worker is not registered in the Testing environment.
+  **The trash retention period is the only switch that makes the contents of the trash disappear once the period is
+  over**; neither the page nor the API has an entry point for it, and changing it means changing the configuration
+  and restarting. A value ≤0 is treated as 1 day and logged as a warning. The cleanup worker is not registered in the
+  Testing environment.
+  **But there is another, immediately irreversible path**: `merge` hard-deletes the source ideas without putting
+  them into the trash (see below) — there is no manual entry point, but merge deletes for you.
 - **Restoring a project also restores the ideas "deleted together with it"** (decided by `deleted_at` being equal);
   the ones deleted individually earlier do not come back.
-- **Every write refreshes `updated_at`** — editing an old idea moves it one slot down, so the entries below it shift
-  up one slot as well (in the two-column layout the cards in the lower half swap sides). This is an
+- **Every write on an idea refreshes `updated_at`** (the same goes for renaming, deleting and restoring a project) —
+  editing an old idea moves it one slot down, so the entries below
+  it shift up one slot as well (in the two-column layout the cards in the lower half swap sides). This is an
   **approved trade-off**, do not fix it as a bug.
+  **The one exception is reordering the projects**: it only writes `sort_order` and **deliberately does not refresh**
+  `updated_at` (`updated_at` is the fallback of the recent sorting, and refreshing it would make a manual reorder
+  change the sorting result).
 - **Merge and bulk delete are not the same thing**: `merge` hard-deletes the source ideas (they do not go to the
   trash), `bulk/delete` is a soft delete. Merge **does not skip** ids that do not exist (one missing id makes the whole
   call 404 and nothing is changed), it cannot span projects, and fewer than two ideas reports 400
@@ -942,8 +1096,9 @@ them in parallel would reset each other.
 - **Bulk delete is idempotent**: ids that are already in the trash count as "handled" and do not reset the retention
   period.
 - **Bulk marking done refreshes `updated_at` on every entry** — the processed entries move to the bottom of the list.
-- **`done` is required**: `POST /api/ideas/{id}/complete` and `POST /api/ideas/bulk/complete` without `done` means
-  `done` = false = **not done**, and the server **does not report an error**.
+- **`done` is required by the contract, the server does not validate it**: `POST /api/ideas/{id}/complete` and
+  `POST /api/ideas/bulk/complete` without `done` means `done` = false = **not done**, and the server **does not
+  report an error**. **The caller has to make sure the field is there.**
 - **The built-in inbox `inbox` cannot be deleted** (400 `inbox_not_deletable`), but it can be renamed.
 - **Only `project.sort_mode` is writable**, every other settings key reports 400 `setting_key_not_writable`.
 - **`PATCH` sends only the fields you want to change**: `null` means "no change"; but an empty string / an empty array
@@ -972,9 +1127,10 @@ them in parallel would reset each other.
 - **A failed full-text index backfill = a failed startup**: when the index and the business data disagree, search
   gives **wrong results**, and that is far more dangerous than not starting at all. The price is that a failed index
   write also takes the business write down with it (same transaction).
-- **A wrong column count in the FTS table of an old database is silent**: a number of `bm25` weights that does not
-  match the columns **does not report an error**, it just quietly skews the relevance. Acceptance has to assert the
-  column count of `PRAGMA table_info(idea_fts)` directly.
+- **A wrong column count in the FTS table of an old database is silent**: a number of `bm25` (the ranking algorithm
+  that scores the relevance of a keyword) weights that does not
+  match the columns **does not report an error**, it just quietly skews the relevance. The acceptance test has to
+  assert the column count of `PRAGMA table_info(idea_fts)` directly.
 - **A hard delete has to delete the index row as well**: the `idea` table has no explicit integer primary key, so
   rowids get reused; the trash cleanup on expiry is **raw SQL that bypasses the repository layer**, which is where it
   is easiest to miss. An orphan index row holds on to the rowid, and the new rows land in the wrong place.
@@ -996,8 +1152,10 @@ them in parallel would reset each other.
 - **Paging back through history has to add an even number of entries**: it requests 101 (the extra one is a probe), and
   on a full page it drops the **oldest** one, so the net gain is 100 — dropping the newest one instead would leave a
   hole in the middle of the already loaded set.
-- **AND/OR is a per-device preference**, stored in localStorage, not shared across devices.
-- **The filter condition changes and the SSE events use two separate debounce timers** (250ms each) — sharing one
+- **AND/OR is a per-device preference**, stored in localStorage (the browser's own key/value store), not shared
+  across devices.
+- **The filter condition changes and the SSE events use two separate debounce timers** (250ms each; debounce =
+  only the last of a series of triggers counts) — sharing one
   would let them cancel each other out.
 - **The incremental entries pushed over SSE are judged approximately by the frontend** as to whether to show them, and
   then a debounced 250ms refetch of the server results overwrites it — with English text individual entries can

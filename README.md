@@ -5,7 +5,7 @@
 
 - **后端**：.NET 10 + SQLite + Native AOT —— 手写 SQL、无 ORM、无反射式序列化、无模板引擎。
 - **前端**：Vue 3 + TypeScript + Vite，构建产物直接落进后端的 `wwwroot/`，由后端同源托管。
-- **agent 接入**：REST API + SSE，接口契约是提交进仓库的 OpenAPI 3.1；
+- **agent 接入**：REST API + SSE（服务端单向推事件的长连接），接口契约是提交进仓库的 OpenAPI 3.1；
   agent skill 的说明书**由服务端分发**，永远与接口同一版本。
 
 [English](README_EN.md)
@@ -16,21 +16,42 @@
 
 | 你要做什么 | 看哪 |
 |---|---|
+| 先把环境装对 | [前置条件](#前置条件) |
 | 先把它跑起来 | [快速开始](#快速开始) |
 | 知道这系统能做什么 | [能力全景](#能力全景) |
 | 改后端 | [构建](#构建)、[配置项](#配置项)、[测试](#测试) |
 | 改前端 | [`web/README.md`](web/README.md)、[`web/e2e/README.md`](web/e2e/README.md) |
 | 用 API / 写 agent | [OpenAPI 与 API 用法](#openapi-与-api-用法)、[Agent skill](#agent-skill) |
 | 上线部署 | [部署](#部署) |
+| 遇到症状查原因 | [排错速查表](#排错速查表) |
 | 提交前过闸门 | [CI 与闸门](#ci-与闸门) |
 | 知道哪里有坑 | [已知限制与坑](#已知限制与坑) |
 | 知道为什么这么做 | [设计取舍](#设计取舍) |
 
 ---
 
+## 前置条件
+
+先把这张表装齐再往下走 —— 版本不对会在 `restore` 阶段就炸，那时的报错信息不指向真正的原因。
+
+| 依赖 | 版本 | 说明 |
+|---|---|---|
+| .NET SDK | **10.0.113** | **仓库里没有 `global.json`，工具层面没有任何兜底** —— 请自己装这个版本；装了别的版本会在 `restore` 阶段炸（NU1903 / NU1101）。CI 里用 `actions/setup-dotnet` 把版本钉在 10.0.113（`.github/workflows/ci.yml`），**本地没有这层兜底**。csproj 把 ILCompiler 显式提到 10.0.14，避开这个 SDK 内置的 10.0.13 命中的 advisory（GHSA-p3jp-9v83-76w9）；`TreatWarningsAsErrors` 会把 NU1903 升级成错误 → restore 直接失败。换 SDK 版本的结论要重验 |
+| Node / npm | Node **24** | 与 CI 一致 |
+| Python | **3.9+** | 取件器只用标准库，无第三方依赖 |
+| clang + zlib1g-dev | 任意近期版本 | Linux 上发布 Native AOT 的构建依赖（`apt-get install -y clang zlib1g-dev`） |
+
+装完先自检一行：
+
+```bash
+dotnet --version   # 必须输出 10.0.113
+```
+
+---
+
 ## 快速开始
 
-从零到能用，四步。**每一步在哪个目录跑都写清楚了**，照抄即可。
+从零到能用，五步。**每一步在哪个目录跑都写清楚了**，照抄即可。
 
 ```bash
 # ① 构建前端（产物落 server/IdeaApp/wwwroot/）—— 仓库根
@@ -39,18 +60,27 @@ cd web && npm ci && npm run build && cd ..
 
 ```bash
 # ② 发布 Native AOT 产物 —— 仓库根
+#    先自检：dotnet --version 必须是 10.0.113（见「前置条件」）
 dotnet publish server/IdeaApp/IdeaApp.csproj -c Release -r linux-x64 \
   -p:PublishAot=true -p:InvariantGlobalization=true
 ```
 
 ```bash
-# ③ 起服务 —— 仓库根（产物目录）
-cd server/IdeaApp/bin/Release/net10.0/linux-x64/publish && ./IdeaApp
+# ③ 起服务 —— 仓库根（② 的产物目录；publish 之前它不存在）
+PUBLISH=server/IdeaApp/bin/Release/net10.0/linux-x64/publish
+cd "$PUBLISH" && ./IdeaApp
 ```
 
 ```bash
 # ④ 装 agent skill —— 仓库根（默认装到 ~/.zcode/skills/idea-manager）
 bash skills/install-agent-skill.sh
+```
+
+```bash
+# ⑤ 先在本地把 skill 跑通 —— 仓库根
+#    本地实例没有 basic auth，不用 IDEA_USER / IDEA_PASS
+export IDEA_BASE_URL=http://127.0.0.1:5080
+python3 ~/.zcode/skills/idea-manager/scripts/fetch.py
 ```
 
 起服务后：网页在 <http://127.0.0.1:5080>，接口在 `/api/**`，契约在 `/openapi/v1.json`。
@@ -65,6 +95,10 @@ bash skills/install-agent-skill.sh
 > ⚠️ **第 ② 步依赖 .NET SDK 10.0.113 与 clang**：换成别的 SDK 版本，
 > `restore` 可能直接失败（见[已知限制与坑](#已知限制与坑)）。Linux 上发布 Native AOT
 > 还需要构建依赖 `clang` 与 `zlib1g-dev`。
+
+> ⚠️ **第 ④ 步装完还要 `export IDEA_BASE_URL`**，否则取件器直接报 `missing_config`
+> （`IDEA_BASE_URL` 是它的必填项）。第 ⑤ 步就是干这个的：**先在本地把整条链路跑通**，
+> 再去接 nginx 那边的域名 + 证书 + basic auth —— 那三道坎跟本地链路是两回事。
 
 ---
 
@@ -84,10 +118,10 @@ bash skills/install-agent-skill.sh
 | 记一条想法（可带标签） | `POST /api/ideas`，体 `{"projectId":"","content":"…","tags":["a"]}` → 201 |
 | 改正文（只发要改的字段） | `PATCH /api/ideas/{id}`，体 `{"content":"新正文"}` |
 | 覆盖式设置标签（**不给 `tags` = 清空**） | `PUT /api/ideas/{id}/tags`，体 `{"tags":["咖啡"]}` |
-| 标记完成 / 取消完成（`done` **必填**） | `POST /api/ideas/{id}/complete`，体 `{"done":true}` |
+| 标记完成 / 取消完成（`done` 契约标必填；**服务端不校验**，漏了 = false = 取消完成） | `POST /api/ideas/{id}/complete`，体 `{"done":true}` |
 | 删一条想法（**软删**，进回收站） | `DELETE /api/ideas/{id}` → 204 |
 | 从回收站恢复想法 | `POST /api/ideas/{id}/restore` |
-| 批量标记完成 | `POST /api/ideas/bulk/complete`，体 `{"ids":[…],"done":true}` |
+| 批量标记完成（`done` 同样不校验，漏了 = 取消完成） | `POST /api/ideas/bulk/complete`，体 `{"ids":[…],"done":true}` |
 | 批量加标签（并集追加；`replace:true` 才是覆盖式） | `POST /api/ideas/bulk/tags`，体 `{"ids":[…],"tags":["a"]}` |
 | 批量删除（**软删**） | `POST /api/ideas/bulk/delete`，体 `{"ids":[…]}` → 200 + 数组 |
 | 合并多条想法成一条（**源想法硬删**） | `POST /api/ideas/merge`，体 `{"ids":[…, …],"content":"可选"}` |
@@ -104,7 +138,7 @@ bash skills/install-agent-skill.sh
 | 从回收站恢复项目（连带恢复「随项目一起删」的想法） | `POST /api/projects/{id}/restore` |
 | 重排项目顺序（未列出的接在后面） | `POST /api/projects/reorder`，体 `{"ids":["id1","id2"]}` |
 | 读设置 | `GET /api/settings` → `{"project.sort_mode":"recent"}` |
-| 改设置（**只有 `project.sort_mode` 可写**） | `PUT /api/settings/project.sort_mode`，体 `{"value":"recent\|manual"}` |
+| 改设置（**只有 `project.sort_mode` 可写**） | `PUT /api/settings/{key}`（key 目前只有 `project.sort_mode`），体 `{"value":"recent\|manual"}` |
 | 标签字典（含使用次数） | `GET /api/tags` |
 | 标签补全建议 | `GET /api/tags/suggest?projectId=&prefix=` |
 
@@ -113,7 +147,7 @@ bash skills/install-agent-skill.sh
 | 能做什么 | 怎么用 |
 |---|---|
 | 回收站内容（已删项目 = 容器，顶层是单独删的想法） | `GET /api/trash` |
-| 到期自动硬删 | 只从配置读 `Trash:RetentionDays`（默认 30 天），改完重启生效；**没有手动彻底删除入口** |
+| 到期自动硬删 | 回收站保留期**只能改配置** `Trash:RetentionDays`（默认 30 天），改完重启生效；**页面与 API 都没有入口**，也没有手动彻底删除的入口。但 `merge` 会替你硬删源想法（不进回收站，见下） |
 
 **实时事件（SSE）**
 
@@ -169,21 +203,21 @@ Vue 3 + TypeScript + Vite，无 UI 框架、无状态库（模块级 `ref` 单�
 | 宽度 | 形态 |
 |---|---|
 | ≥1024px | 左侧 220px 项目侧栏 + 右侧铺满的想法流（两列交错）；顶栏 / 列表 / 输入框三段，只有列表滚动 |
-| <1024px | 侧栏收成顶栏项目下拉，过滤行随内容滚走，顶栏多一个 🔍 聚焦搜索框 |
+| <1024px | 侧栏收成顶栏项目下拉，过滤行随内容滚走，顶栏多一个 🔍 按钮：点它滚回列表顶部，并把焦点放到过滤行里那个搜索框上 |
 | <768px | 列表单列 |
 
 **主页交互**
 
 | 能做什么 | 怎么用 |
 |---|---|
-| 记一条想法 | 底部输入框 Enter 提交、Shift+Enter 换行；**成功才清空并把焦点放回，失败保留草稿** |
+| 记一条想法 | 底部输入框 Enter 提交、Shift+Enter 换行；**成功才清空输入框，失败保留草稿；提交完焦点一律回到输入框** |
 | 改正文 | 点正文进编辑态 → Ctrl+Enter 保存、Esc 取消、失焦自动保存；内容没改不发请求 |
 | 完成 / 删除 | 点卡片 meta 行的 ○/● 切换完成；🗑 删除有二次确认，删后进回收站 |
 | 编辑标签 | 点卡片右下 🏷 → 回车 / 空格 / 逗号加标签，上下键选候选，× 删；每次改动立刻落库 |
 | 过滤 | 顶部过滤条：状态三态、关键词、标签多选 + AND/OR 切换；**过滤在服务端做**，一次请求拿最终结果 |
 | 批量操作 | 勾选卡片左侧复选框 → 操作条：标记完成 / 撤销完成 / 加标签（并集）/ 合并 / 删除 / 取消选择 |
 | 合并 | 批量条「合并」→ 对话框预览各条正文，默认空行拼接、可改；确认后源条目硬删、生成新条目 |
-| 深链定位 | `/?idea=<想法 id>` 打开主页会滚到那条并闪一下高亮 |
+| 深链定位（URL 里带 id，直接定位到某条内容） | `/?idea=<想法 id>` 打开主页会滚到那条并闪一下高亮 |
 | 往回翻历史 | 向上滚，距顶部 400px 自动预加载更旧的一页，prepend 后视口钉回原处；**底部才是「当下」** |
 | 实时同步 | 页面自动订阅 SSE；断线指数退避重连（2s → 30s）；收到 `resync` 就整表重拉 |
 | 新内容提示 | 贴底时自动跟随；用户上翻时不抢滚动，浮出「↓ 有 N 条新内容」按钮 |
@@ -230,7 +264,7 @@ server/
     Domain/                 领域模型、MonotonicGuid（UUIDv7）、分词器
     Application/            用例服务层（项目/想法/标签/回收站/webhook/投递/搜索）
     Infrastructure/         SQL、事件总线、SSE、webhook 投递、OpenAPI 导出、schema.sql
-    Contracts/              DTO、请求体、JSON 源生成上下文、错误码清单
+    Contracts/              DTO、请求体、JSON 源生成上下文（AOT 下把类型信息预编译好，避免运行时反射）、错误码清单
     Endpoints/              各资源的端点映射（MapXxx 扩展方法）
     Program.cs              组合根：注册、端点映射、静态文件与 SPA 兜底
     appsettings.json        默认配置
@@ -249,7 +283,7 @@ web/                        前端（Vue 3 + TypeScript + Vite）
   e2e/                      Playwright 端到端用例与底座
   playwright.config.ts      Playwright 配置（端口、baseURL、webServer）
 skills/
-  idea-manager/             skill 内容源（索引页 + references/，服务端分发）
+  idea-manager/             skill 内容源（索引页 + references/，服务端分发；publish 时按 csproj 的显式文件列表拷进产物的 skill/ 目录，运行时不再读仓库）
   idea-manager-client/      agent 侧安装的薄壳（指针 + 取件器）
   install-agent-skill.sh    把薄壳装到 agent 的 skills 目录
 ```
@@ -336,15 +370,6 @@ bash server/scripts/aot-smoke.sh
 它发布一份真 AOT 产物、打一遍端点，再用仓库里的**真取件器**跟它对一次面
 （跨栈检查：逐文件核对 sha256）。缺 python3 是**失败**不是跳过。
 
-### 前置条件
-
-| 依赖 | 版本 | 说明 |
-|---|---|---|
-| .NET SDK | **10.0.113** | csproj 把 ILCompiler 显式提到 10.0.14，避开这个 SDK 内置的 10.0.13 命中的 advisory（GHSA-p3jp-9v83-76w9）；`TreatWarningsAsErrors` 会把 NU1903 升级成错误 → restore 直接失败。换 SDK 版本的结论要重验 |
-| Node / npm | Node **24** | 与 CI 一致 |
-| Python | **3.9+** | 取件器只用标准库，无第三方依赖 |
-| clang + zlib1g-dev | 任意近期版本 | Linux 上发布 Native AOT 的构建依赖（`apt-get install -y clang zlib1g-dev`） |
-
 ---
 
 ## 运行
@@ -373,7 +398,8 @@ npm run dev
 ### 生产（AOT 产物）
 
 ```bash
-cd server/IdeaApp/bin/Release/net10.0/linux-x64/publish
+PUBLISH=server/IdeaApp/bin/Release/net10.0/linux-x64/publish
+cd "$PUBLISH"
 
 IDEA_Urls=http://127.0.0.1:5080 \
 IDEA_Trash__RetentionDays=30 \
@@ -409,7 +435,7 @@ IDEA_PublicBaseUrl=https://ideas.example.com \
 |---|---|---|
 | `Urls` | `http://127.0.0.1:5080` | Kestrel 监听地址（只绑回环，对外走 nginx） |
 | `Database:Path` | `data/idea.db` | SQLite 文件路径。**相对路径以应用目录为基准，与当前工作目录无关** |
-| `Trash:RetentionDays` | `30` | 回收站保留天数。**页面与 API 都不可改**；这是唯一会导致不可逆删除的开关，配成 ≤0 按 1 天处理并告警 |
+| `Trash:RetentionDays` | `30` | 回收站保留天数。**页面与 API 都不可改**；它是唯一会让回收站里的东西到期消失的开关，配成 ≤0 按 1 天处理并告警。另有一条立刻不可逆的路：`merge` 硬删源想法，不进回收站 |
 | `PublicBaseUrl` | 空 | 用于生成 `{{idea.url}}`，如 `https://ideas.example.com` |
 | `Api:MaxIdeasPerResponse` | `2000` | **不给 `limit` 时**的命中数上限，超了报 400 `too_many_ideas`；给了 `limit` 时上限是 **1000**（写死在服务层），且 `offset` 必须与 `limit` 同给 |
 | `Webhook:TimeoutSeconds` | `10` | 单次投递超时 |
@@ -436,9 +462,16 @@ OpenAPI 文档写到该文件（见[OpenAPI 与 API 用法](#openapi-与-api-用
 库文件会落到 `/data/idea.db` —— 不可预期、可能没权限，也可能误伤别的数据。
 开发时想让库文件落在项目目录，显式给绝对路径即可（见[运行 · 开发](#开发)）。
 
+**按[快速开始](#快速开始)跑，库会落在发布目录里** ——
+`server/IdeaApp/bin/Release/net10.0/linux-x64/publish/data/idea.db`，
+而 `bin/` 在 `.gitignore` 里（`.gitignore` 第 2 行），一次 `git clean -xdf`
+就把它连同 WAL 一起抹掉。想要一个稳的位置，把 `IDEA_Database__Path`
+指到发布目录之外（例如 `/var/lib/idea/idea.db`）。
+
 ### 数据与存储
 
-- **库**：单个 SQLite 文件，手写 SQL。schema 内嵌成资源
+- **库**：一个 SQLite 库，手写 SQL，跑在 **WAL 模式**下 —— 运行中的数据**同时在三个文件里**
+  （见下面的[数据与备份](#数据与备份)）。schema 内嵌成资源
   （`server/IdeaApp/Infrastructure/schema.sql`），首次启动建库建表并写入内置收件箱 `inbox`。
 - **全文索引**：与业务写在**同一个事务**里，强一致。老库按 `search_meta` 版本号在启动时整体回填一次
   —— **回填失败直接让启动失败**：索引与数据不一致时搜索给的是**错结果**，那比起不来危险得多。
@@ -447,6 +480,31 @@ OpenAPI 文档写到该文件（见[OpenAPI 与 API 用法](#openapi-与-api-用
 - **没有「标题」**：想法就是一段文字。库里无该列、接口无该字段、模板无 `{{idea.title}}`。
   老客户端仍发 `title` 会被 System.Text.Json **静默忽略**（不报错）。
 - **排序**：列表恒 `updated_at ASC, id ASC`（最老的在顶）；同刻插入靠 id 定序。
+
+### 数据与备份
+
+**现场是三个文件，不是一个** —— 库跑在 WAL 模式（`PRAGMA journal_mode=WAL`），
+运行中的数据同时在 `idea.db`、`idea.db-wal`、`idea.db-shm` 三个文件里
+（`.gitignore` 也认这三个后缀）。**不停应用直接 `cp idea.db` 会丢掉还在 WAL 里、
+没 checkpoint 的写入** —— 看起来拷成功了，实际少数据。
+
+备份两条路：
+
+| 做法 | 怎么做 | 代价 |
+|---|---|---|
+| 停应用整体拷（最稳） | 停掉进程 → 把 `idea.db`、`idea.db-wal`、`idea.db-shm` **三个文件一起**拷走 | 要停机 |
+| 不停应用用 sqlite3 备份 | 在应用目录下执行：`sqlite3 data/idea.db ".backup '/backup/idea-$(date +%F).db'"` | 要装 sqlite3 命令行 |
+
+恢复（顺序不能错）：
+
+1. **停应用**；
+2. 用备份覆盖 `idea.db`；
+3. **删掉残留的 `idea.db-wal` 与 `idea.db-shm`** —— 留着的话 SQLite 会把旧 WAL
+   叠回刚恢复的库；
+4. 起应用。
+
+> ⚠️ **回收站到期硬删不可逆** —— 保留期一到，后台任务直接删行，没有任何中间态可以救。
+> **备份是唯一的兜底**（`merge` 硬删源想法同理，它连回收站都不进）。
 
 ---
 
@@ -457,7 +515,7 @@ OpenAPI 文档写到该文件（见[OpenAPI 与 API 用法](#openapi-与-api-用
 
 ```bash
 cp docs/nginx/idea.conf /etc/nginx/conf.d/idea.conf
-# 按自己的域名改 server_name、证书路径、htpasswd 路径
+# 按自己的域名改 server_name、证书路径、htpasswd 路径（下面有清单）
 htpasswd -c /etc/nginx/.htpasswd ideauser
 nginx -t && systemctl reload nginx
 ```
@@ -465,7 +523,15 @@ nginx -t && systemctl reload nginx
 > ⚠️ **配置里的 `http2 on;` 需要 nginx ≥ 1.25.1** —— 旧版 nginx 在 `nginx -t`
 > 阶段就报错，照抄配置会直接卡住。
 
-`docs/nginx/idea.conf` 里两处要留意：
+`docs/nginx/idea.conf` 里**要按自己的域名改三处**（其余照抄）：
+
+| 配置项 | 文件里的默认值 | 改成 |
+|---|---|---|
+| `server_name` | `ideas.example.com` | 你的域名 |
+| `ssl_certificate` / `ssl_certificate_key` | `/etc/letsencrypt/live/ideas.example.com/fullchain.pem` / `…/privkey.pem` | 你自己的证书路径（两个都要改） |
+| `auth_basic_user_file` | `/etc/nginx/.htpasswd` | 你自己的 htpasswd 路径 —— 要与上面 `htpasswd -c` 写的地方一致 |
+
+`docs/nginx/idea.conf` 里另有两处要留意：
 
 - **SSE（`/api/events`）单独一段**：`proxy_buffering off` + `X-Accel-Buffering: no`，
   否则实时推送会被 nginx 攒着不发。
@@ -475,8 +541,16 @@ nginx -t && systemctl reload nginx
   但**刻意不带 `code`**（直连 Kestrel 时是 413 + 空响应体）。
   **改这个数字要同步改手册的 `references/errors.md`**，两边说的是同一件事。
 
-发布产物里带着 skill 的分发副本（`skill/idea-manager/`）—— agent 的说明书由它提供，
-部署时跟应用一起拷过去。少了它，取说明书的那个端点会回 404 `skill_not_distributed`
+发布产物里带着 skill 的分发副本 —— agent 的说明书由它提供，部署时**拷到应用目录下的
+`skill/idea-manager/`**（对应配置项 `Skill:Path`；应用目录就是可执行文件所在的那个目录）。
+拷完验一眼：
+
+```bash
+# 在应用目录（可执行文件所在目录）下执行
+ls skill/idea-manager/SKILL.md   # 没有它，取说明书会 404 skill_not_distributed
+```
+
+少了它，取说明书的那个端点会回 404 `skill_not_distributed`
 （副本在哪儿由 `Skill:Path` 决定）；**路径写错是另外两个码**：skill 名字拼错 →
 `skill_endpoint_not_found`，文件名拼错 → `skill_file_not_found`，排查方向不一样。
 
@@ -485,6 +559,51 @@ nginx -t && systemctl reload nginx
 nginx 在别的机器上要在代码里显式加 `KnownProxies`，否则这些头不生效
 （应用会以为自己还在 http 上）。注意 .NET 10 的 `ForwardedHeadersOptions` 默认
 `ForwardedHeaders.None` —— 不显式点名要处理哪些头，中间件等于没挂。
+
+### 首次访问
+
+浏览器打开 `https://<你的域名>` 会先弹 **nginx 的 basic auth 框** ——
+用 `htpasswd -c` 时设的那个账号登录（**应用本身不认账号**：鉴权全在 nginx 这一层，
+应用收到的是已经过了 nginx 的请求）。
+
+agent 用同一套账号：环境变量 `IDEA_USER` / `IDEA_PASS`（见[连接配置](#连接配置)）。
+连本地实例（`http://127.0.0.1:5080`）则两个都不用给。
+
+### 升级
+
+```bash
+# ① 先备份库（见「数据与备份」）
+# ② 停服务
+systemctl stop idea            # 或直接 kill 掉那个进程
+# ③ 替换发布目录 —— data/ 与改过的 appsettings.json 留着别动
+# ④ 重启
+systemctl start idea
+```
+
+- **只换发布目录**（可执行文件 + `wwwroot/` + `skill/` + `libe_sqlite3.so`）。
+- **`data/` 留着** —— 库在里面，重新发布不会覆盖它（`data/` 不在 publish 产物里）。
+- **`appsettings.json` 留着** —— 它**在**发布产物里，直接覆盖会把改过的配置打回默认值；
+  要改就单独合并这一份。
+- 改过 `skills/idea-manager/` 里的内容源，还得重新 publish 并替换产物，
+  agent 下次取件才拿得到新手册（见[Agent skill](#agent-skill)）。
+
+---
+
+## 排错速查表
+
+按症状查，不按模块查 —— 症状 → 原因 → 处理：
+
+| 症状 | 原因 | 处理 |
+|---|---|---|
+| **页面全白，且没有任何报错** | `wwwroot/` 没构建或没拷进产物 | 构建前端（`cd web && npm run build`）→ 重新 publish → `ls <应用目录>/wwwroot/index.html` 看一眼 |
+| **起不来：端口被占用 / 绑定失败** | 默认端口 5080 已被占用 | 换端口：`IDEA_Urls=http://127.0.0.1:5190 ./IdeaApp`（`IDEA_` 前缀压过命令行参数） |
+| **取说明书 404 `skill_not_distributed`** | 分发副本没拷、路径没配，或副本里缺入口 `SKILL.md` | 在应用目录下 `ls skill/idea-manager/SKILL.md`；核对 `Skill:Path` |
+| **取说明书 404 `skill_endpoint_not_found`** | skill 名字拼错（路径没落在 `skill/idea-manager/` 这个前缀下） | 核对路径前缀 |
+| **取说明书 404 `skill_file_not_found`** | 文件名拼错，或文件超过 4 MiB 上限 | 核对文件名与大小 |
+| **nginx 413** | 请求体超过 `client_max_body_size 4m`（4 MiB） | 改配置并同步改手册的 `references/errors.md` |
+| **取件器退出码 3** | 服务端暂时连不上，用的是本地缓存里的上一版手册 | 退出码 3 是专属的「降级」信号：重试一次，或提醒用户服务端暂时不可达 |
+| **取件器退出码 1，`missing_config`** | 没 `export IDEA_BASE_URL`（必填项） | `export IDEA_BASE_URL=http://127.0.0.1:5080`（本地实例）或你的域名 |
+| **库里数据看着不对 / 少了东西** | 库在 WAL 模式下，先确认那三个文件 | `ls <应用目录>/data/idea.db*`；**别只拷 `idea.db`**（见[数据与备份](#数据与备份)） |
 
 ---
 
@@ -615,6 +734,9 @@ curl -sS --fail-with-body -X PATCH "$IDEA_BASE_URL/api/ideas/$ID" \
 - 样板里的 `-u` **只在有凭据时保留**；`IDEA_TOKEN` 有值时再加 `-H "X-Api-Key: $IDEA_TOKEN"`。
 - **别把凭据写进 URL** —— nginx 会把 userinfo 原样写进访问日志。
 - 带请求体就要带 `Content-Type: application/json`（不带是 415）。
+- **`done` 一律自己带上** —— 契约把它标成必填，服务端却不校验：漏了就是 `false`
+  （= 取消完成），而且**不报错**。发 `complete` / `bulk/complete` 时显式写
+  `"done":true` 或 `"done":false`。
 - **请求体别用 shell 拼字符串** —— 引号、换行、反斜杠会被 shell 吃掉。写进文件，
   或用带引号的 heredoc 直接喂给 curl（`<<'JSON'` 的引号不能省，否则 body 里的 `$` 会被展开）：
 
@@ -629,29 +751,38 @@ JSON
 跑通了会看到响应体：列表是**裸数组**（`[{...}]`），单个资源是一个对象，
 `DELETE` 是 204、没有响应体。
 
-**最容易丢数据的三处**：
+**最容易丢数据的地方**：
 
 1. **覆盖式 vs 并集式标签**：`PUT /api/ideas/{id}/tags` 是**整体替换**
    （不给 `tags` 就是清空）；`POST /api/ideas/bulk/tags` 默认**并集追加**
    （给 `replace: true` 才是覆盖式）。用错了会丢标签。
-2. **`POST /api/ideas/merge` 会硬删源想法**（不进回收站）。批量删除
-   （`POST /api/ideas/bulk/delete`）才是软删。
+2. **`POST /api/ideas/merge` 会硬删源想法**（不进回收站）—— **误合不可恢复**，
+   合之前先把正文复制出来。批量删除（`POST /api/ideas/bulk/delete`）才是软删。
 3. **webhook 的 url 与 headers 默认是遮蔽版**（url 只留 `scheme://host[:port]`，
    路径段与请求头的值显示成 `***`）。要原值得显式加 `?unmask=true`，
    而**只有 `GET /api/webhooks` 与 `GET /api/webhooks/{id}` 认它**（写接口的响应一律遮蔽，
    加了也没用）。改其它字段时**别把遮蔽值写回去** —— 那两个键整个别发。
+4. **批量完成漏 `done`** —— 服务端不校验这个字段，漏了就是 `false` =
+   **取消完成**：一批本来已完成的想法会被整批改回未完成，而且**不报错**。
 
 **分页的坑**：`/api/ideas` 的 `offset` 从**最新**一端数（往回翻历史），
 `/api/search` 的 `offset` 从**最相关**一端数 —— 两者语义相反，别混用。
 `/api/ideas` 的 `limit` 上限是 1000；`/api/search` 的 `limit` 上限是 100、默认 20。
-`/api/search` 的 `q` **必填**（空串 → 400 `invalid_search_query`），
-但契约里它标成了可选。
+`/api/search` 的 `q` **必填**（空串 → 400 `invalid_search_query`）——
+**契约里也标成必填**（`required: true`，由 `OpenApiQueryParameterTransformer` 显式对齐的：
+端点把它绑成可空，框架据此会标成可选）。
 
 ### 端点清单
 
 服务端的完整契约在 `/openapi/v1.json`；手册的索引页
 [`skills/idea-manager/SKILL.md`](skills/idea-manager/SKILL.md) 里有一份同样的
-「能力 → 方法 + 路径」表（33 个 API 端点），下表与它保持同步。
+「能力 → 方法 + 路径」表（**33 个业务端点**）。下表在它之外**另外补上 2 个 skill 分发端点
+与 1 个 `/skill/**` 兜底**（共 **36 行**），与它保持同步。
+
+**三个数字的关系**：手册索引页 33 个业务端点 → 本表 36 行（多 2 个 skill 分发端点
+与 1 个 `/skill/**` 兜底）→ 契约 `openapi/idea-v1.json` 是 **29 条路径 / 36 个操作**
+（路径比操作少，是因为同一路径上有多个方法 —— 例如 `/api/webhooks/{id}` 有 GET / PATCH / DELETE）。
+**以 `/openapi/v1.json` 为准**。
 
 | 能力 | 方法 + 路径 |
 |---|---|
@@ -662,9 +793,9 @@ JSON
 | 改一条想法（只发要改的字段） | PATCH /api/ideas/{id} |
 | 删一条想法（进回收站） | DELETE /api/ideas/{id} |
 | 覆盖式设置标签（**不给 `tags` = 清空**） | PUT /api/ideas/{id}/tags |
-| 标记完成 / 取消完成（`done` **必填**） | POST /api/ideas/{id}/complete |
+| 标记完成 / 取消完成（`done` 契约标必填；**服务端不校验**，漏了 = false = 取消完成） | POST /api/ideas/{id}/complete |
 | 从回收站恢复想法 | POST /api/ideas/{id}/restore |
-| 批量标记完成 / 取消完成（`done` **必填**） | POST /api/ideas/bulk/complete |
+| 批量标记完成 / 取消完成（`done` 同样不校验，漏了 = false = 取消完成） | POST /api/ideas/bulk/complete |
 | 批量加标签（并集追加；给 `replace: true` 就是**覆盖式**） | POST /api/ideas/bulk/tags |
 | 批量删除想法（进回收站） | POST /api/ideas/bulk/delete |
 | 合并多条想法成一条 | POST /api/ideas/merge |
@@ -690,6 +821,7 @@ JSON
 | 手动重投一条投递 | POST /api/webhooks/{id}/deliveries/{deliveryId}/retry |
 | skill 清单（版本 + 文件清单 + 逐个 sha256） | GET /skill/idea-manager/version |
 | 取 skill 文件正文 | GET /skill/idea-manager/{path} |
+| `/skill/**` 兜底（路径拼错时回 404，不是 200 + HTML） | GET /skill/{rest} |
 
 ---
 
@@ -734,7 +866,7 @@ bash skills/install-agent-skill.sh                       # 装到 ~/.zcode/skill
 bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager
 ```
 
-脚本是幂等的：目标目录里**旧 skill 留下的那几个已知文件**会被清掉
+脚本是幂等的（同一个操作做两次，结果和做一次一样）：目标目录里**旧 skill 留下的那几个已知文件**会被清掉
 （`scripts/idea.py`、`scripts/run-tests.sh`、`references/openapi.json`、
 `tests/test_cli.py`、`__pycache__` 里的 `.pyc`），
 目录只在**空了之后**才删（`rmdir`）—— 里面还有你自己的文件就留着，
@@ -759,6 +891,10 @@ bash skills/install-agent-skill.sh ~/.claude/skills/idea-manager
 | `IDEA_PASS` | 否 | nginx basic auth 密码 |
 | `IDEA_TOKEN` | 否 | 可选。若 nginx 侧另外校验 `X-Api-Key` 头则填 |
 | `IDEA_SKILL_CACHE_DIR` | 否 | 取件器的缓存根目录（默认 `${XDG_CACHE_HOME:-~/.cache}/idea-skill`） |
+
+**本地实例**：起一个本地实例（`./IdeaApp`，默认 `http://127.0.0.1:5080`）的话，
+`export IDEA_BASE_URL=http://127.0.0.1:5080` 就够了 ——
+**它没有 basic auth，不用给 `IDEA_USER` / `IDEA_PASS`**。
 
 设一次，后面每个命令都能用（`export` 只对当前 shell 生效）：
 
@@ -812,7 +948,8 @@ python3 "$SKILL/scripts/fetch.py"
 ```
 
 **不带凭据跑自检会直接 `auth_error`**（退出码 1）：本项目的标准部署走 nginx basic auth，
-只有不带 basic auth 的实例才用得着空着跑。
+只有不带 basic auth 的实例才用得着空着跑 —— 比如本地实例
+（`IDEA_BASE_URL=http://127.0.0.1:5080`，去掉 `IDEA_USER` / `IDEA_PASS` 两行）。
 
 ### 调 API
 
@@ -836,7 +973,7 @@ python3 "$SKILL/scripts/fetch.py"
 
 ## 测试
 
-四套闸门，加一条 AOT 冒烟。仓库根 `bash verify.sh` 一次跑完（见[CI 与闸门](#ci-与闸门)）。
+七道闸门（含一条 AOT 冒烟）。仓库根 `bash verify.sh` 一次跑完（见[CI 与闸门](#ci-与闸门)）。
 单独跑时：
 
 | 命令 | 目录 | 覆盖什么 |
@@ -889,20 +1026,24 @@ Playwright 的 workers 固定 1（共用一个库），并行会互相复位。
 ### API 语义
 
 - **没有手动彻底删除**：删除只有一条路 —— 软删进回收站，到期由后台自动硬删
-  （每小时清一次，启动时先清一次）。**保留期是唯一会导致不可逆删除的开关**，
+  （每小时清一次，启动时先清一次）。**回收站保留期是唯一会让回收站里的东西到期消失的开关**，
   页面与 API 都没有设置入口，改它只能改配置 + 重启。
   配成 ≤0 按 1 天处理并告警。Testing 环境不注册清理 worker。
+  **但另有一条立刻不可逆的路**：`merge` 硬删源想法，不进回收站（见下）——
+  没有手动入口，但 merge 会替你删。
 - **恢复项目会连带恢复「随项目一起删」的想法**（靠 `deleted_at` 相等判定）；
   之前单独删过的不复活。
-- **任何写操作都刷新 `updated_at`** —— 编辑一条老想法会让它下方条目整体上移一格
+- **想法的写操作都会刷新 `updated_at`**（项目的改名 / 删除 / 恢复也一样）—— 编辑一条老想法会让它下方条目整体上移一格
   （两列布局下下半墙卡片左右互换）。这是**已批准的取舍**，别当 bug 修。
+  **唯一的例外是项目重排**：它只写 `sort_order`，**刻意不刷新** `updated_at`
+  （`updated_at` 是 recent 排序的回落值，被排序动作刷新的话，手动调顺序会改变排序结果）。
 - **合并与批量删除不是一回事**：`merge` 硬删源想法（不进回收站），
   `bulk/delete` 软删。合并**不跳过**不存在的 id（少一条就整体 404，一条都不改），
   不能跨项目，少于两条报 400 `invalid_merge_selection`。
 - **批量删除是幂等的**：已在回收站里的 id 算「已处理」，不重置保留期。
 - **批量标记完成会刷新每一条的 `updated_at`** —— 处理过的条目会挪到列表底部。
-- **`done` 必填**：`POST /api/ideas/{id}/complete` 与 `POST /api/ideas/bulk/complete`
-  不给 `done` = `false` = **取消完成**，服务端**不报错**。
+- **`done` 契约标必填，服务端不校验**：`POST /api/ideas/{id}/complete` 与 `POST /api/ideas/bulk/complete`
+  不给 `done` = `false` = **取消完成**，服务端**不报错**。**调用方必须自己保证带上这个字段。**
 - **内置收件箱 `inbox` 不能删**（400 `inbox_not_deletable`），可以改名。
 - **只有 `project.sort_mode` 可写**，别的设置键一律 400 `setting_key_not_writable`。
 - **`PATCH` 只发要改的字段**：`null` = 不改；但空串 / 空数组常常是「真的清空」
@@ -928,7 +1069,8 @@ Playwright 的 workers 固定 1（共用一个库），并行会互相复位。
 
 - **全文索引回填失败 = 启动失败**：索引与业务数据不一致时搜索给的是**错结果**，
   那比起不来危险得多。代价是索引写失败会连累业务写（同一事务）。
-- **老库的 FTS 列数错位是静默的**：`bm25` 权重个数不对**不会报错**，只是相关度悄悄错位。
+- **老库的 FTS 列数错位是静默的**：`bm25`（按关键词相关度打分的排序算法）权重个数不对
+  **不会报错**，只是相关度悄悄错位。
   验收必须直接断言 `PRAGMA table_info(idea_fts)` 的列数。
 - **硬删必须同步删索引行**：`idea` 表没有显式整数主键，rowid 会被复用；
   回收站到期清理是**裸 SQL、绕过仓储层**，最容易漏。孤儿索引行占着 rowid，新行会串位。
@@ -944,8 +1086,9 @@ Playwright 的 workers 固定 1（共用一个库），并行会互相复位。
 - **卡片编号是「位置」不是身份**：往上翻一批，编号整体 +P。
 - **往回翻历史必须净增偶数条**：请求 101 条（多一条是探针），满页时丢掉**最老**的那条，
   净增 100 条 —— 丢错成最新的那条会在已加载集合中间留洞。
-- **AND/OR 是每台设备自己的偏好**，存 localStorage，不跨设备。
-- **过滤条件变化与 SSE 事件用两个防抖计时器**（各 250ms）—— 共用一个会互相顶掉。
+- **AND/OR 是每台设备自己的偏好**，存 localStorage（浏览器本地的键值存储），不跨设备。
+- **过滤条件变化与 SSE 事件用两个防抖计时器**（各 250ms；防抖 = 连续触发时只等最后一次）
+  —— 共用一个会互相顶掉。
 - **SSE 推来的增量条目由前端近似判断显不显示**，随后防抖 250ms 重拉服务端结果覆盖 ——
   英文下个别条目会「先出现再被收回」。
 
