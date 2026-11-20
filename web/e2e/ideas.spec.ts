@@ -245,7 +245,7 @@ test('删标签：标签从条目上消失，刷新后也不再出现', async ({
   const item = ideaItem(page, idea.id);
   await expect(item.getByText('要删的标签', { exact: true })).toBeVisible();
 
-  const input = await openTagEditor(page, idea.id);
+  await openTagEditor(page, idea.id);
   const saved = tagsSaved(page, idea.id);
   await item.getByLabel('删除标签 要删的标签').click();
   await saved;

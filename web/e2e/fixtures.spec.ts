@@ -48,7 +48,7 @@ test('复位：回收站里只剩形态统一的残渣', async ({ api, seed }) =
   expect(JSON.stringify(trash)).not.toContain('会被清掉的想法');
 });
 
-test('复位：用例之间互不干扰（上一个用例造的数据看不见了）', async ({ api, seed }) => {
+test('复位：用例之间互不干扰（上一个用例造的数据看不见了）', async ({ api }) => {
   // 这个用例之前的那条用例造过「自检想法 A/B」与「自检项目」。
   // beforeEach 的复位应该把它们清干净了。
   expect(await api.listIdeas()).toEqual([]);

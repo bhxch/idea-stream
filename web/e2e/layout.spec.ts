@@ -418,7 +418,6 @@ async function expectNoHorizontalOverflow(page: Page, label: string): Promise<vo
  * 三种都是排版事故，只是后果不同，所以报错里把 overflow-x 一起写出来。
  */
 async function expectNoUnexpectedHorizontalScroll(
-  page: Page,
   containers: Named[],
   label: string,
 ): Promise<void> {
@@ -471,7 +470,6 @@ async function expectNoUnexpectedHorizontalScroll(
  * 只有**滚不到**（overflow 是 hidden/clip）才算真的裁掉。
  */
 async function expectTextNotClipped(
-  page: Page,
   blocks: Named[],
   label: string,
 ): Promise<void> {
@@ -557,7 +555,7 @@ async function expectTextNotClippedWhileEditing(
       editor,
       `${label}：想法 ${group.ideaId} 没进编辑态（编辑框没出现）`,
     ).toBeVisible();
-    await expectTextNotClipped(page, group.blocks, label);
+    await expectTextNotClipped(group.blocks, label);
     // 收起编辑态：Esc 是「放弃这次编辑」（不发请求）。
     await editor.press('Escape');
     await expect(
@@ -795,11 +793,11 @@ test.describe('排版与响应式', () => {
         });
 
         await expectNoHorizontalOverflow(page, label);
-        await expectNoUnexpectedHorizontalScroll(page, route.containers(page), label);
+        await expectNoUnexpectedHorizontalScroll(route.containers(page), label);
         // 非编辑态的文本块：卡片正文被 3 行截断（规格 §6.11），主页这一档是空的。
         const textBlocks = route.textBlocks(page);
         if (textBlocks.length > 0) {
-          await expectTextNotClipped(page, textBlocks, label);
+          await expectTextNotClipped(textBlocks, label);
         }
         await expectKeyElementsInViewport(page, route.keyElements(page, viewport), label);
 

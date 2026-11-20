@@ -84,7 +84,7 @@ test.describe('项目管理页：新建 / 改名 / 删除', () => {
     expect((await api.listProjects()).find((p) => p.id === project.id)?.name).toBe('改过的名字');
   });
 
-  test('新建 / 改名 / 删除成功都给出 info 提示', async ({ page, api, seed }) => {
+  test('新建 / 改名 / 删除成功都给出 info 提示', async ({ page, seed }) => {
     // 提示会攒着（过几秒才自动消失），这里取**最后**一条 ——
     // 直接用整组定位器会撞 Playwright 的 strict mode（匹配到多条）。
     const infoToast = page.locator('[role="status"] .toast--info').last();
@@ -417,7 +417,7 @@ test.describe('空状态', () => {
   });
 
   test('切到没有想法的项目：想法列表给出空状态文案', async ({ page, seed }) => {
-    const project = await seed.project('空项目');
+    await seed.project('空项目');
 
     await page.goto('/');
     await page.getByRole('button', { name: /空项目/ }).click();
