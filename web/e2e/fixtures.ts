@@ -36,6 +36,21 @@ import { fileURLToPath } from 'node:url';
 
 import { test as base, expect, type APIRequestContext, type Locator } from '@playwright/test';
 
+// API 的返回类型：**直接用应用的那份**（`import type` 是纯类型导入，
+// 运行时不产生任何依赖 —— e2e 仍然是打真实服务，不 import 应用的运行时代码）。
+//
+// 早先这里是手抄一份，理由是「应用改了类型也不该让 e2e 编译失败」。
+// 但那份手抄本身就是漂移的来源：应用给 Idea 加了字段，e2e 这边还是旧的
+// （两边各自独立，编译器看不出来）。改成类型导入之后，
+// 「e2e 用的字段在应用里不存在」与「两边形状对不上」都会在编译期红。
+import type {
+  Idea,
+  Project,
+  Tag,
+  TrashEntry,
+  Webhook,
+} from '../src/api/types';
+
 /** 内置收件箱的项目 id（首次启动时写进库里的那一行）。 */
 export const INBOX_ID = 'inbox';
 /** 内置收件箱的项目名。 */
@@ -43,57 +58,6 @@ export const INBOX_NAME = '收件箱';
 
 /** 复位留下的合并产物的**正文** —— 固定值，方便断言时把它排除掉。 */
 export const RESET_ARTIFACT = 'e2e-reset';
-
-// ── API 的返回类型（与 web/src/api/types.ts 对应） ───────────────────────
-// 单独抄一份：e2e 不 import 应用源码，应用改了类型也不该让 e2e 编译失败。
-
-export interface Idea {
-  id: string;
-  projectId: string;
-  content: string;
-  tags: string[];
-  done: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface Project {
-  id: string;
-  name: string;
-  sortOrder: number;
-  ideaCount: number;
-  lastActivityAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface Tag {
-  name: string;
-  count: number;
-}
-
-export interface Webhook {
-  id: string;
-  name: string;
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  bodyTemplate: string;
-  events: string[];
-  scope: 'global' | 'project';
-  projectId: string | null;
-  enabled: boolean;
-  hasSecret: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface TrashEntry {
-  kind: 'project' | 'idea';
-  project: Project | null;
-  ideas: Idea[];
-  idea: Idea | null;
-}
 
 export interface CreateIdeaInput {
   /** 所属项目；不传 = 收件箱。 */
