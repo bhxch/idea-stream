@@ -34,7 +34,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { test as base, expect, type APIRequestContext } from '@playwright/test';
+import { test as base, expect, type APIRequestContext, type Locator } from '@playwright/test';
 
 /** 内置收件箱的项目 id（首次启动时写进库里的那一行）。 */
 export const INBOX_ID = 'inbox';
@@ -515,6 +515,31 @@ export function freshDatabase(): void {
     cwd: e2eDir(),
     stdio: 'inherit',
   });
+}
+
+/**
+ * 点条目上「悬停才显形」的控件（🏷 标签 / 🗑 删除 / 勾选框）。
+ *
+ * 桌面上（≥768px 且有悬停能力）这些控件默认是**隐藏的，而且不参与命中测试**
+ * —— 见 `web/src/components/MessageItem.vue` 里隐藏态的 `pointer-events: none`。
+ * 真实用户得先把鼠标移到那条卡片上，控件才显形、才点得到；用例里照做：
+ * 先悬停，等它真的恢复成可点（`pointer-events: auto`）再点。
+ *
+ * ⚠️ 不悬停直接点会**卡在 Playwright 的命中检查上**（元素收不到指针事件），
+ * 表现是用例超时 —— 不是应用坏了。
+ *
+ * @param item 条目容器（`article[data-idea-id]`）。
+ * @param name 控件的无障碍名（「🏷 标签」/「🗑 删除」）。
+ */
+export async function clickHoverOnly(item: Locator, name: string): Promise<void> {
+  await item.hover();
+  const button = item.getByRole('button', { name });
+  await expect
+    .poll(async () => button.evaluate((element) => getComputedStyle(element).pointerEvents), {
+      message: `「${name}」没有因为悬停而恢复成可点`,
+    })
+    .toBe('auto');
+  await button.click();
 }
 
 /** e2e 目录（夹具文件所在目录）。 */

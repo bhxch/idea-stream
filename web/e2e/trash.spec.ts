@@ -22,7 +22,7 @@
  */
 import type { Page } from '@playwright/test';
 
-import { test, expect, type IdeaApi } from './fixtures';
+import { test, expect, clickHoverOnly, type IdeaApi } from './fixtures';
 
 /**
  * 回收站里的一个条目（按内容定位）。
@@ -83,7 +83,8 @@ async function emptyTrash(api: IdeaApi): Promise<void> {
  */
 async function deleteIdeaInUi(page: Page, ideaId: string): Promise<void> {
   const item = page.locator(`[data-idea-id="${ideaId}"]`);
-  await item.getByRole('button', { name: '🗑 删除' }).click();
+  // 🗑 在桌面上是「悬停才显形」的控件：先悬停到条目上，它才显形、才点得到。
+  await clickHoverOnly(item, '🗑 删除');
   await item.getByRole('button', { name: '确认删除' }).click();
   await expect(item).toHaveCount(0);
 }

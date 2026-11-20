@@ -13,7 +13,7 @@
  *   （data-idea-id、aria-label="选择 …" 等）——想法条目上还没有 data-testid
  *   （项目侧栏与窄屏的项目下拉上有了，见 projects.spec.ts）。
  */
-import { test, expect } from './fixtures';
+import { test, expect, clickHoverOnly } from './fixtures';
 import type { Locator, Page } from '@playwright/test';
 
 // 复位由公共夹具的自动夹具统一负责（见 web/e2e/fixtures.ts 的 resetBeforeEach）：
@@ -64,7 +64,8 @@ async function openTagEditor(page: Page, id: string): Promise<Locator> {
     void dialog.accept();
   });
   const item = ideaItem(page, id);
-  await item.getByRole('button', { name: '🏷 标签' }).click();
+  // 🏷 在桌面上是「悬停才显形」的控件：先悬停到条目上，它才显形、才点得到。
+  await clickHoverOnly(item, '🏷 标签');
   const input = item.getByPlaceholder('加标签…');
   await expect(input).toBeVisible();
   return input;
@@ -269,7 +270,8 @@ test('删除想法：条目从列表消失，并进了回收站', async ({ page,
   await expect(item).toBeVisible();
 
   // 删除要先二次确认。
-  await item.getByRole('button', { name: '🗑 删除' }).click();
+  // 🗑 在桌面上是「悬停才显形」的控件：先悬停到条目上，它才显形、才点得到。
+  await clickHoverOnly(item, '🗑 删除');
   await expect(item.getByText('删除这条？它会进回收站。')).toBeVisible();
   await item.getByRole('button', { name: '确认删除' }).click();
 

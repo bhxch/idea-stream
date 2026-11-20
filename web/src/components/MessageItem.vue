@@ -893,6 +893,20 @@ function confirmDelete(): void {
   .idea .select,
   .idea .meta__action {
     opacity: 0;
+    /*
+     * 隐藏态**不参与命中测试**。
+     *
+     * opacity 不影响命中测试：光靠 opacity: 0 的话，桌面上有一个**看不见
+     * 但能点**的 🗑（点它弹出删除确认条）、🏷（点它打开标签编辑器），
+     * 还有一个看不见但能点的复选框（点它会静默勾选、批量条冒出来）。
+     * 这次重设计把 🗑 挪到了卡片右下角 —— 恰好是鼠标扫过卡片时最常经过的
+     * 位置，「用户一眼看不出来就点到了隐藏控件」的误触面最大。
+     *
+     * 用 pointer-events 而不是 visibility: hidden —— 后者会把元素从
+     * **Tab 顺序**里也摘掉，键盘用户就够不着它了。
+     * pointer-events 只挡鼠标指针：Tab 仍能聚焦，:focus-within 会让它显形。
+     */
+    pointer-events: none;
     transition: opacity 120ms ease-in-out;
   }
 
@@ -901,6 +915,7 @@ function confirmDelete(): void {
   .idea:focus-within .select,
   .idea:focus-within .meta__action {
     opacity: 1;
+    pointer-events: auto;
   }
 }
 
@@ -913,6 +928,8 @@ function confirmDelete(): void {
   .idea .select,
   .idea .meta__action {
     opacity: 1;
+    /* 常驻 = 一直能点（别把上面那条隐藏态的 pointer-events 带过来）。 */
+    pointer-events: auto;
   }
 }
 

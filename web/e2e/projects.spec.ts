@@ -14,7 +14,7 @@
  * 约定见 web/e2e/README.md：test/expect 一律从 ./fixtures 导入（复位自动生效），
  * 选择器按 role / 文本 / label 优先，data-testid 优先于 BEM class。
  */
-import { test, expect, INBOX_ID } from './fixtures';
+import { test, expect, INBOX_ID, clickHoverOnly } from './fixtures';
 import type { Page } from '@playwright/test';
 
 /**
@@ -338,7 +338,8 @@ test.describe('项目里的标签', () => {
     const item = page.locator(`[data-idea-id="${idea.id}"]`);
     await expect(item.getByText('要打标签的想法')).toBeVisible();
 
-    await item.getByRole('button', { name: '🏷 标签' }).click();
+    // 🏷 在桌面上是「悬停才显形」的控件：先悬停到条目上，它才显形、才点得到。
+    await clickHoverOnly(item, '🏷 标签');
     await item.getByPlaceholder('加标签…').fill('重要');
     await item.getByPlaceholder('加标签…').press('Enter');
 
@@ -362,7 +363,8 @@ test.describe('项目里的标签', () => {
     // 条目上看得见这个标签。
     await expect(item.getByText('旧标签')).toBeVisible();
 
-    await item.getByRole('button', { name: '🏷 标签' }).click();
+    // 🏷 在桌面上是「悬停才显形」的控件：先悬停到条目上，它才显形、才点得到。
+    await clickHoverOnly(item, '🏷 标签');
     await item.getByRole('button', { name: '删除标签 旧标签' }).click();
 
     await expect(item.getByRole('button', { name: '删除标签 旧标签' })).toHaveCount(0);
@@ -382,7 +384,8 @@ test.describe('项目里的标签', () => {
     await page.getByRole('button', { name: /项目甲/ }).click();
 
     const item = page.locator(`[data-idea-id="${target.id}"]`);
-    await item.getByRole('button', { name: '🏷 标签' }).click();
+    // 🏷 在桌面上是「悬停才显形」的控件：先悬停到条目上，它才显形、才点得到。
+    await clickHoverOnly(item, '🏷 标签');
     await item.getByPlaceholder('加标签…').fill('专用');
 
     // 补全下拉：当前项目用过的标签排在前面（全局字典按名称排，顺序正好相反）。

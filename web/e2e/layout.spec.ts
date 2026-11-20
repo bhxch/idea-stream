@@ -557,6 +557,16 @@ async function readOpacity(locator: Locator): Promise<number> {
 }
 
 /**
+ * 读一个元素的 `pointer-events`（能不能被鼠标点到）。
+ *
+ * 显形规则不只看 opacity：隐藏态还要**退出命中范围**，
+ * 否则桌面上有一个看不见但能点的 🗑（见 MessageItem.vue 的样式）。
+ */
+async function readPointerEvents(locator: Locator): Promise<string> {
+  return locator.evaluate((el) => getComputedStyle(el).pointerEvents);
+}
+
+/**
  * 关键元素落在视口里（用户不用先滚一下才看得到）。
  *
  * 判据用矩形相交而不是 toBeInViewport()：报错里要带上量到的数字
@@ -1155,19 +1165,33 @@ test.describe('排版与响应式', () => {
     expect(await readOpacity(select), '桌面端不悬停时勾选框不是隐藏的').toBe(0);
     expect(await readOpacity(action), '桌面端不悬停时 🏷🗑 不是隐藏的').toBe(0);
 
+    // 隐藏的控件**不参与命中测试**：桌面上不该有一个「看不见但能点」的 🗑
+    // （点它会弹出删除确认条）、也不该有一个「看不见但能点」的复选框
+    // （点它会静默勾选、批量条冒出来）。
+    //
+    // opacity 不影响命中测试 —— 光靠 opacity: 0 的话，鼠标扫过卡片右下角
+    // 就会误触（这次重设计正好把 🗑 挪到了那个位置）。
+    expect(await readPointerEvents(select), '隐藏的勾选框还能被点到').toBe('none');
+    expect(await readPointerEvents(action), '隐藏的 🏷🗑 还能被点到').toBe('none');
+
     // 悬停那条卡片：显形。
     await page.locator('.idea').first().hover();
     await expect.poll(() => readOpacity(select), '悬停后勾选框没有显形').toBe(1);
     await expect.poll(() => readOpacity(action), '悬停后 🏷🗑 没有显形').toBe(1);
+    // 显形之后要**恢复成可点**（不然悬停显形就是白显形）。
+    await expect.poll(() => readPointerEvents(select), '悬停后勾选框还是点不到').toBe('auto');
+    await expect.poll(() => readPointerEvents(action), '悬停后 🏷🗑 还是点不到').toBe('auto');
 
     // 鼠标移开：又藏回去。
     await page.mouse.move(0, 0);
     await expect.poll(() => readOpacity(select), '鼠标移开后勾选框还亮着').toBe(0);
 
     // 键盘聚焦到它：也得显形 —— 悬停才显形的按钮不能是某个操作的「唯一入口」。
+    // （pointer-events 只挡鼠标指针，Tab 仍能聚焦它。）
     await select.focus();
     await expect.poll(() => readOpacity(select), '聚焦后勾选框没有显形').toBe(1);
     await expect.poll(() => readOpacity(action), '聚焦后 🏷🗑 没有显形').toBe(1);
+    await expect.poll(() => readPointerEvents(select), '聚焦后勾选框还是点不到').toBe('auto');
   });
 
   test('窄屏：勾选框与 🏷🗑 常驻', async ({ page, seed }) => {
