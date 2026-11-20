@@ -258,24 +258,43 @@ public sealed class OpenApiDocumentTests
             Assert.False(properties.TryGetProperty("title", out _), $"{name} 的 properties 里不该有 title");
         }
 
-        // 整份契约的正文里不出现「标题」二字。
-        // （info.title 是 "Idea Manager"、ProblemDetails 的 title 是它自己的字段名，都不算。）
+        // 整份契约里**没有想法的标题**，两条**定向**断言：
         //
-        // ⚠️ 这条断言**很宽**：它扫的是整份契约的正文，而不只是想法那几个 schema。
-        // 已知的后果：将来只要有人给**任何** schema 写一句带「标题」二字的中文
+        // ① components.schemas 里除 ProblemDetails 外不得有 title 键；
+        // ② IdeaSnapshot 的 description 里不得出现「标题」。
+        //
+        // ⚠️ 为什么不扫全文（先前那条 `DoesNotContain("标题", committed)`）：
+        // 那条很脆 —— 将来只要有人给**任何** schema 写一句带「标题」二字的中文
         // description（哪怕是合法的、与想法无关的 ProblemDetails.title 说明 ——
-        // 规格 §4.5 明确说过别误伤它），这条测试就会红，而红的理由与
-        // 「想法有没有标题」毫无关系。
-        //
-        // **为什么先这样**（终审裁决：接受并记录在案，不阻塞合并）：
-        // 它确实盖住了它该盖的东西 —— OpenApiEventTransformer.cs 里那份手写的
-        // IdeaSnapshot schema 与领域类型之间没有任何强制一致的机制，
-        // 只查 properties 的键名会漏掉 description 里的「标题」二字。
-        //
-        // 以后可以改成两条**定向**断言（那样脆的一面就没了）：
-        //   ① components.schemas 里除 ProblemDetails 外不得有 title 键；
-        //   ② IdeaSnapshot 的 description 里不得出现「标题」。
-        Assert.DoesNotContain("标题", committed, StringComparison.Ordinal);
+        // 规格 §4.5 明确说过别误伤它），它就会红，而红的理由与
+        // 「想法有没有标题」毫无关系。定向断言没有这一层脆面。
+        foreach (var schema in schemas.EnumerateObject())
+        {
+            // ProblemDetails.title 是它自己的字段名（RFC 9457 的 problem details），
+            // 不是想法的标题 —— 规格 §4.5 明确说了别误伤它。
+            if (schema.Name == "ProblemDetails")
+            {
+                continue;
+            }
+
+            if (!schema.Value.TryGetProperty("properties", out var properties))
+            {
+                continue;
+            }
+
+            Assert.False(
+                properties.TryGetProperty("title", out _),
+                $"{schema.Name} 的 properties 里不该有 title");
+        }
+
+        // ② 这条不能省：OpenApiEventTransformer.cs 里那份手写的 IdeaSnapshot schema
+        // 与领域类型之间**没有任何强制一致的机制** —— 只查 properties 的键名，
+        // 会漏掉 description 里写着的「标题」二字。
+        var snapshotDescription = schemas.GetProperty("IdeaSnapshot")
+            .TryGetProperty("description", out var description)
+            ? description.GetString() ?? string.Empty
+            : string.Empty;
+        Assert.DoesNotContain("标题", snapshotDescription, StringComparison.Ordinal);
     }
 
     /// <summary>schema 的 required 清单。</summary>
