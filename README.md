@@ -623,7 +623,7 @@ bash verify.sh
 | 步 | 内容 |
 |---|---|
 | 1 | `node tools/check-readme.mjs` —— **文档机械闸门**：两份 README 里的链接、命令、API 路径、配置默认值、闸门步数、SDK 版本不许与仓库对不上（不到一秒） |
-| 2 | `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` —— 服务端（含 skill 分发端点、契约快照、文档漂移守卫） |
+| 2 | `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` —— 服务端（含 skill 分发端点、契约快照、文档漂移守卫、README 数字守卫） |
 | 3 | `python3 -m unittest discover -s skills/idea-manager-client/tests` —— 取件器单测 |
 | 4 | `bash server/scripts/aot-smoke.sh` —— 真 AOT 产物 + **跨栈**检查（真产物 ↔ 真取件器） |
 | 5 | `bash skills/idea-manager-client/scripts/run-tests.sh` —— 取件器测试脚本（带一条真 HTTP 服务端的冒烟） |
@@ -985,7 +985,7 @@ python3 "$SKILL/scripts/fetch.py"
 | 命令 | 目录 | 覆盖什么 |
 |---|---|---|
 | `node tools/check-readme.mjs` | 仓库根 | 文档机械闸门（README 里的链接/命令/API 路径/配置默认值/步数/SDK 版本） |
-| `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` | 仓库根 | 服务端集成/单元测试（含 skill 分发端点、契约快照、文档漂移守卫） |
+| `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` | 仓库根 | 服务端集成/单元测试（含 skill 分发端点、契约快照、文档漂移守卫、**README 数字守卫**） |
 | `python3 -m unittest discover -s skills/idea-manager-client/tests` | 仓库根 | 取件器单测（清单校验、降级、管道、重定向……） |
 | `bash skills/idea-manager-client/scripts/run-tests.sh` | 仓库根 | 取件器单测 **+ 一条真 HTTP 服务端的冒烟** |
 | `bash server/scripts/aot-smoke.sh` | 仓库根 | 真 AOT 产物打端点 + **跨栈**检查（真产物 ↔ 真取件器） |

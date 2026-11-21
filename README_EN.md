@@ -647,7 +647,7 @@ fail-fast, and if any step fails the overall exit code is non-zero.
 | Step | What it runs |
 |---|---|
 | 1 | `node tools/check-readme.mjs` — the **mechanical documentation gate**: the links, commands, API paths, configuration defaults, gate step count and SDK version in the two READMEs must not drift away from the repository (well under a second) |
-| 2 | `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` — the server (including the skill distribution endpoints, the contract snapshot, the documentation drift guard) |
+| 2 | `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` — the server (including the skill distribution endpoints, the contract snapshot, the documentation drift guard, the README number guard) |
 | 3 | `python3 -m unittest discover -s skills/idea-manager-client/tests` — the unit tests of the fetcher |
 | 4 | `bash server/scripts/aot-smoke.sh` — a real AOT artifact + a **cross-stack** check (real artifact ↔ real fetcher) |
 | 5 | `bash skills/idea-manager-client/scripts/run-tests.sh` — the test script of the fetcher (with one smoke test against a real HTTP server) |
@@ -1031,7 +1031,7 @@ repo root runs all of them at once. Run them individually:
 | Command | Directory | What it covers |
 |---|---|---|
 | `node tools/check-readme.mjs` | repo root | The mechanical documentation gate (links / commands / API paths / configuration defaults / step count / SDK version in the READMEs) |
-| `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` | repo root | The server integration/unit tests (including the skill distribution endpoints, the contract snapshot, the documentation drift guard) |
+| `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` | repo root | The server integration/unit tests (including the skill distribution endpoints, the contract snapshot, the documentation drift guard, the **README number guard**) |
 | `python3 -m unittest discover -s skills/idea-manager-client/tests` | repo root | The unit tests of the fetcher (manifest verification, degraded mode, pipes, redirects, …) |
 | `bash skills/idea-manager-client/scripts/run-tests.sh` | repo root | The unit tests of the fetcher **+ one smoke test against a real HTTP server** |
 | `bash server/scripts/aot-smoke.sh` | repo root | A real AOT artifact hitting the endpoints + a **cross-stack** check (real artifact ↔ real fetcher) |

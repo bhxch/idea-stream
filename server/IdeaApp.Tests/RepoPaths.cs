@@ -64,6 +64,18 @@ internal static class RepoPaths
     /// <summary>应用的端点源码目录。</summary>
     public static string Endpoints { get; } = Path.Combine(AppSource, "Endpoints");
 
+    /// <summary>中文版 README（仓库根）。</summary>
+    public static string ReadmeZh { get; } = Path.Combine(Root, "README.md");
+
+    /// <summary>英文版 README（仓库根）。</summary>
+    public static string ReadmeEn { get; } = Path.Combine(Root, "README_EN.md");
+
+    /// <summary>一条命令跑完全部闸门的脚本（仓库根）。</summary>
+    public static string VerifyScript { get; } = Path.Combine(Root, "verify.sh");
+
+    /// <summary>钉住 .NET SDK 版本的 <c>global.json</c>（仓库根）。</summary>
+    public static string GlobalJson { get; } = Path.Combine(Root, "global.json");
+
     private static string FindRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
