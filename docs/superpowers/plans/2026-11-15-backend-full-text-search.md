@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 给 idea 记事本加一套真正建在 SQLite FTS5 上的服务端全文检索：中文按 token 相邻、英文词级，页面与 agent 都能用，命中带高亮位置。
+**Goal:** 给 idea 想法流加一套真正建在 SQLite FTS5 上的服务端全文检索：中文按 token 相邻、英文词级，页面与 agent 都能用，命中带高亮位置。
 
 **Architecture:** 自写一个微信式分词器（ASCII 字母数字合并成词，其余逐字；标点与空白丢弃），索引侧与查询侧共用同一份实现。索引用三张 FTS5 虚表（`idea_fts` / `project_fts` / `tag_fts`），与业务数据**同库同事务**同步维护，靠 `search_meta` 的版本号在启动时回填老库。查询侧：中文用短语查询（要求 token 相邻）、多段之间用 AND；命中位置由服务端自己在原文上算（FTS5 没有 `offsets()`）。
 

@@ -18,5 +18,5 @@ test('冒烟：/api/health 正常，首页标题栏出现「想法」', async ({
 
   // 标题栏的「想法」是 HomePage 渲染出来的 —— 它出现就说明前端起活了。
   await expect(page.getByRole('heading', { name: '想法' })).toBeVisible();
-  await expect(page).toHaveTitle('Idea 记事本');
+  await expect(page).toHaveTitle('Idea 想法流');
 });

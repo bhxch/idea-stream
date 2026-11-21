@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 用 .NET 10 Native AOT 实现 idea 记事本的完整后端：REST API、SQLite 存储、事件总线与 SSE 广播、webhook 异步投递与重试、回收站自动清理。
+**Goal:** 用 .NET 10 Native AOT 实现 idea 想法流的完整后端：REST API、SQLite 存储、事件总线与 SSE 广播、webhook 异步投递与重试、回收站自动清理。
 
 **Architecture:** ASP.NET Core Minimal API 单项目。手写 SQL + `Microsoft.Data.Sqlite`（不用 ORM，避免 AOT 下的反射问题）。领域服务负责业务规则与事务，事件在**事务提交之后**才写入事件总线；事件总线按 handler 扇出，每个 `IEventHandler` 有独立通道；SSE 与 webhook 投递互不阻塞。
 

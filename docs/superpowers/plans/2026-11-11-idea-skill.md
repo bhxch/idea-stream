@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 交付一个可直接安装的 agent skill，把 idea 记事本的 REST API 包成命令行工具 + 说明书，让 agent 不必手写 HTTP 请求就能管理想法。
+**Goal:** 交付一个可直接安装的 agent skill，把 idea 想法流的 REST API 包成命令行工具 + 说明书，让 agent 不必手写 HTTP 请求就能管理想法。
 
 **Architecture:** 纯标准库 Python 脚本（`urllib`），无第三方依赖，任何装了 Python 3.9+ 的机器都能跑。命令走 argparse 子命令树，默认输出 JSON，错误把 ProblemDetails 的 `code`/`detail` 打到 stderr 并以非 0 退出。`references/openapi.json` 是 `openapi/idea-v1.json` 的副本，供 agent 阅读完整契约。
 
@@ -60,7 +60,7 @@ skills/idea-manager/
     ```yaml
     ---
     name: idea-manager
-    description: 管理本地 idea 记事本（项目、想法、标签、完成状态、合并、回收站、webhook 通知）。当用户要记录、查看、整理、批量操作 idea/想法，或要配置 Telegram 通知时使用。
+    description: 管理本地 idea 想法流（项目、想法、标签、完成状态、合并、回收站、webhook 通知）。当用户要记录、查看、整理、批量操作 idea/想法，或要配置 Telegram 通知时使用。
     ---
     ```
     正文含：能力清单表（子命令 → 作用 → 对应 API 路径）、典型场景示例（记一条想法、查未完成、按标签筛、批量标记完成、合并几条、恢复删除的）、环境变量说明、错误码对照表、指向 `references/openapi.json` 的说明。

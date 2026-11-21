@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Idea 记事本的 Vue 3 前端",
+  "description": "Idea 想法流的 Vue 3 前端",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

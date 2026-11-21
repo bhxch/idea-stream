@@ -1,6 +1,6 @@
 # Idea Stream
 
-个人自用的 idea 记事本：单用户、单实例。浏览器与 agent 共用同一套 REST API，
+个人自用的 idea 想法流：单用户、单实例。浏览器与 agent 共用同一套 REST API，
 应用只监听回环地址，对外一律走 nginx 反代（TLS 与访问控制都在 nginx 层）。
 
 - **后端**：.NET 10 + SQLite + Native AOT —— 手写 SQL、无 ORM、无反射式序列化、无模板引擎。

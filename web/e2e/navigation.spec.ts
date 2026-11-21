@@ -245,7 +245,7 @@ for (const route of [
     await expect(page.locator('#app')).toBeAttached();
     // 应用真的挂起来了：页面自己的标题渲染出来了。
     await expect(page.getByRole('heading', { name: route.heading, exact: true })).toBeVisible();
-    await expect(page).toHaveTitle('Idea 记事本');
+    await expect(page).toHaveTitle('Idea 想法流');
   });
 }
 

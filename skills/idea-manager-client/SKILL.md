@@ -1,6 +1,6 @@
 ---
 name: idea-manager
-description: 管理本地 idea 记事本（项目、想法、标签、完成状态、合并、回收站、webhook 通知）。当用户要记录、查看、整理、批量操作 idea/想法，或要配置 Telegram 通知时使用。
+description: 管理本地 idea 想法流（项目、想法、标签、完成状态、合并、回收站、webhook 通知）。当用户要记录、查看、整理、批量操作 idea/想法，或要配置 Telegram 通知时使用。
 ---
 # idea-manager（薄壳 · 说明书在服务端）
 

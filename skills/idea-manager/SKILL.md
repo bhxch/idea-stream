@@ -1,13 +1,13 @@
 ---
 name: idea-manager
-description: 管理本地 idea 记事本（项目、想法、标签、完成状态、合并、回收站、webhook 通知）。当用户要记录、查看、整理、批量操作 idea/想法，或要配置 Telegram 通知时使用。
+description: 管理本地 idea 想法流（项目、想法、标签、完成状态、合并、回收站、webhook 通知）。当用户要记录、查看、整理、批量操作 idea/想法，或要配置 Telegram 通知时使用。
 ---
 
 # idea-manager
 
 ## 这是什么
 
-idea 记事本的 REST API：项目、想法、标签、完成状态、搜索、合并、回收站、webhook 通知。
+idea 想法流的 REST API：项目、想法、标签、完成状态、搜索、合并、回收站、webhook 通知。
 **直接用 curl 调** —— 本文件是索引页：有哪些能力、怎么调、细节去哪找、最容易错在哪。
 
 内容由服务端分发，与服务端**同一版本**：服务端改了 API，这里跟着改。

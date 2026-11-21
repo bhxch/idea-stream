@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 用 Vue 3 + TypeScript + Vite 实现 idea 记事本的网页界面：聊天式录入、消息流回看、过滤、多选批量、响应式两版布局、项目/回收站/webhook 管理页，以及 SSE 多端实时同步。
+**Goal:** 用 Vue 3 + TypeScript + Vite 实现 idea 想法流的网页界面：聊天式录入、消息流回看、过滤、多选批量、响应式两版布局、项目/回收站/webhook 管理页，以及 SSE 多端实时同步。
 
 **Architecture:** Vite 构建的 SPA，产物输出到 `server/IdeaApp/wwwroot/`，由 ASP.NET Core 同源托管（history 模式 + `MapFallbackToFile` 兜底）。所有后端交互走 `src/api/client.ts` 的类型化封装；SSE 走 `src/api/events.ts`。业务逻辑（过滤、排序、事件合并）抽成 `src/lib/` 下的纯函数，用 Vitest 覆盖。
 
