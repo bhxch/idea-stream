@@ -176,19 +176,32 @@ public sealed class ReadmeDocGuardTests
 
             foreach (var claim in file.BusinessCountPatterns)
             {
-                Assert.Equal(business, ClaimedNumber(text, claim, file.Name));
+                AssertCount(text, claim, business, file.Name, "业务端点");
             }
 
             foreach (var claim in file.PathCountPatterns)
             {
-                Assert.Equal(paths, ClaimedNumber(text, claim, file.Name));
+                AssertCount(text, claim, paths, file.Name, "路径");
             }
 
             foreach (var claim in file.OperationCountPatterns)
             {
-                Assert.Equal(operations, ClaimedNumber(text, claim, file.Name));
+                AssertCount(text, claim, operations, file.Name, "操作");
             }
         }
+    }
+
+    /// <summary>
+    /// 文档里写的那个数必须等于实际的那个数（报错时要说是哪个文件、哪个数）。
+    /// </summary>
+    private static void AssertCount(string text, string pattern, int expected, string file, string what)
+    {
+        var claimed = ClaimedNumber(text, pattern, file);
+
+        Assert.True(
+            claimed == expected,
+            $"{file} 说有 {claimed} 个{what}，契约里是 {expected} 个 —— "
+            + "文档里的数字过期了（要么改文档，要么改契约）。");
     }
 
     /// <summary>
