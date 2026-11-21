@@ -1,6 +1,6 @@
 # E2E 测试底座（Playwright）
 
-Idea Manager 的端到端测试底座。后端（.NET 10 + SQLite）与前端产物**同源**托管，
+Idea Stream 的端到端测试底座。后端（.NET 10 + SQLite）与前端产物**同源**托管，
 所以 E2E 只跑一个地址 —— 但**每一轮**跑自己的那个地址：
 端口从 5300 起找空闲的，库也是每轮一个（`web/e2e/.tmp/run-<端口>/e2e.db`）。
 

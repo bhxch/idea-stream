@@ -1,4 +1,4 @@
-# Idea Manager 前端
+# Idea Stream 前端
 
 Idea 记事本的 Web 前端。Vue 3 + TypeScript + Vite 7，无 UI 框架、无状态管理库，
 构建产物直接落进后端的 `server/IdeaApp/wwwroot/`，由 ASP.NET Core 同源托管。

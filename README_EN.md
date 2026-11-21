@@ -1,4 +1,4 @@
-# Idea Manager
+# Idea Stream
 
 A personal idea notebook for a single user and a single instance. The browser and the agents share one REST API;
 the application only listens on the loopback address, and everything exposed externally goes through an nginx

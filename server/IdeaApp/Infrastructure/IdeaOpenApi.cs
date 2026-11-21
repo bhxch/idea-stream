@@ -23,7 +23,7 @@ public static class IdeaOpenApi
     public const string DocumentName = "v1";
 
     /// <summary>文档标题。</summary>
-    public const string Title = "Idea Manager";
+    public const string Title = "Idea Stream";
 
     /// <summary>文档版本。</summary>
     public const string Version = "1.0.0";

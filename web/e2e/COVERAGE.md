@@ -1,6 +1,6 @@
 # E2E 覆盖矩阵
 
-Idea Manager 前端的功能点 × 现有 E2E 用例的对照表。
+Idea Stream 前端的功能点 × 现有 E2E 用例的对照表。
 
 - **覆盖范围**：`web/src/pages`、`web/src/components`、`web/src/composables`、`web/src/stores`、`web/src/router.ts` 里
   用户能直接操作到的功能。

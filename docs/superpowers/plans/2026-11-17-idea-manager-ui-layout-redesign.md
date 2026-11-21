@@ -558,7 +558,7 @@
 
     | 测试 | 断言 |
     |---|---|
-    | `The_committed_contract_has_no_idea_title_property` | 读**提交进仓库的** `openapi/idea-v1.json`：遍历 `components.schemas`，`IdeaDto` / `IdeaSnapshot` / `CreateIdeaRequest` / `UpdateIdeaRequest` / `MergeIdeasRequest` 这五个 schema 的 `properties` 里都**没有** `title` 键；且整份文档的**正文里不出现「标题」二字**（`info.title` 是 "Idea Manager"、ProblemDetails 的 `title` 是 ProblemDetails 的字段名，都不算） |
+    | `The_committed_contract_has_no_idea_title_property` | 读**提交进仓库的** `openapi/idea-v1.json`：遍历 `components.schemas`，`IdeaDto` / `IdeaSnapshot` / `CreateIdeaRequest` / `UpdateIdeaRequest` / `MergeIdeasRequest` 这五个 schema 的 `properties` 里都**没有** `title` 键；且整份文档的**正文里不出现「标题」二字**（`info.title` 是 "Idea Stream"、ProblemDetails 的 `title` 是 ProblemDetails 的字段名，都不算） |
 
     > 为什么要「遍历五个 schema」而不是只查一个：规格 §4.4 第 1 条写的是
     > 「**全文搜不到** idea 的 title（ProblemDetails 的 `title` 与文档标题不算）」——
