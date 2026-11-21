@@ -658,6 +658,10 @@ fail-fast, and if any step fails the overall exit code is non-zero.
 > The documentation gate comes **first**: it is the cheapest one, and documentation is the most common thing to
 > change — drift should become visible right away instead of after ten minutes of e2e.
 
+> **How long it takes**: **a dozen-odd minutes** end to end (the e2e step is the longest — 226 cases take about
+> 11 minutes). It takes longer when the machine is busy — do not plan around a fixed number, and do not believe
+> estimates like "25 minutes".
+
 > ⚠️ **A missing prerequisite is a "failure", not a "skip"**: the script first checks that python3, node and npm are
 > on the PATH and that `web/node_modules` exists; if any of them is missing it exits 1 right away.
 > Skipping is the same as not running — a gate that did not run is more dangerous than no gate at all (it looks green).
