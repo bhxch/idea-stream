@@ -1201,8 +1201,9 @@ them in parallel would reset each other.
 No multi-user collaboration / accounts / sharing, no LLM, no kanban board / rich text / attachments, no native mobile
 app, no multi-instance or horizontal scaling.
 
-> **The "kanban" in the project name is a historical leftover** — this project is a message stream, not a board.
-> Do not write the documentation as if it were a board, and do not file requirements as if it were one.
+> **Where the name comes from**: the project used to be called `kanban` (a board) — that was a historical
+> leftover — and it is now **idea-stream**. This project is a message stream, not a board: do not write the
+> documentation as if it were a board, and do not file requirements as if it were one.
 
 ---
 

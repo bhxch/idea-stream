@@ -1207,7 +1207,7 @@
   git add web/src/pages/HomePage.vue web/src/components/MessageList.vue web/src/pages/HomePage.spec.ts
   git commit -m "feat(web): 往回翻历史的无限滚动，接近顶部就预加载
 
-  看板本来就是聊天软件式的（打开页面停在最下边，底部是当下），所以分页
+  消息流本来就是聊天软件式的（打开页面停在最下边，底部是当下），所以分页
   方向是往上：第一次拿最新一页，接近顶部时预加载更旧的一页，prepend 到列表
   顶部。
 

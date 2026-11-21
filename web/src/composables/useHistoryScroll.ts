@@ -51,7 +51,7 @@ export interface HistoryScrollOptions {
 /**
  * 往回翻历史的无限滚动：接近顶部就预加载更旧的一页，prepend 后把视口钉回原处。
  *
- * 看板是聊天软件式的（打开页面停在最下边，底部是当下，往上才是历史），
+ * 消息流是聊天软件式的（打开页面停在最下边，底部是当下，往上才是历史），
  * 所以「无限滚动」的方向是**上**：
  *
  * - 哨兵放在列表顶部，`IntersectionObserver` 用 `rootMargin: '400px …'`
