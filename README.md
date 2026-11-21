@@ -250,7 +250,8 @@ agent 侧的说明书**由服务端分发** —— 服务端改了 API，agent �
 ```
 IdeaApp.sln                 解决方案
 Directory.Build.props       全局编译属性（TreatWarningsAsErrors 等）
-verify.sh                   一条命令跑完七道闸门（见「CI 与闸门」）
+verify.sh                   一条命令跑完八道闸门（见「CI 与闸门」）
+global.json                 把 .NET SDK 钉在 10.0.113（rollForward=latestPatch）
 openapi/idea-v1.json        OpenAPI 3.1 契约快照（提交进仓库）
 docs/
   nginx/idea.conf           nginx 反代配置
@@ -258,7 +259,7 @@ docs/
     specs/                  四份设计规格（见「设计取舍」）
     plans/                  实施计划
     reviews/                界面复核结论
-.github/workflows/ci.yml    GitHub Actions（5 个 job）
+.github/workflows/ci.yml    GitHub Actions（6 个 job）
 server/
   IdeaApp/                  后端应用（.NET 10，Native AOT）
     Domain/                 领域模型、MonotonicGuid（UUIDv7）、分词器
@@ -609,7 +610,7 @@ systemctl start idea
 
 ## CI 与闸门
 
-### `verify.sh` —— 一条命令跑完七道闸门
+### `verify.sh` —— 一条命令跑完八道闸门
 
 仓库根：
 
@@ -617,17 +618,21 @@ systemctl start idea
 bash verify.sh
 ```
 
-脚本自己 cd 到所在目录。**七步全部跑完**才汇总，不是首错即停；任一步失败整体退出码非 0。
+脚本自己 cd 到所在目录。**八步全部跑完**才汇总，不是首错即停；任一步失败整体退出码非 0。
 
 | 步 | 内容 |
 |---|---|
-| 1 | `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` —— 服务端（含 skill 分发端点、契约快照、文档漂移守卫） |
-| 2 | `python3 -m unittest discover -s skills/idea-manager-client/tests` —— 取件器单测 |
-| 3 | `bash server/scripts/aot-smoke.sh` —— 真 AOT 产物 + **跨栈**检查（真产物 ↔ 真取件器） |
-| 4 | `bash skills/idea-manager-client/scripts/run-tests.sh` —— 取件器测试脚本（带一条真 HTTP 服务端的冒烟） |
-| 5 | `npm --prefix web run typecheck` —— 前端类型检查（应用 + e2e 两份 tsconfig） |
-| 6 | `npm --prefix web test` —— 前端单测（vitest） |
-| 7 | `bash web/e2e/run-e2e.sh` —— 端到端用例（Playwright） |
+| 1 | `node tools/check-readme.mjs` —— **文档机械闸门**：两份 README 里的链接、命令、API 路径、配置默认值、闸门步数、SDK 版本不许与仓库对不上（不到一秒） |
+| 2 | `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` —— 服务端（含 skill 分发端点、契约快照、文档漂移守卫） |
+| 3 | `python3 -m unittest discover -s skills/idea-manager-client/tests` —— 取件器单测 |
+| 4 | `bash server/scripts/aot-smoke.sh` —— 真 AOT 产物 + **跨栈**检查（真产物 ↔ 真取件器） |
+| 5 | `bash skills/idea-manager-client/scripts/run-tests.sh` —— 取件器测试脚本（带一条真 HTTP 服务端的冒烟） |
+| 6 | `npm --prefix web run typecheck` —— 前端类型检查（应用 + e2e 两份 tsconfig） |
+| 7 | `npm --prefix web test` —— 前端单测（vitest） |
+| 8 | `bash web/e2e/run-e2e.sh` —— 端到端用例（Playwright） |
+
+> 文档闸门排**第一**：它最便宜，而改文档是最常见的改动 —— 漂了就该当场看见，
+> 不必等十分钟跑完 e2e。
 
 > ⚠️ **缺前置条件是「失败」，不是「跳过」**：脚本会先检查 python3、node、npm 在不在 PATH，
 > 以及 `web/node_modules` 在不在，缺任一项直接退出 1。
@@ -636,20 +641,21 @@ bash verify.sh
 
 ### GitHub Actions
 
-`.github/workflows/ci.yml` 在 push 与 pull_request 上触发，拆成 **5 个独立 job**：
+`.github/workflows/ci.yml` 在 push 与 pull_request 上触发，拆成 **6 个独立 job**：
 
 | job | 跑什么 |
 |---|---|
+| docs | `node tools/check-readme.mjs` —— 文档机械闸门 |
 | backend | `dotnet test` |
 | frontend | `npm ci` → `typecheck` → `vitest` → `build` |
 | e2e | 装 Playwright 的 chromium → 预热后端构建 → `npm run e2e` |
 | client | 取件器的 python 单测 + 取件器测试脚本 |
 | aot | 装 `clang`/`zlib1g-dev` → 构建前端 → `bash server/scripts/aot-smoke.sh` |
 
-版本钉死：.NET SDK **10.0.113**、Node **24**（与本地一致）。
+版本钉死：.NET SDK **10.0.113**（`global.json` 与 CI 同一处钉）、Node **24**（与本地一致）。
 同 ref 的旧运行自动取消；`permissions: contents: read`，CI 不写回仓库。
 
-> ⚠️ **CI 不跑 `verify.sh`** —— 它是把那几条命令**逐条对应**到 5 个 job 上，
+> ⚠️ **CI 不跑 `verify.sh`** —— 它是把那几条命令**逐条对应**到 6 个 job 上，
 > 这样后端挂了不用等前端跑完，required check 也能各自标红。
 > 改了 `verify.sh` 的步骤要同步改 CI，反之亦然。
 
@@ -973,11 +979,12 @@ python3 "$SKILL/scripts/fetch.py"
 
 ## 测试
 
-七道闸门（含一条 AOT 冒烟）。仓库根 `bash verify.sh` 一次跑完（见[CI 与闸门](#ci-与闸门)）。
+八道闸门（含一条 AOT 冒烟）。仓库根 `bash verify.sh` 一次跑完（见[CI 与闸门](#ci-与闸门)）。
 单独跑时：
 
 | 命令 | 目录 | 覆盖什么 |
 |---|---|---|
+| `node tools/check-readme.mjs` | 仓库根 | 文档机械闸门（README 里的链接/命令/API 路径/配置默认值/步数/SDK 版本） |
 | `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` | 仓库根 | 服务端集成/单元测试（含 skill 分发端点、契约快照、文档漂移守卫） |
 | `python3 -m unittest discover -s skills/idea-manager-client/tests` | 仓库根 | 取件器单测（清单校验、降级、管道、重定向……） |
 | `bash skills/idea-manager-client/scripts/run-tests.sh` | 仓库根 | 取件器单测 **+ 一条真 HTTP 服务端的冒烟** |

@@ -1,16 +1,16 @@
 # CI：把本地那几条闸门搬上 GitHub Actions。
 #
 # 本地对应物（每条命令都在本地跑通过，失败的除外，见报告）：
-#   - bash verify.sh  →  dotnet test / python 单测 / AOT 冒烟 / 取件器测试脚本
+#   - bash verify.sh  →  文档机械闸门 / dotnet test / python 单测 / AOT 冒烟 / 取件器测试脚本
 #   - cd web && npm run typecheck / npm test / npm run build
 #   - bash web/e2e/run-e2e.sh --fresh   →  CI 里等价于 cd web && npm run e2e
 #
-# 拆成 5 个 job 而不是一个大 job：后端 / 前端 / E2E / 取件器 / AOT 各自独立，
+# 拆成 6 个 job 而不是一个大 job：文档 / 后端 / 前端 / E2E / 取件器 / AOT 各自独立，
 # 互不牵连（后端挂了不用等前端跑完），也让 required check 能各自标红。
 #
 # 版本钉死：
-#   - .NET SDK 10.0.113 —— 与本地一致；csproj 里那段 ILCompiler 10.0.14 的注释
-#     针对的正是这个 SDK 内置的 ILCompiler 10.0.13（换 SDK 结论要重验）。
+#   - .NET SDK 10.0.113 —— 与仓库根的 global.json 一致；csproj 里那段 ILCompiler 10.0.14
+#     的注释针对的正是这个 SDK 内置的 ILCompiler 10.0.13（换 SDK 结论要重验）。
 #   - Node 24 —— 与本地一致（本地 v24.13.0）。
 
 name: CI
@@ -34,6 +34,23 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
 
 jobs:
+  docs:
+    name: 文档机械闸门（README 漂移）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # 与 verify.sh 的第一步同一条命令：README 里的链接、命令、API 路径、
+      # 配置默认值、闸门步数、SDK 版本不许与仓库对不上。
+      # 它只用 node 的标准库，不需要 npm ci。
+      - name: node tools/check-readme.mjs
+        run: node tools/check-readme.mjs
+
   backend:
     name: 后端测试（dotnet test）
     runs-on: ubuntu-latest

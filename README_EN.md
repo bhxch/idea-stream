@@ -259,7 +259,8 @@ The full steps for installing the thin shell, fetching the manual and calling th
 ```
 IdeaApp.sln                 The solution
 Directory.Build.props       Global build properties (TreatWarningsAsErrors and the like)
-verify.sh                   One command for all seven gates (see "CI and Gates")
+verify.sh                   One command for all eight gates (see "CI and Gates")
+global.json                 Pins the .NET SDK at 10.0.113 (rollForward=latestPatch)
 openapi/idea-v1.json        A snapshot of the OpenAPI 3.1 contract (committed to the repo)
 docs/
   nginx/idea.conf           The nginx reverse-proxy configuration
@@ -267,7 +268,7 @@ docs/
     specs/                  Four design specs (see "Design Trade-offs")
     plans/                  Implementation plans
     reviews/                Interface review conclusions
-.github/workflows/ci.yml    GitHub Actions (5 jobs)
+.github/workflows/ci.yml    GitHub Actions (6 jobs)
 server/
   IdeaApp/                  The backend application (.NET 10, Native AOT)
     Domain/                 The domain model, MonotonicGuid (UUIDv7), the tokenizer
@@ -632,7 +633,7 @@ Look it up by symptom, not by module — symptom → cause → what to do:
 
 ## CI and Gates
 
-### `verify.sh` — seven gates in one command
+### `verify.sh` — eight gates in one command
 
 At the repo root:
 
@@ -640,18 +641,22 @@ At the repo root:
 bash verify.sh
 ```
 
-The script cds to its own directory by itself. **All seven steps run to completion** before it summarizes; it is not
+The script cds to its own directory by itself. **All eight steps run to completion** before it summarizes; it is not
 fail-fast, and if any step fails the overall exit code is non-zero.
 
 | Step | What it runs |
 |---|---|
-| 1 | `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` — the server (including the skill distribution endpoints, the contract snapshot, the documentation drift guard) |
-| 2 | `python3 -m unittest discover -s skills/idea-manager-client/tests` — the unit tests of the fetcher |
-| 3 | `bash server/scripts/aot-smoke.sh` — a real AOT artifact + a **cross-stack** check (real artifact ↔ real fetcher) |
-| 4 | `bash skills/idea-manager-client/scripts/run-tests.sh` — the test script of the fetcher (with one smoke test against a real HTTP server) |
-| 5 | `npm --prefix web run typecheck` — the frontend type check (two tsconfigs: app + e2e) |
-| 6 | `npm --prefix web test` — the frontend unit tests (vitest) |
-| 7 | `bash web/e2e/run-e2e.sh` — the end-to-end cases (Playwright) |
+| 1 | `node tools/check-readme.mjs` — the **mechanical documentation gate**: the links, commands, API paths, configuration defaults, gate step count and SDK version in the two READMEs must not drift away from the repository (well under a second) |
+| 2 | `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` — the server (including the skill distribution endpoints, the contract snapshot, the documentation drift guard) |
+| 3 | `python3 -m unittest discover -s skills/idea-manager-client/tests` — the unit tests of the fetcher |
+| 4 | `bash server/scripts/aot-smoke.sh` — a real AOT artifact + a **cross-stack** check (real artifact ↔ real fetcher) |
+| 5 | `bash skills/idea-manager-client/scripts/run-tests.sh` — the test script of the fetcher (with one smoke test against a real HTTP server) |
+| 6 | `npm --prefix web run typecheck` — the frontend type check (two tsconfigs: app + e2e) |
+| 7 | `npm --prefix web test` — the frontend unit tests (vitest) |
+| 8 | `bash web/e2e/run-e2e.sh` — the end-to-end cases (Playwright) |
+
+> The documentation gate comes **first**: it is the cheapest one, and documentation is the most common thing to
+> change — drift should become visible right away instead of after ten minutes of e2e.
 
 > ⚠️ **A missing prerequisite is a "failure", not a "skip"**: the script first checks that python3, node and npm are
 > on the PATH and that `web/node_modules` exists; if any of them is missing it exits 1 right away.
@@ -660,20 +665,22 @@ fail-fast, and if any step fails the overall exit code is non-zero.
 
 ### GitHub Actions
 
-`.github/workflows/ci.yml` triggers on push and pull_request, split into **5 independent jobs**:
+`.github/workflows/ci.yml` triggers on push and pull_request, split into **6 independent jobs**:
 
 | Job | What it runs |
 |---|---|
+| docs | `node tools/check-readme.mjs` — the mechanical documentation gate |
 | backend | `dotnet test` |
 | frontend | `npm ci` → `typecheck` → `vitest` → `build` |
 | e2e | install Playwright's chromium → warm up the backend build → `npm run e2e` |
 | client | the python unit tests of the fetcher + the test script of the fetcher |
 | aot | install `clang`/`zlib1g-dev` → build the frontend → `bash server/scripts/aot-smoke.sh` |
 
-The versions are pinned: .NET SDK **10.0.113**, Node **24** (the same as locally). Older runs of the same ref are
-cancelled automatically; `permissions: contents: read`, so CI does not write back to the repository.
+The versions are pinned: .NET SDK **10.0.113** (pinned in one place — `global.json` and CI agree), Node **24** (the
+same as locally). Older runs of the same ref are cancelled automatically; `permissions: contents: read`, so CI does
+not write back to the repository.
 
-> ⚠️ **CI does not run `verify.sh`** — it maps those commands **one by one** onto the 5 jobs, so a failing backend
+> ⚠️ **CI does not run `verify.sh`** — it maps those commands **one by one** onto the 6 jobs, so a failing backend
 > does not have to wait for the frontend to finish, and each required check can turn red on its own.
 > If you change the steps in `verify.sh`, change CI in step with it, and vice versa.
 
@@ -1018,11 +1025,12 @@ the curl templates, the easiest mistakes to make, and a routing table pointing a
 
 ## Testing
 
-The same seven steps `verify.sh` runs, one row each (see [CI and Gates](#ci-and-gates)). `bash verify.sh` at the
+The same eight steps `verify.sh` runs, one row each (see [CI and Gates](#ci-and-gates)). `bash verify.sh` at the
 repo root runs all of them at once. Run them individually:
 
 | Command | Directory | What it covers |
 |---|---|---|
+| `node tools/check-readme.mjs` | repo root | The mechanical documentation gate (links / commands / API paths / configuration defaults / step count / SDK version in the READMEs) |
 | `dotnet test server/IdeaApp.Tests/IdeaApp.Tests.csproj` | repo root | The server integration/unit tests (including the skill distribution endpoints, the contract snapshot, the documentation drift guard) |
 | `python3 -m unittest discover -s skills/idea-manager-client/tests` | repo root | The unit tests of the fetcher (manifest verification, degraded mode, pipes, redirects, …) |
 | `bash skills/idea-manager-client/scripts/run-tests.sh` | repo root | The unit tests of the fetcher **+ one smoke test against a real HTTP server** |
