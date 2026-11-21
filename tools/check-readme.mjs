@@ -76,8 +76,24 @@ const stripPunct = (s) => s.replace(/^[\s"'`([{<]+/, "").replace(/[\s"'`)\]},.;:
 const knownRoots = ["server", "web", "skills", "docs", "openapi", "tools", ".github"];
 const rootFiles = ["verify.sh", "IdeaApp.sln", "Directory.Build.props", "README.md", "README_EN.md"];
 
-// 构建产物与依赖目录：干净克隆里本来就不存在（或在 .gitignore 里），查它们只会误报
-const generatedDirs = ["/bin/", "/obj/", "/node_modules/", "/wwwroot/", "/dist/", "/.temp/", "/test-results/", "/playwright-report/", "/e2e/.tmp/"];
+// 构建产物与依赖目录：干净克隆里本来就不存在（或在 .gitignore 里），查它们只会误报。
+//
+// ⚠️ 按**路径的每一段**判，不能只判"路径中间带斜杠的写法"：
+// 早先那版判的是 `/node_modules/` 这种带前后斜杠的子串，于是
+// `web/node_modules`（**结尾**就是它）漏网 —— 本地因为 node_modules 装着
+// 看不出来，CI 的干净检出里就报「提到的路径 web/node_modules 不存在」。
+// 判据改成"任何一段命中"就对了。
+const generatedDirNames = new Set([
+  "bin",
+  "obj",
+  "node_modules",
+  "wwwroot",
+  "dist",
+  ".temp",
+  ".tmp",
+  "test-results",
+  "playwright-report",
+]);
 
 function looksLikeRepoPath(token) {
   if (!token || /\s/.test(token)) return false;
@@ -85,7 +101,7 @@ function looksLikeRepoPath(token) {
   if (token.includes("*") || token.includes("…")) return false;
   if (token.startsWith("/")) return false;
   if (token.includes("://")) return false;
-  if (generatedDirs.some((d) => token.includes(d))) return false;
+  if (token.split("/").some((segment) => generatedDirNames.has(segment))) return false;
   const head = token.split("/")[0];
   return knownRoots.includes(head) || rootFiles.includes(token);
 }
@@ -418,6 +434,42 @@ for (const doc of DOCS) {
       /没有\s*`?global\.json`?/.test(t) || /no\s+`?global\.json`?/i.test(t);
     if (claimsNone && exists(gj)) {
       problems.push(`${f}: 说仓库里没有 global.json，但仓库根有（global.json 把 SDK 钉在 ${pinned ?? "?"}）`);
+    }
+  }
+}
+
+// ── 探测器自检 ─────────────────────────────────────────────────────────
+//
+// 「闸门没报错」有两种可能：文档没问题，或者**探测器哑了**。
+// 这里把探测器拿几种已知的写法喂一遍，确认它该认的认、该跳的跳 ——
+// 判据改坏时当场发现，而不是等到 CI 上误报一轮。
+{
+  const detectorCases = [
+    // [写法, 该不该当成「仓库里必须存在的路径」]
+    ["web/src/main.ts", true],
+    ["openapi/idea-v1.json", true],
+    ["verify.sh", true],
+    ["skills/idea-manager/SKILL.md", true],
+    // 产物目录：干净检出（CI）里本来就不存在，不能当「必须有」。
+    ["web/node_modules", false],
+    ["web/dist", false],
+    ["server/IdeaApp/wwwroot", false],
+    ["web/e2e/.tmp", false],
+    ["web/test-results", false],
+    // 不是仓库路径的东西，一律不当路径查。
+    ["https://example.com/x", false],
+    ["/etc/passwd", false],
+    ["some other text", false],
+  ];
+
+  for (const [token, expected] of detectorCases) {
+    const actual = looksLikeRepoPath(token);
+
+    if (actual !== expected) {
+      problems.push(
+        `探测器自检没过：「${token}」${expected ? "应该" : "不应该"}被当成仓库路径`
+        + `（实际${actual ? "被当成" : "没被当成"}）—— 判据改坏了，闸门会误报或漏报。`,
+      );
     }
   }
 }
