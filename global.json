@@ -1,0 +1,20 @@
+{
+  // 把 .NET SDK 钉在这个版本上。
+  //
+  // 为什么要有这层兜底：csproj 把 ILCompiler 显式提到 10.0.14（避开 SDK 10.0.113
+  // 内置的 10.0.13 命中的 advisory GHSA-p3jp-9v83-76w9），而 Directory.Build.props
+  // 开着 TreatWarningsAsErrors —— 版本对不上时，restore 阶段的报错（NU1903 / NU1101）
+  // 完全不指向真正的原因。钉住版本，那类报错就不会出现在「只是版本不同」的时候。
+  //
+  // rollForward = latestPatch：允许同一条特性带（10.0.1xx）里的补丁版向前滚，
+  // 但拒绝别的大版本/特性带（10.0.2xx、9.x 之类）。发行版的 dotnet-sdk 包在
+  // 原地升级（10.0.113 → 10.0.114）时不会把仓库弄坏，换大版本则会被挡住。
+  //
+  // CI 用 actions/setup-dotnet 把版本钉死在 10.0.113（.github/workflows/ci.yml），
+  // 与这里一致。
+  "sdk": {
+    "version": "10.0.113",
+    "rollForward": "latestPatch",
+    "allowPrerelease": false
+  }
+}

@@ -39,7 +39,7 @@ Get this table in place before you go any further — with the wrong version the
 
 | Dependency | Version | Notes |
 |---|---|---|
-| .NET SDK | **10.0.113** | **The repository has no `global.json`, so nothing on the tooling side holds you to it** — install this version yourself; any other version fails at the `restore` stage (NU1903 / NU1101). CI pins the version at 10.0.113 with `actions/setup-dotnet` (`.github/workflows/ci.yml`), **so there is no such safety net locally**. The csproj explicitly bumps ILCompiler to 10.0.14 to avoid the advisory (GHSA-p3jp-9v83-76w9) hit by the 10.0.13 built into this SDK; `TreatWarningsAsErrors` turns NU1903 into an error → restore fails outright. Any conclusion about a different SDK version has to be re-verified |
+| .NET SDK | **10.0.113** | Pinned by the `global.json` at the repo root (`rollForward: latestPatch` — patch releases inside the 10.0.1xx band may roll forward, other major/feature bands are refused). Install this version yourself: any other version fails at the `restore` stage (NU1903 / NU1101), and the error message there does not point at the real cause. CI pins the same version with `actions/setup-dotnet` (`.github/workflows/ci.yml`). The csproj explicitly bumps ILCompiler to 10.0.14 to avoid the advisory (GHSA-p3jp-9v83-76w9) hit by the 10.0.13 built into this SDK; `TreatWarningsAsErrors` turns NU1903 into an error → restore fails outright. Any conclusion about a different SDK version has to be re-verified |
 | Node / npm | Node **24** | Same as CI |
 | Python | **3.9+** | The fetcher uses only the standard library, no third-party dependencies |
 | clang + zlib1g-dev | Any recent version | The build dependencies for publishing Native AOT on Linux (`apt-get install -y clang zlib1g-dev`) |

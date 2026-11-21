@@ -36,7 +36,7 @@
 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
-| .NET SDK | **10.0.113** | **仓库里没有 `global.json`，工具层面没有任何兜底** —— 请自己装这个版本；装了别的版本会在 `restore` 阶段炸（NU1903 / NU1101）。CI 里用 `actions/setup-dotnet` 把版本钉在 10.0.113（`.github/workflows/ci.yml`），**本地没有这层兜底**。csproj 把 ILCompiler 显式提到 10.0.14，避开这个 SDK 内置的 10.0.13 命中的 advisory（GHSA-p3jp-9v83-76w9）；`TreatWarningsAsErrors` 会把 NU1903 升级成错误 → restore 直接失败。换 SDK 版本的结论要重验 |
+| .NET SDK | **10.0.113** | 仓库根的 `global.json` 把它钉死（`rollForward: latestPatch` —— 允许 10.0.1xx 里的补丁版向前滚，拒绝别的大版本/特性带）。请自己装这个版本：装错了会在 `restore` 阶段炸（NU1903 / NU1101），而那时的报错不指向真正的原因。CI 用 `actions/setup-dotnet` 钉在同一版本（`.github/workflows/ci.yml`）。csproj 把 ILCompiler 显式提到 10.0.14，避开这个 SDK 内置的 10.0.13 命中的 advisory（GHSA-p3jp-9v83-76w9）；`TreatWarningsAsErrors` 会把 NU1903 升级成错误 → restore 直接失败。换 SDK 版本的结论要重验 |
 | Node / npm | Node **24** | 与 CI 一致 |
 | Python | **3.9+** | 取件器只用标准库，无第三方依赖 |
 | clang + zlib1g-dev | 任意近期版本 | Linux 上发布 Native AOT 的构建依赖（`apt-get install -y clang zlib1g-dev`） |
