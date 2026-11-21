@@ -59,6 +59,26 @@ export const INBOX_NAME = '收件箱';
 /** 复位留下的合并产物的**正文** —— 固定值，方便断言时把它排除掉。 */
 export const RESET_ARTIFACT = 'e2e-reset';
 
+/**
+ * 复位夹具额外拿到的时限（毫秒）。
+ *
+ * 理由见 {@link E2EFixtures} 的夹具定义：复位是几十个 HTTP 往返，
+ * 机器慢时它会先撞上用例的总时限 —— 而那报出来的是「夹具超时」，
+ * 看着像应用坏了，其实只是环境慢。
+ */
+const RESET_TIMEOUT_MARGIN_MS = 60_000;
+
+/** 单个请求超过这个毫秒数就打一行日志（慢在哪儿要看得见）。 */
+const SLOW_REQUEST_MS = 200;
+
+/**
+ * 用例**正文**的时限（毫秒）—— 与 playwright.config.ts 里的 `timeout` 一样。
+ *
+ * 夹具放宽之后要按这个数把正文的时限还回去（见夹具定义）：
+ * 慢的是复位，不是用例。
+ */
+const BODY_TIMEOUT_MS = 30_000;
+
 export interface CreateIdeaInput {
   /** 所属项目；不传 = 收件箱。 */
   projectId?: string;
@@ -108,11 +128,18 @@ export class IdeaApi {
 
   /** 发一个请求；失败时把状态码与响应体一起抛出来（错误码 code 在 body 里）。 */
   private async send<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const started = Date.now();
     const response = await this.request.fetch(path, {
       method,
       headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
       data: body === undefined ? undefined : JSON.stringify(body),
     });
+    const elapsed = Date.now() - started;
+
+    if (elapsed >= SLOW_REQUEST_MS) {
+      console.warn(`[e2e] 慢请求 ${method} ${path} 用了 ${elapsed}ms`);
+    }
+
     if (!response.ok()) {
       const text = await response.text();
       throw new Error(
@@ -262,6 +289,16 @@ export class IdeaApi {
   // ── 复位 ────────────────────────────────────────────────────────────
 
   /**
+   * 复位超过这个毫秒数就打一行日志（带每一段的耗时）。
+   *
+   * 为什么要有：偶发的「Test timeout of 30000ms exceeded while setting up
+   * "resetBeforeEach"」—— 那**不是断言失败**，是复位太慢。
+   * 没有日志的话，事后只知道「5 条用例挂在夹具上」，
+   * 查不出是哪一段慢、慢了多少（而多半是机器负载，不是代码）。
+   */
+  static readonly SLOW_RESET_MS = 5_000;
+
+  /**
    * 把库恢复干净。走 API，不碰数据库文件。
    *
    * 顺序是有讲究的：
@@ -279,33 +316,82 @@ export class IdeaApi {
    *    残渣统一成正文为「e2e-reset」的一条，形态可预测。
    * 4. 再删项目（收件箱除外）：项目的想法随项目一起进回收站。
    * 5. 设置项复位成默认值。
+   *
+   * **快**：复位是几十个 HTTP 往返，而每个用例前都要来一次 ——
+   * 它慢，用例就慢，机器一慢还会撞上 Playwright 的超时上限
+   * （报出来的是「夹具超时」，看不出是哪一段慢）。
+   * 所以这里把**清单只取一次**（回收站、项目各取一次就够），
+   * 少发两个来回。
+   *
+   * ⚠️ **写操作必须顺序发**（理由与实测见 {@link RESET_READ_CONCURRENCY}）：
+   * 服务端写 SQLite 只有一个写者，并发写会互相等锁，
+   * 而 SQLite 的忙等待按 100ms 一档退避 —— 并发写比顺序写慢好几倍。
    */
   async reset(): Promise<void> {
-    await this.clearWebhooks();
-    await this.restoreTrash();
+    const started = Date.now();
+    const marks: string[] = [];
+    const mark = (name: string) => {
+      marks.push(`${name} ${Date.now() - started}ms`);
+    };
+
+    // 清单只取一次：清 webhook 与恢复回收站都要看回收站，清 webhook 与
+    // 清项目都要看项目 —— 重复取一遍就是白等一个来回。
+    const trash = await this.listTrash();
+    const activeProjects = await this.listProjects();
+    mark('清单');
+
+    await this.clearWebhooks(trash, activeProjects);
+    mark('清 webhook');
+
+    await this.restoreTrash(trash);
+    mark('恢复回收站');
+
     await this.clearIdeas();
-    await this.clearProjects();
+    mark('清想法');
+
+    await this.clearProjects(activeProjects, trash);
+    mark('清项目');
+
     await this.setSetting('project.sort_mode', 'recent');
+    mark('复位设置项');
+
+    const elapsed = Date.now() - started;
+
+    if (elapsed >= IdeaApi.SLOW_RESET_MS) {
+      console.warn(
+        `[e2e] 复位用了 ${elapsed}ms（${marks.join(' · ')}）—— 服务慢了。`
+        + '机器负载高的时候会出现；一直这样就该看看服务端的写路径。',
+      );
+    }
   }
 
   /** 把回收站里的条目全部恢复回来（回收站清空，所有项目与想法回到活动状态）。 */
-  private async restoreTrash(): Promise<void> {
-    const trash = await this.listTrash();
+  private async restoreTrash(trash: TrashEntry[]): Promise<void> {
     // 先恢复想法：容器的项目还没恢复时，恢复想法是允许的。
+    const ideaIds: string[] = [];
     for (const entry of trash) {
       if (entry.kind === 'idea' && entry.idea) {
-        await this.restoreIdea(entry.idea.id);
+        ideaIds.push(entry.idea.id);
       } else if (entry.kind === 'project') {
         for (const idea of entry.ideas) {
-          await this.restoreIdea(idea.id);
+          ideaIds.push(idea.id);
         }
       }
     }
+    // ⚠️ **顺序**恢复，不并发：见 {@link RESET_READ_CONCURRENCY} 的说明。
+    for (const id of ideaIds) {
+      await this.restoreIdea(id);
+    }
+
     // 再恢复项目：连带恢复「因删项目而删」的想法。
-    for (const entry of trash) {
-      if (entry.kind === 'project' && entry.project) {
-        await this.restoreProject(entry.project.id);
-      }
+    //
+    // ⚠️ 这一段**不能**与上面并发：恢复项目会连带把它的想法恢复掉，
+    // 与单独恢复同一条想法撞上，那一条就已经不在回收站里了（会 404）。
+    const projectIds = trash
+      .filter((entry) => entry.kind === 'project' && entry.project)
+      .map((entry) => entry.project!.id);
+    for (const id of projectIds) {
+      await this.restoreProject(id);
     }
   }
 
@@ -327,6 +413,7 @@ export class IdeaApi {
         byProject.set(idea.projectId, [idea]);
       }
     }
+    // ⚠️ **顺序**清，不并发：见 {@link RESET_READ_CONCURRENCY} 的说明。
     for (const [projectId, group] of byProject) {
       let ids = group.map((idea) => idea.id);
       if (ids.length === 1) {
@@ -345,13 +432,32 @@ export class IdeaApi {
     }
   }
 
-  /** 删掉除收件箱外的项目。 */
-  private async clearProjects(): Promise<void> {
-    for (const project of await this.listProjects()) {
-      if (project.id === INBOX_ID || project.name === INBOX_NAME) {
-        continue;
+  /**
+   * 删掉除收件箱外的项目。
+   *
+   * @param activeProjects 复位开始时的活动项目。
+   * @param trash 复位开始时的回收站（里面的项目这会儿已经被恢复回来了）。
+   */
+  private async clearProjects(activeProjects: Project[], trash: TrashEntry[]): Promise<void> {
+    // 活动项目 = 复位开始时的活动项目 + 从回收站恢复回来的项目。
+    // 不重新查一次：这一轮里没有别的地方会建项目。
+    const projects = new Map<string, Project>();
+    for (const project of activeProjects) {
+      projects.set(project.id, project);
+    }
+    for (const entry of trash) {
+      if (entry.kind === 'project' && entry.project) {
+        projects.set(entry.project.id, entry.project);
       }
-      await this.deleteProject(project.id);
+    }
+
+    const ids = [...projects.values()]
+      .filter((project) => project.id !== INBOX_ID && project.name !== INBOX_NAME)
+      .map((project) => project.id);
+
+    // ⚠️ **顺序**删，不并发：见 {@link RESET_READ_CONCURRENCY} 的说明。
+    for (const id of ids) {
+      await this.deleteProject(id);
     }
   }
 
@@ -366,26 +472,68 @@ export class IdeaApi {
    *
    * 复位时它跑在「恢复回收站」**之前** —— 那时回收站里还留着上一轮删掉的项目，
    * 它们的项目级钩子正在这一段里被清掉。
+   *
+   * @param trash 复位开始时的回收站（还没恢复，所以里面的项目还在）。
+   * @param activeProjects 复位开始时的活动项目。
    */
-  private async clearWebhooks(): Promise<void> {
-    for (const webhook of await this.listWebhooks()) {
-      await this.deleteWebhook(webhook.id);
-    }
-    const projectIds = new Set<string>();
-    for (const project of await this.listProjects()) {
-      projectIds.add(project.id);
-    }
-    for (const entry of await this.listTrash()) {
+  private async clearWebhooks(trash: TrashEntry[], activeProjects: Project[]): Promise<void> {
+    const projectIds = new Set<string>(activeProjects.map((project) => project.id));
+    for (const entry of trash) {
       if (entry.kind === 'project' && entry.project) {
         projectIds.add(entry.project.id);
       }
     }
-    for (const projectId of projectIds) {
-      for (const webhook of await this.listWebhooks(projectId)) {
-        await this.deleteWebhook(webhook.id);
-      }
+
+    // 各项目的钩子互不相干：**读**可以并发（见 {@link RESET_READ_CONCURRENCY}）。
+    const perProject = await inBatches(
+      [...projectIds],
+      RESET_READ_CONCURRENCY,
+      (projectId) => this.listWebhooks(projectId),
+    );
+    const globals = await this.listWebhooks();
+
+    const webhooks = [...globals, ...perProject.flat()];
+
+    // ⚠️ **顺序**删，不并发：见 {@link RESET_READ_CONCURRENCY} 的说明。
+    for (const webhook of webhooks) {
+      await this.deleteWebhook(webhook.id);
     }
   }
+}
+
+/**
+ * 复位里**读**请求的并发上限。
+ *
+ * ⚠️ **只有读能并发，写必须顺序** —— 这不是保守，是量出来的：
+ *
+ * 服务端写 SQLite 只有一个写者，并发的写请求要排队等锁，而 SQLite 的忙等待
+ * 是**按 100ms 一档退避**的（1 → 2 → 5 → 10 → … → 100ms）。于是并发的写
+ * 一个个往后挪，每个都多等一档 —— 复位的写请求耗时从几毫秒涨到几百毫秒，
+ * 整个子集从 42 秒变成 4 分钟（实测，同一台机器、同一批用例）。
+ *
+ * 读不一样：WAL 模式下读不挡写（WAL 模式下读者看到的是快照），
+ * 并发读是真的省时间。
+ */
+const RESET_READ_CONCURRENCY = 8;
+
+/**
+ * 分批并发地跑一批互不相干的**读**。
+ *
+ * 一批一批来（每批 {@link RESET_READ_CONCURRENCY} 个），而不是一次全放出去：
+ * 一次太多只是把队排得更长，还多占着连接。
+ */
+async function inBatches<T, R>(
+  items: T[],
+  size: number,
+  action: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    results.push(...(await Promise.all(items.slice(index, index + size).map((item) => action(item)))));
+  }
+
+  return results;
 }
 
 /** 造数据的便捷函数。 */
@@ -426,8 +574,26 @@ export const test = base.extend<E2EFixtures>({
    * 自动夹具挂在夹具定义上，对**每一个**用到这个 test 的用例都生效。
    */
   resetBeforeEach: [
-    async ({ api }, use) => {
+    async ({ api }, use, testInfo) => {
+      // 给复位留够预算。
+      //
+      // 复位是几十个 HTTP 往返（每个用例前都要来一次）。机器一慢
+      // （别的进程在抢 CPU/磁盘）它就可能撞上 30 秒的用例上限 ——
+      // 报出来的是「Test timeout of 30000ms exceeded while setting up
+      // "resetBeforeEach"」，而那**不是断言失败**，是环境慢，
+      // 读报告的人却会以为应用坏了。
+      //
+      // 这里给夹具多留一分钟；**正文**的时限随后单独按「从现在起算」重设
+      // （见下面两行）—— 放宽的只是夹具，不是整条用例。
+      const startedAt = Date.now();
+      testInfo.setTimeout(testInfo.timeout + RESET_TIMEOUT_MARGIN_MS);
+
       await api.reset();
+
+      // 复位花掉多少，就从「现在」起给正文留 BODY_TIMEOUT_MS ——
+      // 正文还是只有 30 秒，不会因为放宽了夹具而一起放宽。
+      testInfo.setTimeout(Date.now() - startedAt + BODY_TIMEOUT_MS);
+
       await use();
     },
     { auto: true },

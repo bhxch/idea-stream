@@ -193,6 +193,23 @@ await seed.webhook({ name: '我的钩子' });                 // 造 webhook（�
 （见 `server/IdeaApp/Application/TrashService.cs`），标签字典的行也不会随想法删除而删
 （见 `server/IdeaApp/Infrastructure/TagRepository.cs`）。
 
+**复位的快慢（机器慢时不要慌）**：
+
+- 复位是几十个 HTTP 往返，每个用例前都要来一次。机器一慢（别的进程在抢 CPU/磁盘），
+  它就可能撞上 Playwright 的用例时限 —— 报出来的是
+  `Test timeout of 30000ms exceeded while setting up "resetBeforeEach"`，
+  而那**不是断言失败**，是环境慢。自动夹具因此单独多留一分钟
+  （`RESET_TIMEOUT_MARGIN_MS`），复位的正文时限随后按 30 秒重设 ——
+  放宽的只是夹具，用例正文还是 30 秒。
+- 复位超过 5 秒会打一行日志，带每一段的耗时
+  （`[e2e] 复位用了 7830ms（清单 28ms · 清 webhook 209ms · …）`）；
+  单个请求超过 200ms 也会打一行（`[e2e] 慢请求 POST /api/ideas 用了 471ms`）。
+  下次再遇到「挂在夹具上」，这两行日志就能直接指出慢在哪一段。
+- **写操作必须顺序发，不能并发**：服务端写 SQLite 只有一个写者，
+  并发的写请求要排队等锁，而 SQLite 的忙等待按 100ms 一档退避 ——
+  实测并发写比顺序写慢好几倍（同一批用例：42 秒 → 4 分钟）。
+  只有**读**可以并发（WAL 模式下读不挡写）。
+
 所以：
 
 - 断言**活动**状态（想法列表、项目列表、webhook 列表）时可以直接断言「空的 / 只有收件箱」；
