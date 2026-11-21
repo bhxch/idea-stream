@@ -45,6 +45,44 @@ e2e_resolve_port || exit 1
 export E2E_PORT
 echo "run-e2e.sh: 本轮端口 ${E2E_PORT}（${E2E_BASE_URL}），库 ${E2E_DB_FILE}。" >&2
 
+# ── 收摊（被打断时也要做）────────────────────────────────────────────────
+# 服务是 setsid 起的：脚本一死它还活着 —— 于是端口被一个**孤儿进程**占着
+# （下一轮虽然会换端口，但那个孤儿还在跑，机器上越攒越多）。
+# 所以收摊挂在 EXIT 上：正常跑完、Ctrl-C、被 TERM，都会走到。
+#
+# 装在起服务**之前**：起服务与跑用例之间那几秒也是能被打断的窗口。
+#
+# SIGKILL 收不了（内核直接杀进程，trap 不跑）—— 那种情况只能靠下一轮换端口。
+PLAYWRIGHT_PID=""
+
+cleanup() {
+  local rc=$?
+  trap - EXIT INT TERM
+
+  # playwright 还在跑就先把它停掉（它是自己起的子进程）。
+  if [[ -n "${PLAYWRIGHT_PID}" ]] && kill -0 "${PLAYWRIGHT_PID}" 2>/dev/null; then
+    kill -TERM "${PLAYWRIGHT_PID}" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      kill -0 "${PLAYWRIGHT_PID}" 2>/dev/null || break
+      sleep 0.25
+    done
+    kill -KILL "${PLAYWRIGHT_PID}" 2>/dev/null || true
+  fi
+
+  if (( KEEP == 0 )); then
+    # 默认把 E2E 服务停掉：它是这个脚本自己起的（本轮专用的端口）。
+    # 加 --keep 可以留着给下一轮/手工排查用。
+    e2e_stop_server
+    echo "run-e2e.sh: 服务已停（加 --keep 可以留着）。" >&2
+  fi
+
+  exit "${rc}"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # ── 保证服务在跑 ────────────────────────────────────────────────────────
 start_args=()
 if (( FRESH == 1 )); then
@@ -70,15 +108,13 @@ fi
 # 否则配置会在 playwright 退出时把服务停掉，--keep 就白给了。
 export E2E_NO_AUTOSTOP=1
 cd "${WEB_DIR}" || exit 1
-npx playwright test "${PLAYWRIGHT_ARGS[@]+"${PLAYWRIGHT_ARGS[@]}"}"
-status=$?
 
-# ── 收尾 ────────────────────────────────────────────────────────────────
-if (( KEEP == 0 )); then
-  # 默认把 E2E 服务停掉：它是这个脚本自己起的（本轮专用的端口）。
-  # 加 --keep 可以留着给下一轮/手工排查用。
-  e2e_stop_server
-  echo "run-e2e.sh: 服务已停（加 --keep 可以留着）。" >&2
-fi
+# 放后台跑：这样脚本被 TERM 时，收摊能立刻把 playwright 停掉，
+# 而不是等它自己跑完（用例可能还要好几分钟）。
+npx playwright test "${PLAYWRIGHT_ARGS[@]+"${PLAYWRIGHT_ARGS[@]}"}" &
+PLAYWRIGHT_PID=$!
+wait "${PLAYWRIGHT_PID}"
+status=$?
+PLAYWRIGHT_PID=""
 
 exit "${status}"

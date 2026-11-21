@@ -86,7 +86,7 @@ cd web && npm run e2e:report        # playwright show-report
 | 命令 | 作用 |
 |---|---|
 | `bash web/e2e/start-server.sh [--fresh] [--rebuild] [--stop]` | 幂等启动服务。本轮端口上已有健康服务 → 直接退出 0 复用（不重建、不重启）；否则构建前端 → 构建后端 → 以 `IDEA_Urls=http://127.0.0.1:<端口>`、`IDEA_Database__Path=<仓库根>/web/e2e/.tmp/run-<端口>/e2e.db` 启动，轮询 `/api/health` 到 200。`--fresh` 先杀旧服务并删库，`--rebuild` 强制重建并重启，`--stop` 只停服务 |
-| `bash web/e2e/run-e2e.sh [--fresh] [--rebuild] [--keep] [playwright 参数…]` | 保证服务在跑 → 在 `web/` 下跑 `npx playwright test` → 退出码透传。默认跑完停服务，`--keep` 不停 |
+| `bash web/e2e/run-e2e.sh [--fresh] [--rebuild] [--keep] [playwright 参数…]` | 保证服务在跑 → 在 `web/` 下跑 `npx playwright test` → 退出码透传。默认跑完停服务，`--keep` 不停。**被打断（Ctrl-C、被 TERM）也一样收摊**：先停掉 playwright，再停服务 —— 服务是 `setsid` 起的，脚本一死它还活着，端口会被一个孤儿进程占着（`SIGKILL` 收不了：内核直接杀进程，trap 不跑） |
 | `bash web/e2e/rebuild.sh [frontend\|backend\|all]` | 重建。`backend`（与 `all`）重建后自动重启服务（端口不变，库保留） |
 | `bash web/e2e/lib/common.sh --reserve-port` | 挑一个空闲端口并预约，打印端口。`playwright.config.ts` 与 `run-e2e.sh` 走的是同一份逻辑 |
 
